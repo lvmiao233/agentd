@@ -1,0 +1,4 @@
+[daemon]
+health_host = "127.0.0.1"
+health_port = 7000
+shutdown_timeout_secs = 5

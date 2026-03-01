@@ -1,0 +1,15 @@
+[Unit]
+Description=agentd daemon
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/agentd --config /etc/agentd/agentd.toml
+WorkingDirectory=/var/lib/agentd
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
