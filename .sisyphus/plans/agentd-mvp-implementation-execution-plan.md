@@ -341,7 +341,7 @@ Wave FINAL（并行独立审查）
   - Files: `rust-toolchain.toml`, `pyproject.toml`, `uv.lock`, `.github/workflows/ci.yml`
   - Pre-commit: `uv sync --frozen && cargo check --workspace`
 
-- [ ] 3. CI 硬门禁骨架与证据工件规范
+- [x] 3. CI 硬门禁骨架与证据工件规范
 
   **What to do**:
   - 建立 GitHub Actions workflow：测试、lint、安全扫描、门禁阈值检查。

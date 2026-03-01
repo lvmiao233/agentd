@@ -1,0 +1,342 @@
+# CI Gates Workflow
+# 
+# This workflow defines the hard gates for CI/CD.
+# Each job represents a required checkpoint before merge.
+#
+# Phase Gates (placeholder comments for future T4+ implementation):
+#   - build-gate: Cargo workspace build (T4)
+#   - test-gate: Unit/integration tests (T4)
+#   - security-gate: Security scanning (T4)
+#   - gate-syscall: System call validation (T4)
+#   - gate-isolation: cgroup/namespace isolation (T4)
+#
+# Evidence Artifacts:
+#   - All jobs upload evidence to .sisyphus/evidence/
+#   - Structure: .sisyphus/evidence/{job-name}/
+#   - Local CI can be validated via scripts/gate-check.sh
+
+name: CI Gates
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Gate 0: Pre-flight Checks
+  # ============================================================
+  preflight:
+    name: Preflight Check
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Check required files exist
+        id: check
+        run: |
+          echo "Checking required baseline files..."
+          required_files=(
+            "rust-toolchain.toml"
+            "pyproject.toml"
+            "scripts/no-go-guard.sh"
+          )
+          missing=0
+          for f in "${required_files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              missing=1
+            fi
+          done
+          if [ $missing -eq 0 ]; then
+            echo "ready=true" >> $GITHUB_OUTPUT
+            echo "All required baseline files present"
+          else
+            echo "ready=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-preflight
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 1: No-Go Guard (T1/T2 Baseline)
+  # ============================================================
+  no-go-guard:
+    name: No-Go Guard
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run No-Go Guard
+        run: |
+          bash scripts/no-go-guard.sh
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-no-go-guard
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 2: Build Gate (Placeholder - T4 Implementation)
+  # ============================================================
+  build-gate:
+    name: Build Gate
+    runs-on: ubuntu-latest
+    needs: no-go-guard
+    # Placeholder: implement in T4
+    # - Cargo workspace build
+    # - Cross-compilation checks
+    # - Feature flag validation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          version: 1.85.0
+
+      - name: Placeholder build check
+        run: |
+          echo "BUILD GATE PLACEHOLDER"
+          echo "This gate will be implemented in T4"
+          echo "Expected: cargo build --workspace"
+          # TODO: Implement actual build in T4
+          # For now, always pass if rust-toolchain.toml exists
+          if [ -f rust-toolchain.toml ]; then
+            echo "Rust toolchain configured - build gate passes (placeholder)"
+            exit 0
+          fi
+          exit 1
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-build-gate
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 3: Test Gate (Placeholder - T4 Implementation)
+  # ============================================================
+  test-gate:
+    name: Test Gate
+    runs-on: ubuntu-latest
+    needs: build-gate
+    # Placeholder: implement in T4
+    # - Unit tests
+    # - Integration tests
+    # - Test coverage
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          version: 1.85.0
+
+      - name: Placeholder test check
+        run: |
+          echo "TEST GATE PLACEHOLDER"
+          echo "This gate will be implemented in T4"
+          echo "Expected: cargo test --workspace"
+          # TODO: Implement actual tests in T4
+          echo "Test gate passes (placeholder)"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-test-gate
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 4: Security Gate (Placeholder - T4 Implementation)
+  # ============================================================
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs: test-gate
+    # Placeholder: implement in T4
+    # - cargo-audit for vulnerability scanning
+    # - cargo-geiger for unsafe code tracking
+    # - Dependency license checks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Placeholder security check
+        run: |
+          echo "SECURITY GATE PLACEHOLDER"
+          echo "This gate will be implemented in T4"
+          echo "Expected: cargo audit, cargo geiger"
+          # TODO: Implement actual security checks in T4
+          echo "Security gate passes (placeholder)"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-security-gate
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 5: System Call Gate (Placeholder - T4 Implementation)
+  # ============================================================
+  gate-syscall:
+    name: System Call Gate
+    runs-on: ubuntu-latest
+    needs: security-gate
+    # Placeholder: implement in T4
+    # - Seccomp profile validation
+    # - Allowed syscalls enumeration
+    # - syscall audit logs
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Placeholder syscall check
+        run: |
+          echo "SYSCALL GATE PLACEHOLDER"
+          echo "This gate will be implemented in T4"
+          echo "Expected: seccomp profile validation"
+          # TODO: Implement actual syscall validation in T4
+          echo "Syscall gate passes (placeholder)"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-gate-syscall
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 6: Isolation Gate (Ubuntu 25.10 - Self-Hosted)
+  # ============================================================
+  gate-isolation:
+    name: Isolation Gate (Ubuntu 25.10)
+    # Uses self-hosted runner with Ubuntu 25.10 label
+    # Required for systemd/cgroup v2 validation
+    runs-on: self-hosted-ubuntu-25.10
+    needs: gate-syscall
+    # Placeholder: implement in T4
+    # - cgroup v2 validation
+    # - namespace isolation
+    # - systemd integration
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Ubuntu version
+        run: |
+          . /etc/os-release
+          echo "Running on $PRETTY_NAME"
+          if [ "$VERSION_ID" != "25.10" ]; then
+            echo "WARNING: Expected Ubuntu 25.10, got $VERSION_ID"
+          fi
+
+      - name: Check cgroup v2
+        run: |
+          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+            echo "cgroup v2 detected"
+          else
+            echo "WARNING: cgroup v2 not detected"
+          fi
+
+      - name: Check systemd
+        run: |
+          if command -v systemctl &> /dev/null; then
+            systemctl --version | head -1
+          else
+            echo "WARNING: systemd not available"
+          fi
+
+      - name: Placeholder isolation check
+        run: |
+          echo "ISOLATION GATE PLACEHOLDER"
+          echo "This gate will be implemented in T4"
+          echo "Expected: cgroup v2 + systemd integration"
+          # TODO: Implement actual isolation validation in T4
+          echo "Isolation gate passes (placeholder)"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-gate-isolation
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # Gate 7: Final Required Check
+  # ============================================================
+  required-check:
+    name: Required Check
+    runs-on: ubuntu-latest
+    needs: gate-isolation
+    if: always()
+    steps:
+      - name: Verify all gates passed
+        run: |
+          echo "=== CI Gates Summary ==="
+          echo "Preflight: ${{ needs.preflight.result }}"
+          echo "No-Go Guard: ${{ needs.no-go-guard.result }}"
+          echo "Build Gate: ${{ needs.build-gate.result }}"
+          echo "Test Gate: ${{ needs.test-gate.result }}"
+          echo "Security Gate: ${{ needs.security-gate.result }}"
+          echo "Syscall Gate: ${{ needs.gate-syscall.result }}"
+          echo "Isolation Gate: ${{ needs.gate-isolation.result }}"
+          
+          # Fail if any required gate failed
+          if [ "${{ needs.preflight.result }}" != "success" ]; then
+            echo "FAILED: Preflight check failed"
+            exit 1
+          fi
+          if [ "${{ needs.no-go-guard.result }}" != "success" ]; then
+            echo "FAILED: No-Go Guard failed"
+            exit 1
+          fi
+          # Build, test, security, syscall, isolation are placeholders
+          # They pass if previous gates passed (for T3 skeleton)
+          echo "All required gates passed!"
+
+      - name: Upload all evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-all
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
