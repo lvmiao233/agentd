@@ -134,7 +134,7 @@ async fn health_server(
                     concat!(
                         "HTTP/1.1 200 OK\r\n",
                         "Content-Type: application/json\r\n",
-                        "Content-Length: 16\r\n",
+                        "Content-Length: 15\r\n",
                         "Connection: close\r\n",
                         "\r\n",
                         "{\"status\":\"ok\"}"
