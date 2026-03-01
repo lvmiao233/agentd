@@ -1,0 +1,16 @@
+[project]
+name = "agentd"
+version = "0.1.0"
+description = "System-level AI Agent runtime"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

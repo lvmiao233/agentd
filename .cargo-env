@@ -1,0 +1,7 @@
+# Cargo/Rust environment setup
+# Source this file to add cargo to your PATH
+# Usage: source .cargo-env
+
+if [ -d "$HOME/.cargo/bin" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi

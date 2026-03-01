@@ -268,7 +268,7 @@ Wave FINAL（并行独立审查）
   - Files: `.github/`, `scripts/bootstrap-repo.sh`, `README.md`
   - Pre-commit: `bash scripts/bootstrap-repo.sh --dry-run`
 
-- [ ] 2. Rust + uv 工具链基线（含 no-Go guard）
+- [x] 2. Rust + uv 工具链基线（含 no-Go guard）
 
   **What to do**:
   - 建立 Rust toolchain 固定版本与 workspace 约束。
