@@ -1,0 +1,19 @@
+[package]
+name = "agentctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agentctl"
+path = "src/main.rs"
+
+[dependencies]
+agentd-core.workspace = true
+agentd-protocol.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

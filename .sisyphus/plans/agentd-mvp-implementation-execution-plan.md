@@ -418,7 +418,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 4. Rust workspace 与核心 crates 骨架
+- [x] 4. Rust workspace 与核心 crates 骨架
 
   **What to do**:
   - 建立 `Cargo.toml` workspace 根与 `crates/` 目录骨架。
