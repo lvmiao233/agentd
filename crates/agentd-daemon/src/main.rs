@@ -1,10 +1,16 @@
+use agentd_core::profile::ModelConfig;
+use agentd_core::AgentProfile;
+use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
+use agentd_store::{AgentStore, SqliteStore};
 use clap::Parser;
 use serde::Deserialize;
+use serde_json::json;
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
@@ -21,6 +27,9 @@ struct Args {
 
     #[arg(long)]
     health_port: Option<u16>,
+
+    #[arg(long)]
+    db_path: Option<String>,
 
     #[arg(long, short)]
     verbose: bool,
@@ -40,6 +49,10 @@ struct DaemonConfig {
     health_port: u16,
     #[serde(default = "default_shutdown_timeout_secs")]
     shutdown_timeout_secs: u64,
+    #[serde(default = "default_socket_path")]
+    socket_path: String,
+    #[serde(default = "default_db_path")]
+    db_path: String,
 }
 
 impl Default for DaemonConfig {
@@ -48,6 +61,8 @@ impl Default for DaemonConfig {
             health_host: default_health_host(),
             health_port: default_health_port(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            socket_path: default_socket_path(),
+            db_path: default_db_path(),
         }
     }
 }
@@ -70,6 +85,14 @@ fn default_health_port() -> u16 {
 
 fn default_shutdown_timeout_secs() -> u64 {
     5
+}
+
+fn default_socket_path() -> String {
+    "/tmp/agentd.sock".to_string()
+}
+
+fn default_db_path() -> String {
+    "data/agentd.db".to_string()
 }
 
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -108,10 +131,11 @@ fn notify_systemd(state: &str) {
 }
 
 async fn health_server(
+    listener: TcpListener,
     bind_addr: SocketAddr,
+    store: Arc<SqliteStore>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "Health endpoint listening");
 
     loop {
@@ -131,22 +155,33 @@ async fn health_server(
                 let is_health = request.starts_with("GET /health ") || request.starts_with("GET /health?");
 
                 let response = if is_health {
-                    concat!(
-                        "HTTP/1.1 200 OK\r\n",
-                        "Content-Type: application/json\r\n",
-                        "Content-Length: 15\r\n",
-                        "Connection: close\r\n",
-                        "\r\n",
-                        "{\"status\":\"ok\"}"
+                    let storage_status = if store.health_check().is_ok() {
+                        "ready"
+                    } else {
+                        "degraded"
+                    };
+                    let overall_status = if storage_status == "ready" { "ok" } else { "degraded" };
+
+                    let body = serde_json::to_string(&json!({
+                        "status": overall_status,
+                        "subsystems": {
+                            "daemon": "ready",
+                            "protocol": "ready",
+                            "storage": storage_status,
+                        }
+                    }))?;
+
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.as_bytes().len(),
+                        body
                     )
                 } else {
-                    concat!(
-                        "HTTP/1.1 404 Not Found\r\n",
-                        "Content-Type: application/json\r\n",
-                        "Content-Length: 21\r\n",
-                        "Connection: close\r\n",
-                        "\r\n",
-                        "{\"error\":\"not found\"}"
+                    let body = "{\"error\":\"not found\"}";
+                    format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.as_bytes().len(),
+                        body
                     )
                 };
 
@@ -154,6 +189,156 @@ async fn health_server(
                 let _ = stream.shutdown().await;
             }
         }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateAgentParams {
+    name: String,
+    model: String,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    token_budget: Option<u64>,
+    #[serde(default)]
+    max_tokens: Option<u32>,
+    #[serde(default)]
+    temperature: Option<f32>,
+}
+
+async fn handle_rpc_request(
+    request: JsonRpcRequest,
+    store: Arc<SqliteStore>,
+) -> JsonRpcResponse {
+    match request.method.as_str() {
+        "GetHealth" | "management.GetHealth" => {
+            let storage_status = if store.health_check().is_ok() {
+                "ready"
+            } else {
+                "degraded"
+            };
+            let overall_status = if storage_status == "ready" { "ok" } else { "degraded" };
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "status": overall_status,
+                    "subsystems": {
+                        "daemon": "ready",
+                        "protocol": "ready",
+                        "storage": storage_status,
+                    }
+                }),
+            )
+        }
+        "ListAgents" | "management.ListAgents" => match store.list_agents().await {
+            Ok(agents) => JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "agents": agents
+                }),
+            ),
+            Err(err) => {
+                JsonRpcResponse::error(request.id, -32010, format!("list agents failed: {err}"))
+            }
+        },
+        "CreateAgent" | "management.CreateAgent" => {
+            let params = match serde_json::from_value::<CreateAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid create params: {err}"),
+                    )
+                }
+            };
+
+            if params.name.trim().is_empty() || params.model.trim().is_empty() {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32602,
+                    "name and model must be non-empty",
+                );
+            }
+
+            let mut profile = AgentProfile::new(
+                params.name,
+                ModelConfig {
+                    provider: params.provider.unwrap_or_else(|| "one-api".to_string()),
+                    model_name: params.model,
+                    max_tokens: params.max_tokens,
+                    temperature: params.temperature,
+                },
+            );
+            profile.budget.token_limit = params.token_budget;
+
+            match store.create_agent(profile.clone()).await {
+                Ok(created) => JsonRpcResponse::success(
+                    request.id,
+                    json!({
+                        "agent": created
+                    }),
+                ),
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32011,
+                    format!("create agent failed: {err}"),
+                ),
+            }
+        }
+        _ => JsonRpcResponse::error(request.id, -32601, "method not found"),
+    }
+}
+
+async fn protocol_server(
+    socket_path: String,
+    store: Arc<SqliteStore>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if Path::new(&socket_path).exists() {
+        std::fs::remove_file(&socket_path)?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)?;
+    info!(socket_path = %socket_path, "UDS JSON-RPC endpoint listening");
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    info!(socket_path = %socket_path, "Protocol server received shutdown signal");
+                    break;
+                }
+            }
+            accepted = listener.accept() => {
+                let (mut stream, _) = accepted?;
+                let mut request_bytes = Vec::new();
+                stream.read_to_end(&mut request_bytes).await?;
+
+                let request: Result<JsonRpcRequest, _> = serde_json::from_slice(&request_bytes);
+                let response = match request {
+                    Ok(request) if request.jsonrpc == "2.0" => {
+                        handle_rpc_request(request, store.clone()).await
+                    }
+                    Ok(request) => JsonRpcResponse::error(request.id, -32600, "invalid jsonrpc version"),
+                    Err(err) => {
+                        warn!(%err, "Invalid JSON-RPC request payload");
+                        JsonRpcResponse::error(json!(null), -32700, "parse error")
+                    }
+                };
+
+                let payload = serde_json::to_vec(&response)?;
+                stream.write_all(&payload).await?;
+                let _ = stream.shutdown().await;
+            }
+        }
+    }
+
+    if Path::new(&socket_path).exists() {
+        std::fs::remove_file(&socket_path)?;
     }
 
     Ok(())
@@ -178,6 +363,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(health_port) = args.health_port {
         config.daemon.health_port = health_port;
     }
+    if let Some(db_path) = args.db_path {
+        config.daemon.db_path = db_path;
+    }
 
     let bind_addr: SocketAddr = format!(
         "{}:{}",
@@ -188,8 +376,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting agentd daemon");
     info!(config_path = %args.config, "Loaded daemon config");
 
+    let store = Arc::new(SqliteStore::new(Path::new(&config.daemon.db_path))?);
+
+    let health_listener = TcpListener::bind(bind_addr).await?;
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let health_task = tokio::spawn(health_server(bind_addr, shutdown_rx));
+    let health_task = tokio::spawn(health_server(
+        health_listener,
+        bind_addr,
+        store.clone(),
+        shutdown_rx,
+    ));
+    let protocol_task = tokio::spawn(protocol_server(
+        config.daemon.socket_path.clone(),
+        store,
+        shutdown_tx.subscribe(),
+    ));
 
     notify_systemd("READY=1");
     info!("Systemd READY=1 notification sent");
@@ -207,11 +409,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = shutdown_tx.send(true);
 
     let timeout_secs = config.daemon.shutdown_timeout_secs;
-    let shutdown_result = timeout(Duration::from_secs(timeout_secs), health_task).await;
-    match shutdown_result {
+    let health_shutdown_result = timeout(Duration::from_secs(timeout_secs), health_task).await;
+    match health_shutdown_result {
         Ok(join_result) => match join_result {
             Ok(Ok(())) => {
-                info!(timeout_secs, "Graceful shutdown completed successfully");
+                info!(timeout_secs, "Health server shut down gracefully");
             }
             Ok(Err(err)) => {
                 error!(%err, timeout_secs, "Health server exited with error during shutdown");
@@ -221,7 +423,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Err(_) => {
-            warn!(timeout_secs, "Graceful shutdown timed out");
+            warn!(timeout_secs, "Health server graceful shutdown timed out");
+        }
+    }
+
+    let protocol_shutdown_result = timeout(Duration::from_secs(timeout_secs), protocol_task).await;
+    match protocol_shutdown_result {
+        Ok(join_result) => match join_result {
+            Ok(Ok(())) => {
+                info!(timeout_secs, "Protocol server shut down gracefully");
+            }
+            Ok(Err(err)) => {
+                error!(%err, timeout_secs, "Protocol server exited with error during shutdown");
+            }
+            Err(err) => {
+                error!(%err, timeout_secs, "Protocol server task join failed during shutdown");
+            }
+        },
+        Err(_) => {
+            warn!(timeout_secs, "Protocol server graceful shutdown timed out");
         }
     }
 
