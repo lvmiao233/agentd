@@ -1,10 +1,12 @@
 use agentd_core::profile::ModelConfig;
+use agentd_core::AgentError;
 use agentd_core::AgentProfile;
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
-use agentd_store::{AgentStore, SqliteStore};
+use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
+use chrono::Utc;
 use clap::Parser;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
@@ -13,7 +15,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::process::{Child, Command};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
 
@@ -78,6 +80,24 @@ struct OneApiConfig {
     restart_max_attempts: u32,
     #[serde(default = "default_one_api_restart_backoff_secs")]
     restart_backoff_secs: u64,
+    #[serde(default)]
+    management_enabled: bool,
+    #[serde(default = "default_one_api_management_base_url")]
+    management_base_url: String,
+    #[serde(default)]
+    management_api_key: Option<String>,
+    #[serde(default = "default_one_api_management_timeout_secs")]
+    management_timeout_secs: u64,
+    #[serde(default = "default_one_api_management_retries")]
+    management_retries: u32,
+    #[serde(default = "default_one_api_management_retry_backoff_secs")]
+    management_retry_backoff_secs: u64,
+    #[serde(default = "default_one_api_create_token_path")]
+    create_token_path: String,
+    #[serde(default = "default_one_api_create_channel_path")]
+    create_channel_path: String,
+    #[serde(default)]
+    provision_channel: bool,
 }
 
 impl Default for DaemonConfig {
@@ -111,6 +131,15 @@ impl Default for OneApiConfig {
             startup_timeout_secs: default_one_api_startup_timeout_secs(),
             restart_max_attempts: default_one_api_restart_max_attempts(),
             restart_backoff_secs: default_one_api_restart_backoff_secs(),
+            management_enabled: false,
+            management_base_url: default_one_api_management_base_url(),
+            management_api_key: None,
+            management_timeout_secs: default_one_api_management_timeout_secs(),
+            management_retries: default_one_api_management_retries(),
+            management_retry_backoff_secs: default_one_api_management_retry_backoff_secs(),
+            create_token_path: default_one_api_create_token_path(),
+            create_channel_path: default_one_api_create_channel_path(),
+            provision_channel: false,
         }
     }
 }
@@ -155,15 +184,41 @@ fn default_one_api_restart_backoff_secs() -> u64 {
     2
 }
 
+fn default_one_api_management_base_url() -> String {
+    "http://127.0.0.1:3000".to_string()
+}
+
+fn default_one_api_management_timeout_secs() -> u64 {
+    5
+}
+
+fn default_one_api_management_retries() -> u32 {
+    3
+}
+
+fn default_one_api_management_retry_backoff_secs() -> u64 {
+    1
+}
+
+fn default_one_api_create_token_path() -> String {
+    "/api/token/".to_string()
+}
+
+fn default_one_api_create_channel_path() -> String {
+    "/api/channel/".to_string()
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeState {
     one_api_status: Arc<RwLock<String>>,
+    create_agent_lock: Arc<Mutex<()>>,
 }
 
 impl RuntimeState {
     fn new(initial_status: &str) -> Self {
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
+            create_agent_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -299,10 +354,174 @@ struct CreateAgentParams {
     temperature: Option<f32>,
 }
 
+#[derive(Debug, Clone)]
+struct OneApiProvisioned {
+    token_id: String,
+    access_token: String,
+    channel_id: Option<String>,
+}
+
+fn extract_string_value(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(v) = value.get(*key) {
+            if let Some(s) = v.as_str() {
+                return Some(s.to_string());
+            }
+            if let Some(i) = v.as_i64() {
+                return Some(i.to_string());
+            }
+            if let Some(u) = v.as_u64() {
+                return Some(u.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn with_base_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+async fn request_with_retry(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    body: Value,
+    api_key: Option<&str>,
+    retries: u32,
+    backoff_secs: u64,
+) -> Result<Value, AgentError> {
+    let attempts = retries.max(1);
+    for attempt in 1..=attempts {
+        let mut request = client
+            .request(method.clone(), url)
+            .header("Content-Type", "application/json")
+            .json(&body);
+
+        if let Some(key) = api_key {
+            request = request.header("Authorization", format!("Bearer {key}"));
+        }
+
+        match request.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.map_err(|err| {
+                    AgentError::Runtime(format!("read one-api response body failed: {err}"))
+                })?;
+
+                if !status.is_success() {
+                    if attempt < attempts {
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        continue;
+                    }
+                    return Err(AgentError::Runtime(format!(
+                        "one-api management request failed with status {status}: {text}"
+                    )));
+                }
+
+                let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
+                return Ok(parsed);
+            }
+            Err(err) => {
+                if attempt < attempts {
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    continue;
+                }
+                return Err(AgentError::Runtime(format!(
+                    "one-api management request failed after retries: {err}"
+                )));
+            }
+        }
+    }
+
+    Err(AgentError::Runtime(
+        "one-api management request exhausted without result".to_string(),
+    ))
+}
+
+async fn provision_one_api(
+    config: &OneApiConfig,
+    profile: &AgentProfile,
+    idempotency_key: &str,
+) -> Result<OneApiProvisioned, AgentError> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(config.management_timeout_secs))
+        .build()
+        .map_err(|err| AgentError::Config(format!("build one-api management client failed: {err}")))?;
+
+    let token_url = with_base_url(&config.management_base_url, &config.create_token_path);
+    let quota_value: i64 = match profile.budget.token_limit {
+        Some(limit) => i64::try_from(limit)
+            .map_err(|err| AgentError::InvalidInput(format!("token_limit overflow: {err}")))?,
+        None => -1,
+    };
+    let token_body = json!({
+        "name": format!("agentd-{}", profile.name),
+        "idempotency_key": idempotency_key,
+        "remain_quota": quota_value,
+        "unlimited_quota": profile.budget.token_limit.is_none(),
+        "model_limits": [profile.model.model_name.clone()],
+    });
+
+    let token_resp = request_with_retry(
+        &client,
+        reqwest::Method::POST,
+        &token_url,
+        token_body,
+        config.management_api_key.as_deref(),
+        config.management_retries,
+        config.management_retry_backoff_secs,
+    )
+    .await?;
+
+    let token_data = token_resp.get("data").unwrap_or(&token_resp);
+    let token_id = extract_string_value(token_data, &["id", "token_id"])
+        .ok_or_else(|| AgentError::Runtime("one-api create token response missing token id".to_string()))?;
+    let access_token = extract_string_value(token_data, &["key", "token", "value"])
+        .ok_or_else(|| AgentError::Runtime("one-api create token response missing access token".to_string()))?;
+
+    let channel_id = if config.provision_channel {
+        let channel_url = with_base_url(&config.management_base_url, &config.create_channel_path);
+        let channel_body = json!({
+            "name": format!("agentd-{}", profile.name),
+            "idempotency_key": idempotency_key,
+            "key": access_token,
+            "models": profile.model.model_name,
+        });
+
+        let channel_resp = request_with_retry(
+            &client,
+            reqwest::Method::POST,
+            &channel_url,
+            channel_body,
+            config.management_api_key.as_deref(),
+            config.management_retries,
+            config.management_retry_backoff_secs,
+        )
+        .await?;
+        let channel_data = channel_resp.get("data").unwrap_or(&channel_resp);
+        extract_string_value(channel_data, &["id", "channel_id"])
+    } else {
+        None
+    };
+
+    Ok(OneApiProvisioned {
+        token_id,
+        access_token,
+        channel_id,
+    })
+}
+
 async fn handle_rpc_request(
     request: JsonRpcRequest,
     store: Arc<SqliteStore>,
     state: RuntimeState,
+    one_api_config: OneApiConfig,
 ) -> JsonRpcResponse {
     match request.method.as_str() {
         "GetHealth" | "management.GetHealth" => {
@@ -364,10 +583,11 @@ async fn handle_rpc_request(
                 );
             }
 
+            let provider = params.provider.unwrap_or_else(|| "one-api".to_string());
             let mut profile = AgentProfile::new(
                 params.name,
                 ModelConfig {
-                    provider: params.provider.unwrap_or_else(|| "one-api".to_string()),
+                    provider: provider.clone(),
                     model_name: params.model,
                     max_tokens: params.max_tokens,
                     temperature: params.temperature,
@@ -375,13 +595,103 @@ async fn handle_rpc_request(
             );
             profile.budget.token_limit = params.token_budget;
 
+            let idempotency_key = format!("{}:{}:{}", profile.name, provider, profile.model.model_name);
+            let _guard = state.create_agent_lock.lock().await;
+
+            match store.get_mapping_by_idempotency_key(&idempotency_key).await {
+                Ok(Some(mapping)) => match store.get_agent(mapping.agent_id).await {
+                    Ok(agent) => {
+                        return JsonRpcResponse::success(
+                            request.id,
+                            json!({
+                                "agent": agent,
+                                "idempotent": true,
+                                "one_api": {
+                                    "token_id": mapping.one_api_token_id,
+                                    "channel_id": mapping.one_api_channel_id,
+                                }
+                            }),
+                        );
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32011,
+                            format!("load idempotent agent failed: {err}"),
+                        );
+                    }
+                },
+                Ok(None) => {}
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32011,
+                        format!("query idempotent mapping failed: {err}"),
+                    );
+                }
+            }
+
+            let provisioned = if one_api_config.enabled
+                && one_api_config.management_enabled
+                && provider == "one-api"
+            {
+                match provision_one_api(&one_api_config, &profile, &idempotency_key).await {
+                    Ok(result) => Some(result),
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32012,
+                            format!("one-api provisioning failed: {err}"),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+
             match store.create_agent(profile.clone()).await {
-                Ok(created) => JsonRpcResponse::success(
-                    request.id,
-                    json!({
-                        "agent": created
-                    }),
-                ),
+                Ok(created) => {
+                    if let Some(one_api) = provisioned {
+                        let mapping = OneApiMapping {
+                            agent_id: created.id,
+                            idempotency_key,
+                            one_api_token_id: one_api.token_id.clone(),
+                            one_api_access_token: one_api.access_token,
+                            one_api_channel_id: one_api.channel_id.clone(),
+                            created_at: Utc::now(),
+                            updated_at: Utc::now(),
+                        };
+
+                        if let Err(err) = store.save_mapping(mapping).await {
+                            let _ = store.delete_agent(created.id).await;
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32013,
+                                format!("persist one-api mapping failed, rolled back: {err}"),
+                            );
+                        }
+
+                        JsonRpcResponse::success(
+                            request.id,
+                            json!({
+                                "agent": created,
+                                "idempotent": false,
+                                "one_api": {
+                                    "token_id": one_api.token_id,
+                                    "channel_id": one_api.channel_id,
+                                }
+                            }),
+                        )
+                    } else {
+                        JsonRpcResponse::success(
+                            request.id,
+                            json!({
+                                "agent": created,
+                                "idempotent": false
+                            }),
+                        )
+                    }
+                }
                 Err(err) => JsonRpcResponse::error(
                     request.id,
                     -32011,
@@ -397,6 +707,7 @@ async fn protocol_server(
     socket_path: String,
     store: Arc<SqliteStore>,
     state: RuntimeState,
+    one_api_config: OneApiConfig,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if Path::new(&socket_path).exists() {
@@ -422,7 +733,7 @@ async fn protocol_server(
                 let request: Result<JsonRpcRequest, _> = serde_json::from_slice(&request_bytes);
                 let response = match request {
                     Ok(request) if request.jsonrpc == "2.0" => {
-                        handle_rpc_request(request, store.clone(), state.clone()).await
+                        handle_rpc_request(request, store.clone(), state.clone(), one_api_config.clone()).await
                     }
                     Ok(request) => JsonRpcResponse::error(request.id, -32600, "invalid jsonrpc version"),
                     Err(err) => {
@@ -650,6 +961,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.daemon.socket_path.clone(),
         store,
         state.clone(),
+        config.one_api.clone(),
         shutdown_tx.subscribe(),
     ));
 

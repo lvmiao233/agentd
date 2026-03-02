@@ -778,7 +778,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-lifecycle/src/systemd.rs`, `crates/agentd-daemon/src/main.rs`, `configs/agentd.toml`
   - Pre-commit: `cargo test -p agentd-daemon`
 
-- [ ] 9. One-API 管理客户端与 token/channel 映射
+- [x] 9. One-API 管理客户端与 token/channel 映射
 
   **What to do**:
   - 在 `agentd-gateway` 实现 One-API 管理 API 客户端。

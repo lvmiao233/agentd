@@ -2,9 +2,10 @@ use agentd_core::AgentError;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 1;
+pub const CURRENT_SCHEMA_VERSION: i32 = 2;
 
 const MIGRATION_0001_SQL: &str = include_str!("../migrations/0001_init.sql");
+const MIGRATION_0002_SQL: &str = include_str!("../migrations/0002_one_api_mappings.sql");
 
 pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
     if let Some(parent_dir) = path.parent() {
@@ -25,7 +26,11 @@ pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
         .map_err(|err| AgentError::Storage(format!("read schema version failed: {err}")))?;
 
     match current_version {
-        0 => apply_migration_0001(&mut conn),
+        0 => {
+            apply_migration_0001(&mut conn)?;
+            apply_migration_0002(&mut conn)
+        }
+        1 => apply_migration_0002(&mut conn),
         CURRENT_SCHEMA_VERSION => Ok(()),
         version if version > CURRENT_SCHEMA_VERSION => Err(AgentError::Storage(format!(
             "unsupported schema version {version}, expected <= {CURRENT_SCHEMA_VERSION}"
@@ -53,6 +58,23 @@ fn apply_migration_0001(conn: &mut Connection) -> Result<(), AgentError> {
 
     tx.execute_batch(MIGRATION_0001_SQL)
         .map_err(|err| AgentError::Storage(format!("apply migration 0001 failed: {err}")))?;
+
+    tx.execute_batch("PRAGMA user_version = 1;")
+        .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
+
+    tx.commit()
+        .map_err(|err| AgentError::Storage(format!("commit migration failed: {err}")))?;
+
+    Ok(())
+}
+
+fn apply_migration_0002(conn: &mut Connection) -> Result<(), AgentError> {
+    let tx = conn
+        .transaction()
+        .map_err(|err| AgentError::Storage(format!("start migration transaction failed: {err}")))?;
+
+    tx.execute_batch(MIGRATION_0002_SQL)
+        .map_err(|err| AgentError::Storage(format!("apply migration 0002 failed: {err}")))?;
 
     tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
         .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
@@ -104,6 +126,15 @@ mod tests {
             )
             .expect("check quota_usage table");
         assert_eq!(has_quota_usage, 1);
+
+        let has_one_api_mappings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='one_api_mappings';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check one_api_mappings table");
+        assert_eq!(has_one_api_mappings, 1);
 
         std::fs::remove_file(&db_path).expect("cleanup temp db");
     }

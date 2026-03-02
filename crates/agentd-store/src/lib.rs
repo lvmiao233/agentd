@@ -1,11 +1,15 @@
 use agentd_core::{AgentError, AgentProfile, AuditEvent};
 use async_trait::async_trait;
+use chrono::Utc;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub mod agent;
 pub mod db;
+pub mod one_api;
+
+pub use one_api::OneApiMapping;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -42,6 +46,11 @@ pub trait AgentStore: Send + Sync {
     async fn list_agents(&self) -> Result<Vec<AgentProfile>, AgentError>;
     async fn update_agent(&self, profile: AgentProfile) -> Result<AgentProfile, AgentError>;
     async fn delete_agent(&self, id: Uuid) -> Result<(), AgentError>;
+    async fn get_mapping_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<OneApiMapping>, AgentError>;
+    async fn save_mapping(&self, mapping: OneApiMapping) -> Result<OneApiMapping, AgentError>;
 }
 
 #[async_trait]
@@ -71,6 +80,22 @@ impl AgentStore for SqliteStore {
     async fn delete_agent(&self, id: Uuid) -> Result<(), AgentError> {
         let conn = self.open_connection()?;
         agent::delete_agent(&conn, id)
+    }
+
+    async fn get_mapping_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<OneApiMapping>, AgentError> {
+        let conn = self.open_connection()?;
+        one_api::fetch_mapping_by_idempotency_key(&conn, idempotency_key)
+    }
+
+    async fn save_mapping(&self, mapping: OneApiMapping) -> Result<OneApiMapping, AgentError> {
+        let conn = self.open_connection()?;
+        let mut persisted = mapping;
+        persisted.updated_at = Utc::now();
+        one_api::upsert_mapping(&conn, &persisted)?;
+        Ok(persisted)
     }
 }
 
