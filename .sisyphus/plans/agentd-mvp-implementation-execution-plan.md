@@ -1067,7 +1067,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 13. 策略引擎：allow/ask/deny + wildcard + 多层合并
+- [x] 13. 策略引擎：allow/ask/deny + wildcard + 多层合并
 
   **What to do**:
   - 实现规则匹配（含通配符）与决策优先级（deny 优先）。

@@ -7,8 +7,12 @@
 
 pub mod audit;
 pub mod error;
+pub mod policy;
 pub mod profile;
 
 pub use audit::AuditEvent;
 pub use error::AgentError;
+pub use policy::{
+    PolicyDecision, PolicyEvaluation, PolicyLayer, PolicyRule, SessionPolicyOverrides,
+};
 pub use profile::{AgentLifecycleState, AgentProfile};

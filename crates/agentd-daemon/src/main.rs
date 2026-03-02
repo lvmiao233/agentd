@@ -1,5 +1,8 @@
-use agentd_core::profile::ModelConfig;
-use agentd_core::{AgentError, AgentLifecycleState, AgentProfile};
+use agentd_core::profile::{ModelConfig, PermissionPolicy};
+use agentd_core::{
+    AgentError, AgentLifecycleState, AgentProfile, PolicyDecision, PolicyLayer, PolicyRule,
+    SessionPolicyOverrides,
+};
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
 use chrono::Utc;
@@ -389,6 +392,24 @@ mod tests {
         )
     }
 
+    fn authorize_tool_request(
+        tool: &str,
+        global_rules: Value,
+        profile_rules: Value,
+        session_overrides: Value,
+    ) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(8),
+            "AuthorizeTool",
+            json!({
+                "tool": tool,
+                "global_rules": global_rules,
+                "profile_rules": profile_rules,
+                "session_overrides": session_overrides,
+            }),
+        )
+    }
+
     #[tokio::test]
     async fn create_agent_is_idempotent_and_list_returns_ready_state() {
         let db_path = test_db_path();
@@ -642,6 +663,78 @@ mod tests {
 
         cleanup_sqlite_files(&db_path);
     }
+
+    #[tokio::test]
+    async fn authorize_tool_returns_stable_policy_deny_error_code() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let response = handle_rpc_request(
+            authorize_tool_request(
+                "read:secrets.env",
+                json!([
+                    {"pattern": "read:*", "decision": "allow"}
+                ]),
+                json!([
+                    {"pattern": "read:*.env", "decision": "deny"}
+                ]),
+                json!({
+                    "ask_tools": [],
+                    "allow_tools": [],
+                    "deny_tools": []
+                }),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let err = response.error.expect("authorize should deny");
+        assert_eq!(err.code, -32016);
+        assert!(err.message.contains("policy.deny"));
+        assert!(err.message.contains("matched_rule=read:*.env"));
+        assert!(err.message.contains("source_layer=agent_profile"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn authorize_tool_returns_explanation_for_non_deny_decision() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let response = handle_rpc_request(
+            authorize_tool_request(
+                "bash:rm",
+                json!([
+                    {"pattern": "bash:*", "decision": "allow"}
+                ]),
+                json!([
+                    {"pattern": "bash:rm", "decision": "ask"}
+                ]),
+                json!({
+                    "ask_tools": ["bash:rm"],
+                    "allow_tools": [],
+                    "deny_tools": []
+                }),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        assert!(response.error.is_none(), "authorize should not deny");
+        let result = response.result.expect("result should exist");
+        assert_eq!(result["decision"], json!("ask"));
+        assert_eq!(result["matched_rule"], json!("bash:rm"));
+        assert_eq!(result["source_layer"], json!("session_override"));
+
+        cleanup_sqlite_files(&db_path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,6 +764,72 @@ struct RecordUsageParams {
     output_tokens: u64,
     #[serde(default)]
     cost_usd: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyRuleInput {
+    pattern: String,
+    decision: PolicyDecision,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizeToolParams {
+    tool: String,
+    #[serde(default)]
+    global_rules: Vec<PolicyRuleInput>,
+    #[serde(default)]
+    profile_rules: Vec<PolicyRuleInput>,
+    #[serde(default)]
+    session_overrides: Option<SessionPolicyOverrides>,
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+fn convert_rule_inputs(name: &str, inputs: Vec<PolicyRuleInput>) -> PolicyLayer {
+    PolicyLayer {
+        name: name.to_string(),
+        rules: inputs
+            .into_iter()
+            .map(|rule| PolicyRule {
+                pattern: rule.pattern,
+                decision: rule.decision,
+            })
+            .collect(),
+    }
+}
+
+fn profile_to_policy_layer(profile: &AgentProfile) -> PolicyLayer {
+    let mut rules = Vec::with_capacity(
+        1 + profile.permissions.allowed_tools.len() + profile.permissions.denied_tools.len(),
+    );
+
+    let default_decision = match profile.permissions.policy {
+        PermissionPolicy::Allow => PolicyDecision::Allow,
+        PermissionPolicy::Ask => PolicyDecision::Ask,
+        PermissionPolicy::Deny => PolicyDecision::Deny,
+    };
+    rules.push(PolicyRule {
+        pattern: "*".to_string(),
+        decision: default_decision,
+    });
+
+    for pattern in &profile.permissions.allowed_tools {
+        rules.push(PolicyRule {
+            pattern: pattern.clone(),
+            decision: PolicyDecision::Allow,
+        });
+    }
+    for pattern in &profile.permissions.denied_tools {
+        rules.push(PolicyRule {
+            pattern: pattern.clone(),
+            decision: PolicyDecision::Deny,
+        });
+    }
+
+    PolicyLayer {
+        name: "agent_profile".to_string(),
+        rules,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -876,6 +1035,87 @@ async fn handle_rpc_request(
                     }
                 }),
             )
+        }
+        "AuthorizeTool" | "management.AuthorizeTool" => {
+            let params = match serde_json::from_value::<AuthorizeToolParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid authorize params: {err}"),
+                    )
+                }
+            };
+
+            if params.tool.trim().is_empty() {
+                return JsonRpcResponse::error(request.id, -32602, "tool must be non-empty");
+            }
+
+            let global_layer = convert_rule_inputs("global", params.global_rules);
+            let mut profile_layer = convert_rule_inputs("agent_profile", params.profile_rules);
+
+            if let Some(agent_id) = params.agent_id {
+                let parsed_agent_id = match uuid::Uuid::parse_str(&agent_id) {
+                    Ok(agent_id) => agent_id,
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32602,
+                            format!("invalid agent_id: {err}"),
+                        )
+                    }
+                };
+
+                let profile = match store.get_agent(parsed_agent_id).await {
+                    Ok(profile) => profile,
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32010,
+                            format!("query agent for policy evaluation failed: {err}"),
+                        )
+                    }
+                };
+                profile_layer = profile_to_policy_layer(&profile);
+            }
+
+            let session_layer = params
+                .session_overrides
+                .unwrap_or(SessionPolicyOverrides {
+                    allow_tools: vec![],
+                    ask_tools: vec![],
+                    deny_tools: vec![],
+                })
+                .into_layer();
+
+            let evaluation = PolicyLayer::evaluate_tool(
+                &global_layer,
+                &profile_layer,
+                &session_layer,
+                &params.tool,
+            );
+
+            if evaluation.decision == PolicyDecision::Deny {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32016,
+                    format!(
+                        "policy.deny: tool={} matched_rule={} source_layer={}",
+                        evaluation.tool,
+                        evaluation
+                            .matched_rule
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string()),
+                        evaluation
+                            .source_layer
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string())
+                    ),
+                );
+            }
+
+            JsonRpcResponse::success(request.id, json!(evaluation))
         }
         "ListAgents" | "management.ListAgents" => match store.list_agents().await {
             Ok(agents) => JsonRpcResponse::success(
