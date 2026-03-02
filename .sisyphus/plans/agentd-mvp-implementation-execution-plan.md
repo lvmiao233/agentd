@@ -851,7 +851,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 10. `agent create/list` 端到端打通（含幂等与状态机）
+- [x] 10. `agent create/list` 端到端打通（含幂等与状态机）
 
   **What to do**:
   - 打通 `agentctl -> UDS JSON-RPC -> daemon -> store -> gateway` 全链路。
@@ -922,7 +922,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-daemon/src/*`, `crates/agentd-protocol/src/*`, `crates/agentctl/src/*`
   - Pre-commit: `cargo test --workspace`
 
-- [ ] 11. 用量采集与预算基线控制
+- [x] 11. 用量采集与预算基线控制
 
   **What to do**:
   - 周期性拉取 One-API 用量并聚合到 agent 维度。
@@ -993,7 +993,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-gateway/src/quota.rs`, `crates/agentd-store/src/*`, `crates/agentctl/src/*`
   - Pre-commit: `cargo test -p agentd-gateway -p agentctl`
 
-- [ ] 12. Phase A 量化门禁与回滚演练
+- [x] 12. Phase A 量化门禁与回滚演练
 
   **What to do**:
   - 将 Phase A 验收项脚本化：启动、注册、token 分配、请求成功、计量记录。
