@@ -100,6 +100,11 @@ This checks:
 - Evidence upload steps are present
 - Shell scripts have valid syntax
 
+## Commit Attribution Rule
+
+- Unless explicitly requested in the current task, do **not** add `sisyphus-dev-ai` as a commit collaborator.
+- Unless explicitly requested in the current task, do **not** add any `Co-authored-by` trailer.
+
 ## Additions to Protected Branches
 
 **Direct pushes to protected branches are BLOCKED.**
