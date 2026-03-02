@@ -27,7 +27,7 @@ The following GitHub Actions jobs must pass before merging to protected branches
 | `security-gate` | ✅ Required | Security scanning (T4) |
 | `phase-a-gate` | ✅ Required | Phase A quantitative gate (T12) |
 | `gate-syscall` | ✅ Required | System call validation (T4) |
-| `gate-isolation` | ✅ Required | cgroup/systemd isolation (T4) |
+| `gate-isolation` | ✅ Required | cgroup/systemd isolation runtime check (T4) |
 
 ### Strict Required Checks
 
@@ -97,7 +97,6 @@ bash scripts/gate-check.sh
 This checks:
 - Workflow file exists and has correct structure
 - All required jobs are defined
-- Ubuntu 25.10 runner is configured
 - Evidence upload steps are present
 - Shell scripts have valid syntax
 

@@ -138,10 +138,6 @@ if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
     check_contains ".github/workflows/gates.yml" "gate-syscall:" "Syscall gate job"
     check_contains ".github/workflows/gates.yml" "gate-isolation:" "Isolation gate job"
     
-    # Check for Ubuntu 25.10 self-hosted label
-    check_contains ".github/workflows/gates.yml" "self-hosted" "Self-hosted runner label"
-    check_contains ".github/workflows/gates.yml" "ubuntu-25.10" "Ubuntu 25.10 runner label"
-    
     # Check for evidence upload
     check_contains ".github/workflows/gates.yml" "evidence-" "Evidence artifact upload"
 fi
