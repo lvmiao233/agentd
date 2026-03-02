@@ -1,4 +1,4 @@
-use agentd_core::{AgentError, AgentProfile, AuditEvent};
+use agentd_core::{AgentError, AgentLifecycleState, AgentProfile, AuditEvent};
 use async_trait::async_trait;
 use chrono::Utc;
 use rusqlite::Connection;
@@ -8,8 +8,10 @@ use uuid::Uuid;
 pub mod agent;
 pub mod db;
 pub mod one_api;
+pub mod usage;
 
 pub use one_api::OneApiMapping;
+pub use usage::AgentUsageSummary;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -43,14 +45,36 @@ impl SqliteStore {
 pub trait AgentStore: Send + Sync {
     async fn create_agent(&self, profile: AgentProfile) -> Result<AgentProfile, AgentError>;
     async fn get_agent(&self, id: Uuid) -> Result<AgentProfile, AgentError>;
+    async fn get_agent_by_identity(
+        &self,
+        name: &str,
+        provider: &str,
+        model_name: &str,
+    ) -> Result<Option<AgentProfile>, AgentError>;
     async fn list_agents(&self) -> Result<Vec<AgentProfile>, AgentError>;
     async fn update_agent(&self, profile: AgentProfile) -> Result<AgentProfile, AgentError>;
+    async fn update_agent_state(
+        &self,
+        id: Uuid,
+        state: AgentLifecycleState,
+        failure_reason: Option<String>,
+    ) -> Result<AgentProfile, AgentError>;
     async fn delete_agent(&self, id: Uuid) -> Result<(), AgentError>;
     async fn get_mapping_by_idempotency_key(
         &self,
         idempotency_key: &str,
     ) -> Result<Option<OneApiMapping>, AgentError>;
     async fn save_mapping(&self, mapping: OneApiMapping) -> Result<OneApiMapping, AgentError>;
+    async fn record_usage(
+        &self,
+        agent_id: Uuid,
+        model_name: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+    ) -> Result<AgentUsageSummary, AgentError>;
+    async fn get_usage(&self, agent_id: Uuid) -> Result<AgentUsageSummary, AgentError>;
+    async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError>;
 }
 
 #[async_trait]
@@ -66,6 +90,16 @@ impl AgentStore for SqliteStore {
         agent::fetch_agent_by_id(&conn, id)
     }
 
+    async fn get_agent_by_identity(
+        &self,
+        name: &str,
+        provider: &str,
+        model_name: &str,
+    ) -> Result<Option<AgentProfile>, AgentError> {
+        let conn = self.open_connection()?;
+        agent::fetch_agent_by_identity(&conn, name, provider, model_name)
+    }
+
     async fn list_agents(&self) -> Result<Vec<AgentProfile>, AgentError> {
         let conn = self.open_connection()?;
         agent::list_agents(&conn)
@@ -75,6 +109,17 @@ impl AgentStore for SqliteStore {
         let conn = self.open_connection()?;
         agent::update_agent(&conn, &profile)?;
         Ok(profile)
+    }
+
+    async fn update_agent_state(
+        &self,
+        id: Uuid,
+        state: AgentLifecycleState,
+        failure_reason: Option<String>,
+    ) -> Result<AgentProfile, AgentError> {
+        let conn = self.open_connection()?;
+        agent::update_agent_state(&conn, id, state, failure_reason.as_deref())?;
+        agent::fetch_agent_by_id(&conn, id)
     }
 
     async fn delete_agent(&self, id: Uuid) -> Result<(), AgentError> {
@@ -96,6 +141,36 @@ impl AgentStore for SqliteStore {
         persisted.updated_at = Utc::now();
         one_api::upsert_mapping(&conn, &persisted)?;
         Ok(persisted)
+    }
+
+    async fn record_usage(
+        &self,
+        agent_id: Uuid,
+        model_name: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+    ) -> Result<AgentUsageSummary, AgentError> {
+        let conn = self.open_connection()?;
+        usage::record_usage(
+            &conn,
+            agent_id,
+            model_name,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+        )?;
+        usage::fetch_usage_summary(&conn, agent_id)
+    }
+
+    async fn get_usage(&self, agent_id: Uuid) -> Result<AgentUsageSummary, AgentError> {
+        let conn = self.open_connection()?;
+        usage::fetch_usage_summary(&conn, agent_id)
+    }
+
+    async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError> {
+        let conn = self.open_connection()?;
+        usage::fetch_daily_total_tokens(&conn, agent_id, day)
     }
 }
 

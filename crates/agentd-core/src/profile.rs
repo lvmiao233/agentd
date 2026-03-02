@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
@@ -9,8 +9,18 @@ pub struct AgentProfile {
     pub model: ModelConfig,
     pub permissions: PermissionConfig,
     pub budget: BudgetConfig,
+    pub status: AgentLifecycleState,
+    pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentLifecycleState {
+    Creating,
+    Ready,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +69,8 @@ impl AgentProfile {
                 cost_limit_usd: None,
                 time_limit_seconds: None,
             },
+            status: AgentLifecycleState::Creating,
+            failure_reason: None,
             created_at: now,
             updated_at: now,
         }

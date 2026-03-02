@@ -2,10 +2,12 @@ use agentd_core::AgentError;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 2;
+pub const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 const MIGRATION_0001_SQL: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_0002_SQL: &str = include_str!("../migrations/0002_one_api_mappings.sql");
+const MIGRATION_0003_SQL: &str = include_str!("../migrations/0003_agent_lifecycle_state.sql");
+const MIGRATION_0004_SQL: &str = include_str!("../migrations/0004_quota_usage_model_breakdown.sql");
 
 pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
     if let Some(parent_dir) = path.parent() {
@@ -28,9 +30,20 @@ pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
     match current_version {
         0 => {
             apply_migration_0001(&mut conn)?;
-            apply_migration_0002(&mut conn)
+            apply_migration_0002(&mut conn)?;
+            apply_migration_0003(&mut conn)?;
+            apply_migration_0004(&mut conn)
         }
-        1 => apply_migration_0002(&mut conn),
+        1 => {
+            apply_migration_0002(&mut conn)?;
+            apply_migration_0003(&mut conn)?;
+            apply_migration_0004(&mut conn)
+        }
+        2 => {
+            apply_migration_0003(&mut conn)?;
+            apply_migration_0004(&mut conn)
+        }
+        3 => apply_migration_0004(&mut conn),
         CURRENT_SCHEMA_VERSION => Ok(()),
         version if version > CURRENT_SCHEMA_VERSION => Err(AgentError::Storage(format!(
             "unsupported schema version {version}, expected <= {CURRENT_SCHEMA_VERSION}"
@@ -75,6 +88,40 @@ fn apply_migration_0002(conn: &mut Connection) -> Result<(), AgentError> {
 
     tx.execute_batch(MIGRATION_0002_SQL)
         .map_err(|err| AgentError::Storage(format!("apply migration 0002 failed: {err}")))?;
+
+    tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
+        .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
+
+    tx.commit()
+        .map_err(|err| AgentError::Storage(format!("commit migration failed: {err}")))?;
+
+    Ok(())
+}
+
+fn apply_migration_0003(conn: &mut Connection) -> Result<(), AgentError> {
+    let tx = conn
+        .transaction()
+        .map_err(|err| AgentError::Storage(format!("start migration transaction failed: {err}")))?;
+
+    tx.execute_batch(MIGRATION_0003_SQL)
+        .map_err(|err| AgentError::Storage(format!("apply migration 0003 failed: {err}")))?;
+
+    tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
+        .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
+
+    tx.commit()
+        .map_err(|err| AgentError::Storage(format!("commit migration failed: {err}")))?;
+
+    Ok(())
+}
+
+fn apply_migration_0004(conn: &mut Connection) -> Result<(), AgentError> {
+    let tx = conn
+        .transaction()
+        .map_err(|err| AgentError::Storage(format!("start migration transaction failed: {err}")))?;
+
+    tx.execute_batch(MIGRATION_0004_SQL)
+        .map_err(|err| AgentError::Storage(format!("apply migration 0004 failed: {err}")))?;
 
     tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
         .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
@@ -135,6 +182,33 @@ mod tests {
             )
             .expect("check one_api_mappings table");
         assert_eq!(has_one_api_mappings, 1);
+
+        let has_quota_usage_by_model: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='quota_usage_by_model';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check quota_usage_by_model table");
+        assert_eq!(has_quota_usage_by_model, 1);
+
+        let has_lifecycle_state: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='lifecycle_state';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check lifecycle_state column");
+        assert_eq!(has_lifecycle_state, 1);
+
+        let has_failure_reason: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='failure_reason';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check failure_reason column");
+        assert_eq!(has_failure_reason, 1);
 
         std::fs::remove_file(&db_path).expect("cleanup temp db");
     }

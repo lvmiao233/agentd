@@ -5,10 +5,10 @@
 //! - AuditEvent: Structured event recording for audit trails
 //! - AgentError: Central error type for the runtime
 
+pub mod audit;
 pub mod error;
 pub mod profile;
-pub mod audit;
 
-pub use error::AgentError;
-pub use profile::AgentProfile;
 pub use audit::AuditEvent;
+pub use error::AgentError;
+pub use profile::{AgentLifecycleState, AgentProfile};

@@ -1,5 +1,5 @@
 use agentd_core::profile::{BudgetConfig, ModelConfig, PermissionConfig, PermissionPolicy};
-use agentd_core::{AgentError, AgentProfile};
+use agentd_core::{AgentError, AgentLifecycleState, AgentProfile};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Error as SqlError};
 use uuid::Uuid;
@@ -18,6 +18,8 @@ struct StoredAgent {
     budget_token_limit: Option<i64>,
     budget_cost_limit_usd: Option<f64>,
     budget_time_limit_seconds: Option<i64>,
+    lifecycle_state: String,
+    failure_reason: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -39,9 +41,11 @@ pub fn insert_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), Age
             budget_token_limit,
             budget_cost_limit_usd,
             budget_time_limit_seconds,
+            lifecycle_state,
+            failure_reason,
             created_at,
             updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);
         "#,
         params![
             stored.id,
@@ -56,6 +60,8 @@ pub fn insert_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), Age
             stored.budget_token_limit,
             stored.budget_cost_limit_usd,
             stored.budget_time_limit_seconds,
+            stored.lifecycle_state,
+            stored.failure_reason,
             stored.created_at,
             stored.updated_at,
         ],
@@ -82,6 +88,8 @@ pub fn fetch_agent_by_id(conn: &Connection, id: Uuid) -> Result<AgentProfile, Ag
                 budget_token_limit,
                 budget_cost_limit_usd,
                 budget_time_limit_seconds,
+                lifecycle_state,
+                failure_reason,
                 created_at,
                 updated_at
             FROM agents
@@ -104,8 +112,10 @@ pub fn fetch_agent_by_id(conn: &Connection, id: Uuid) -> Result<AgentProfile, Ag
             budget_token_limit: row.get(9)?,
             budget_cost_limit_usd: row.get(10)?,
             budget_time_limit_seconds: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            lifecycle_state: row.get(12)?,
+            failure_reason: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
         })
     });
 
@@ -135,6 +145,8 @@ pub fn list_agents(conn: &Connection) -> Result<Vec<AgentProfile>, AgentError> {
                 budget_token_limit,
                 budget_cost_limit_usd,
                 budget_time_limit_seconds,
+                lifecycle_state,
+                failure_reason,
                 created_at,
                 updated_at
             FROM agents
@@ -158,8 +170,10 @@ pub fn list_agents(conn: &Connection) -> Result<Vec<AgentProfile>, AgentError> {
                 budget_token_limit: row.get(9)?,
                 budget_cost_limit_usd: row.get(10)?,
                 budget_time_limit_seconds: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                lifecycle_state: row.get(12)?,
+                failure_reason: row.get(13)?,
+                created_at: row.get(14)?,
+                updated_at: row.get(15)?,
             })
         })
         .map_err(|err| AgentError::Storage(format!("execute list agents query failed: {err}")))?;
@@ -192,8 +206,10 @@ pub fn update_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), Age
                 budget_token_limit = ?10,
                 budget_cost_limit_usd = ?11,
                 budget_time_limit_seconds = ?12,
-                created_at = ?13,
-                updated_at = ?14
+                lifecycle_state = ?13,
+                failure_reason = ?14,
+                created_at = ?15,
+                updated_at = ?16
             WHERE id = ?1;
             "#,
             params![
@@ -209,6 +225,8 @@ pub fn update_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), Age
                 stored.budget_token_limit,
                 stored.budget_cost_limit_usd,
                 stored.budget_time_limit_seconds,
+                stored.lifecycle_state,
+                stored.failure_reason,
                 stored.created_at,
                 stored.updated_at,
             ],
@@ -229,6 +247,98 @@ pub fn delete_agent(conn: &Connection, id: Uuid) -> Result<(), AgentError> {
     let rows_affected = conn
         .execute("DELETE FROM agents WHERE id = ?1;", params![id.to_string()])
         .map_err(|err| AgentError::Storage(format!("delete agent failed: {err}")))?;
+
+    if rows_affected == 0 {
+        return Err(AgentError::NotFound(format!("agent not found: {id}")));
+    }
+
+    Ok(())
+}
+
+pub fn fetch_agent_by_identity(
+    conn: &Connection,
+    name: &str,
+    provider: &str,
+    model_name: &str,
+) -> Result<Option<AgentProfile>, AgentError> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                id,
+                name,
+                model_provider,
+                model_name,
+                max_tokens,
+                temperature,
+                permission_policy,
+                allowed_tools_json,
+                denied_tools_json,
+                budget_token_limit,
+                budget_cost_limit_usd,
+                budget_time_limit_seconds,
+                lifecycle_state,
+                failure_reason,
+                created_at,
+                updated_at
+            FROM agents
+            WHERE name = ?1 AND model_provider = ?2 AND model_name = ?3
+            ORDER BY created_at ASC
+            LIMIT 1;
+            "#,
+        )
+        .map_err(|err| {
+            AgentError::Storage(format!("prepare fetch agent by identity failed: {err}"))
+        })?;
+
+    let row = stmt.query_row(params![name, provider, model_name], |row| {
+        Ok(StoredAgent {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            model_provider: row.get(2)?,
+            model_name: row.get(3)?,
+            max_tokens: row.get(4)?,
+            temperature: row.get(5)?,
+            permission_policy: row.get(6)?,
+            allowed_tools_json: row.get(7)?,
+            denied_tools_json: row.get(8)?,
+            budget_token_limit: row.get(9)?,
+            budget_cost_limit_usd: row.get(10)?,
+            budget_time_limit_seconds: row.get(11)?,
+            lifecycle_state: row.get(12)?,
+            failure_reason: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
+        })
+    });
+
+    match row {
+        Ok(stored) => Ok(Some(to_profile(stored)?)),
+        Err(SqlError::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(AgentError::Storage(format!(
+            "query agent by identity failed: {err}"
+        ))),
+    }
+}
+
+pub fn update_agent_state(
+    conn: &Connection,
+    id: Uuid,
+    state: AgentLifecycleState,
+    failure_reason: Option<&str>,
+) -> Result<(), AgentError> {
+    let state_str = lifecycle_state_to_str(&state);
+    let updated_at = Utc::now().to_rfc3339();
+    let rows_affected = conn
+        .execute(
+            r#"
+            UPDATE agents
+            SET lifecycle_state = ?2, failure_reason = ?3, updated_at = ?4
+            WHERE id = ?1;
+            "#,
+            params![id.to_string(), state_str, failure_reason, updated_at],
+        )
+        .map_err(|err| AgentError::Storage(format!("update agent state failed: {err}")))?;
 
     if rows_affected == 0 {
         return Err(AgentError::NotFound(format!("agent not found: {id}")));
@@ -278,6 +388,8 @@ fn from_profile(profile: &AgentProfile) -> Result<StoredAgent, AgentError> {
                 })
             })
             .transpose()?,
+        lifecycle_state: lifecycle_state_to_str(&profile.status).to_string(),
+        failure_reason: profile.failure_reason.clone(),
         created_at: profile.created_at.to_rfc3339(),
         updated_at: profile.updated_at.to_rfc3339(),
     })
@@ -329,9 +441,30 @@ fn to_profile(stored: StoredAgent) -> Result<AgentProfile, AgentError> {
                 })
                 .transpose()?,
         },
+        status: parse_lifecycle_state(&stored.lifecycle_state)?,
+        failure_reason: stored.failure_reason,
         created_at,
         updated_at,
     })
+}
+
+fn lifecycle_state_to_str(state: &AgentLifecycleState) -> &'static str {
+    match state {
+        AgentLifecycleState::Creating => "creating",
+        AgentLifecycleState::Ready => "ready",
+        AgentLifecycleState::Failed => "failed",
+    }
+}
+
+fn parse_lifecycle_state(value: &str) -> Result<AgentLifecycleState, AgentError> {
+    match value {
+        "creating" => Ok(AgentLifecycleState::Creating),
+        "ready" => Ok(AgentLifecycleState::Ready),
+        "failed" => Ok(AgentLifecycleState::Failed),
+        other => Err(AgentError::Storage(format!(
+            "invalid lifecycle state: {other}"
+        ))),
+    }
 }
 
 fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> {
@@ -380,16 +513,26 @@ mod tests {
         profile.budget.token_limit = Some(100_000);
 
         insert_agent(&conn, &profile).expect("insert agent");
+        update_agent_state(&conn, profile.id, AgentLifecycleState::Ready, None)
+            .expect("update agent state");
 
         let listed = list_agents(&conn).expect("list agents");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "demo-agent");
         assert_eq!(listed[0].model.model_name, "claude-4-sonnet");
         assert_eq!(listed[0].budget.token_limit, Some(100_000));
+        assert_eq!(listed[0].status, AgentLifecycleState::Ready);
 
         let loaded = fetch_agent_by_id(&conn, profile.id).expect("fetch agent by id");
         assert_eq!(loaded.id, profile.id);
         assert_eq!(loaded.permissions.policy, PermissionPolicy::Ask);
+
+        let by_identity =
+            fetch_agent_by_identity(&conn, "demo-agent", "one-api", "claude-4-sonnet")
+                .expect("fetch by identity")
+                .expect("agent should exist");
+        assert_eq!(by_identity.id, profile.id);
+        assert_eq!(by_identity.status, AgentLifecycleState::Ready);
 
         std::fs::remove_file(&db_path).expect("cleanup temp db");
     }

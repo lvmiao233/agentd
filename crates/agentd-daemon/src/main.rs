@@ -1,6 +1,5 @@
 use agentd_core::profile::ModelConfig;
-use agentd_core::AgentError;
-use agentd_core::AgentProfile;
+use agentd_core::{AgentError, AgentLifecycleState, AgentProfile};
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
 use chrono::Utc;
@@ -42,7 +41,7 @@ struct Args {
     verbose: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 struct AppConfig {
     #[serde(default)]
     daemon: DaemonConfig,
@@ -108,15 +107,6 @@ impl Default for DaemonConfig {
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
             socket_path: default_socket_path(),
             db_path: default_db_path(),
-        }
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            one_api: OneApiConfig::default(),
         }
     }
 }
@@ -249,8 +239,8 @@ fn notify_systemd(state: &str) {
     };
 
     let socket_path = socket_path.to_string_lossy();
-    let target = if socket_path.starts_with('@') {
-        format!("\0{}", &socket_path[1..])
+    let target = if let Some(stripped) = socket_path.strip_prefix('@') {
+        format!("\0{stripped}")
     } else {
         socket_path.to_string()
     };
@@ -264,6 +254,15 @@ fn notify_systemd(state: &str) {
 
     if let Err(err) = send_result {
         warn!(%err, state, "Failed to send systemd notification");
+    }
+}
+
+#[cfg(test)]
+fn cleanup_sqlite_files(db_path: &Path) {
+    let db_path_str = db_path.to_string_lossy();
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{db_path_str}{suffix}");
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -319,14 +318,14 @@ async fn health_server(
 
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.as_bytes().len(),
+                        body.len(),
                         body
                     )
                 } else {
                     let body = "{\"error\":\"not found\"}";
                     format!(
                         "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.as_bytes().len(),
+                        body.len(),
                         body
                     )
                 };
@@ -338,6 +337,311 @@ async fn health_server(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn test_db_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("agentd-daemon-test-{}.sqlite", Uuid::new_v4()))
+    }
+
+    fn create_agent_request(name: &str, model: &str) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(1),
+            "CreateAgent",
+            json!({
+                "name": name,
+                "model": model,
+            }),
+        )
+    }
+
+    fn get_usage_request(agent_id: &str) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(5),
+            "GetUsage",
+            json!({
+                "agent_id": agent_id,
+            }),
+        )
+    }
+
+    fn record_usage_request(
+        agent_id: &str,
+        model_name: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+    ) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(6),
+            "RecordUsage",
+            json!({
+                "agent_id": agent_id,
+                "model_name": model_name,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_agent_is_idempotent_and_list_returns_ready_state() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+        let one_api_config = OneApiConfig::default();
+
+        let first = handle_rpc_request(
+            create_agent_request("e2e-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            one_api_config.clone(),
+        )
+        .await;
+        assert!(
+            first.error.is_none(),
+            "first create should succeed: {first:?}"
+        );
+        let first_result = first.result.expect("first create result should exist");
+        assert_eq!(first_result["idempotent"], json!(false));
+        assert_eq!(first_result["agent"]["status"], json!("ready"));
+        let first_agent_id = first_result["agent"]["id"]
+            .as_str()
+            .expect("first agent id should be string")
+            .to_string();
+
+        let second = handle_rpc_request(
+            create_agent_request("e2e-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            one_api_config,
+        )
+        .await;
+        assert!(
+            second.error.is_none(),
+            "idempotent create should succeed: {second:?}"
+        );
+        let second_result = second.result.expect("second create result should exist");
+        assert_eq!(second_result["idempotent"], json!(true));
+        assert_eq!(second_result["agent"]["id"], json!(first_agent_id));
+        assert_eq!(second_result["agent"]["status"], json!("ready"));
+
+        let list = handle_rpc_request(
+            JsonRpcRequest::new(json!(2), "ListAgents", json!({})),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(list.error.is_none(), "list should succeed: {list:?}");
+        let listed_agents = list
+            .result
+            .expect("list result should exist")
+            .get("agents")
+            .expect("agents field should exist")
+            .as_array()
+            .expect("agents should be array")
+            .clone();
+        assert_eq!(listed_agents.len(), 1);
+        assert_eq!(listed_agents[0]["status"], json!("ready"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn create_agent_records_failed_state_when_one_api_provisioning_fails() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("degraded");
+        let one_api_config = OneApiConfig {
+            enabled: true,
+            management_enabled: true,
+            management_base_url: "http://127.0.0.1:9".to_string(),
+            management_timeout_secs: 1,
+            management_retries: 1,
+            management_retry_backoff_secs: 0,
+            ..OneApiConfig::default()
+        };
+
+        let first = handle_rpc_request(
+            create_agent_request("failing-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            one_api_config.clone(),
+        )
+        .await;
+        let first_error = first.error.expect("first create should fail");
+        assert_eq!(first_error.code, -32014);
+        assert!(
+            first_error.message.contains("one-api provisioning failed"),
+            "unexpected error: {}",
+            first_error.message
+        );
+
+        let list_after_failure = handle_rpc_request(
+            JsonRpcRequest::new(json!(3), "ListAgents", json!({})),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            list_after_failure.error.is_none(),
+            "list after failure should succeed: {list_after_failure:?}"
+        );
+        let failed_agents = list_after_failure
+            .result
+            .expect("list result should exist")
+            .get("agents")
+            .expect("agents field should exist")
+            .as_array()
+            .expect("agents should be array")
+            .clone();
+        assert_eq!(failed_agents.len(), 1);
+        assert_eq!(failed_agents[0]["status"], json!("failed"));
+        assert!(failed_agents[0]["failure_reason"]
+            .as_str()
+            .expect("failure_reason should be present")
+            .contains("one-api provisioning failed"));
+
+        let second = handle_rpc_request(
+            create_agent_request("failing-agent", "claude-4-sonnet"),
+            store.clone(),
+            state,
+            one_api_config,
+        )
+        .await;
+        let second_error = second
+            .error
+            .expect("repeated create should fail idempotently");
+        assert_eq!(second_error.code, -32014);
+
+        let final_list = handle_rpc_request(
+            JsonRpcRequest::new(json!(4), "ListAgents", json!({})),
+            store,
+            RuntimeState::new("disabled"),
+            OneApiConfig::default(),
+        )
+        .await;
+        let final_agents = final_list
+            .result
+            .expect("final list result should exist")
+            .get("agents")
+            .expect("agents field should exist")
+            .as_array()
+            .expect("agents should be array")
+            .clone();
+        assert_eq!(final_agents.len(), 1);
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn usage_query_and_quota_enforcement_work() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let created = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(7),
+                "CreateAgent",
+                json!({
+                    "name": "quota-agent",
+                    "model": "claude-4-sonnet",
+                    "token_budget": 100,
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
+        let created_agent_id = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent should exist")
+            .get("id")
+            .expect("agent id should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let initial_usage = handle_rpc_request(
+            get_usage_request(&created_agent_id),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            initial_usage.error.is_none(),
+            "initial usage query should succeed: {initial_usage:?}"
+        );
+        let initial = initial_usage.result.expect("initial usage result");
+        assert_eq!(initial["total_tokens"], json!(0));
+
+        let record_ok = handle_rpc_request(
+            record_usage_request(&created_agent_id, "claude-4-sonnet", 60, 30, 0.15),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            record_ok.error.is_none(),
+            "usage record under budget should succeed: {record_ok:?}"
+        );
+
+        let over_budget = handle_rpc_request(
+            record_usage_request(&created_agent_id, "claude-4-sonnet", 20, 5, 0.05),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        let over_budget_error = over_budget
+            .error
+            .expect("usage over budget should return error");
+        assert_eq!(over_budget_error.code, -32015);
+        assert!(
+            over_budget_error.message.contains("llm.quota_exceeded"),
+            "unexpected over budget message: {}",
+            over_budget_error.message
+        );
+
+        let final_usage = handle_rpc_request(
+            get_usage_request(&created_agent_id),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            final_usage.error.is_none(),
+            "final usage query should succeed: {final_usage:?}"
+        );
+        let summary = final_usage.result.expect("final usage result");
+        assert_eq!(summary["input_tokens"], json!(60));
+        assert_eq!(summary["output_tokens"], json!(30));
+        assert_eq!(summary["total_tokens"], json!(90));
+        assert_eq!(
+            summary["model_cost_breakdown"][0]["model_name"],
+            json!("claude-4-sonnet")
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +656,21 @@ struct CreateAgentParams {
     max_tokens: Option<u32>,
     #[serde(default)]
     temperature: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetUsageParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecordUsageParams {
+    agent_id: String,
+    model_name: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    #[serde(default)]
+    cost_usd: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -423,7 +742,8 @@ async fn request_with_retry(
                     )));
                 }
 
-                let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
+                let parsed: Value =
+                    serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
                 return Ok(parsed);
             }
             Err(err) => {
@@ -452,7 +772,9 @@ async fn provision_one_api(
         .no_proxy()
         .timeout(Duration::from_secs(config.management_timeout_secs))
         .build()
-        .map_err(|err| AgentError::Config(format!("build one-api management client failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Config(format!("build one-api management client failed: {err}"))
+        })?;
 
     let token_url = with_base_url(&config.management_base_url, &config.create_token_path);
     let quota_value: i64 = match profile.budget.token_limit {
@@ -480,10 +802,13 @@ async fn provision_one_api(
     .await?;
 
     let token_data = token_resp.get("data").unwrap_or(&token_resp);
-    let token_id = extract_string_value(token_data, &["id", "token_id"])
-        .ok_or_else(|| AgentError::Runtime("one-api create token response missing token id".to_string()))?;
-    let access_token = extract_string_value(token_data, &["key", "token", "value"])
-        .ok_or_else(|| AgentError::Runtime("one-api create token response missing access token".to_string()))?;
+    let token_id = extract_string_value(token_data, &["id", "token_id"]).ok_or_else(|| {
+        AgentError::Runtime("one-api create token response missing token id".to_string())
+    })?;
+    let access_token =
+        extract_string_value(token_data, &["key", "token", "value"]).ok_or_else(|| {
+            AgentError::Runtime("one-api create token response missing access token".to_string())
+        })?;
 
     let channel_id = if config.provision_channel {
         let channel_url = with_base_url(&config.management_base_url, &config.create_channel_path);
@@ -563,6 +888,155 @@ async fn handle_rpc_request(
                 JsonRpcResponse::error(request.id, -32010, format!("list agents failed: {err}"))
             }
         },
+        "GetUsage" | "management.GetUsage" => {
+            let params = match serde_json::from_value::<GetUsageParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid get usage params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            match store.get_usage(agent_id).await {
+                Ok(usage) => JsonRpcResponse::success(request.id, json!(usage)),
+                Err(err) => {
+                    JsonRpcResponse::error(request.id, -32012, format!("get usage failed: {err}"))
+                }
+            }
+        }
+        "RecordUsage" | "management.RecordUsage" => {
+            let params = match serde_json::from_value::<RecordUsageParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid record usage params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let profile = match store.get_agent(agent_id).await {
+                Ok(profile) => profile,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32010,
+                        format!("query agent for usage failed: {err}"),
+                    )
+                }
+            };
+
+            let day = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+            let current_day_total = match store.get_daily_total_tokens(agent_id, &day).await {
+                Ok(total) => total,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32012,
+                        format!("query current day usage failed: {err}"),
+                    )
+                }
+            };
+
+            let delta_input = match i64::try_from(params.input_tokens) {
+                Ok(value) => value,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("input_tokens overflow: {err}"),
+                    )
+                }
+            };
+            let delta_output = match i64::try_from(params.output_tokens) {
+                Ok(value) => value,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("output_tokens overflow: {err}"),
+                    )
+                }
+            };
+            let delta_total = match delta_input.checked_add(delta_output) {
+                Some(value) => value,
+                None => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        "input_tokens + output_tokens overflow",
+                    )
+                }
+            };
+
+            if let Some(limit) = profile.budget.token_limit {
+                let limit_i64 = match i64::try_from(limit) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32603,
+                            format!("token budget overflow: {err}"),
+                        )
+                    }
+                };
+
+                if current_day_total.saturating_add(delta_total) > limit_i64 {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32015,
+                        format!(
+                            "llm.quota_exceeded: daily token budget {} exceeded by requested {} tokens",
+                            limit_i64, delta_total
+                        ),
+                    );
+                }
+            }
+
+            match store
+                .record_usage(
+                    agent_id,
+                    &params.model_name,
+                    delta_input,
+                    delta_output,
+                    params.cost_usd,
+                )
+                .await
+            {
+                Ok(usage) => JsonRpcResponse::success(request.id, json!(usage)),
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32012,
+                    format!("record usage failed: {err}"),
+                ),
+            }
+        }
         "CreateAgent" | "management.CreateAgent" => {
             let params = match serde_json::from_value::<CreateAgentParams>(request.params) {
                 Ok(params) => params,
@@ -595,40 +1069,72 @@ async fn handle_rpc_request(
             );
             profile.budget.token_limit = params.token_budget;
 
-            let idempotency_key = format!("{}:{}:{}", profile.name, provider, profile.model.model_name);
+            let idempotency_key =
+                format!("{}:{}:{}", profile.name, provider, profile.model.model_name);
             let _guard = state.create_agent_lock.lock().await;
 
-            match store.get_mapping_by_idempotency_key(&idempotency_key).await {
-                Ok(Some(mapping)) => match store.get_agent(mapping.agent_id).await {
-                    Ok(agent) => {
-                        return JsonRpcResponse::success(
-                            request.id,
-                            json!({
-                                "agent": agent,
-                                "idempotent": true,
-                                "one_api": {
-                                    "token_id": mapping.one_api_token_id,
-                                    "channel_id": mapping.one_api_channel_id,
-                                }
-                            }),
-                        );
-                    }
-                    Err(err) => {
+            match store
+                .get_agent_by_identity(&profile.name, &provider, &profile.model.model_name)
+                .await
+            {
+                Ok(Some(existing_agent)) => {
+                    if existing_agent.status == AgentLifecycleState::Failed {
+                        let reason = existing_agent
+                            .failure_reason
+                            .clone()
+                            .unwrap_or_else(|| "unknown failure".to_string());
                         return JsonRpcResponse::error(
                             request.id,
-                            -32011,
-                            format!("load idempotent agent failed: {err}"),
+                            -32014,
+                            format!("agent provisioning failed: {reason}"),
                         );
                     }
-                },
+
+                    let mut result = json!({
+                        "agent": existing_agent,
+                        "idempotent": true,
+                    });
+
+                    match store.get_mapping_by_idempotency_key(&idempotency_key).await {
+                        Ok(Some(mapping)) => {
+                            if let Some(result_obj) = result.as_object_mut() {
+                                result_obj.insert(
+                                    "one_api".to_string(),
+                                    json!({
+                                        "token_id": mapping.one_api_token_id,
+                                        "channel_id": mapping.one_api_channel_id,
+                                    }),
+                                );
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32011,
+                                format!("query idempotent mapping failed: {err}"),
+                            );
+                        }
+                    }
+
+                    return JsonRpcResponse::success(request.id, result);
+                }
                 Ok(None) => {}
                 Err(err) => {
                     return JsonRpcResponse::error(
                         request.id,
                         -32011,
-                        format!("query idempotent mapping failed: {err}"),
+                        format!("query idempotent agent failed: {err}"),
                     );
                 }
+            }
+
+            if let Err(err) = store.create_agent(profile.clone()).await {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32011,
+                    format!("create agent failed: {err}"),
+                );
             }
 
             let provisioned = if one_api_config.enabled
@@ -638,43 +1144,75 @@ async fn handle_rpc_request(
                 match provision_one_api(&one_api_config, &profile, &idempotency_key).await {
                     Ok(result) => Some(result),
                     Err(err) => {
-                        return JsonRpcResponse::error(
-                            request.id,
-                            -32012,
-                            format!("one-api provisioning failed: {err}"),
-                        );
+                        let reason = format!("one-api provisioning failed: {err}");
+                        if let Err(update_err) = store
+                            .update_agent_state(
+                                profile.id,
+                                AgentLifecycleState::Failed,
+                                Some(reason.clone()),
+                            )
+                            .await
+                        {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32014,
+                                format!(
+                                    "{reason}; additionally failed to persist failed state: {update_err}"
+                                ),
+                            );
+                        }
+
+                        return JsonRpcResponse::error(request.id, -32014, reason);
                     }
                 }
             } else {
                 None
             };
 
-            match store.create_agent(profile.clone()).await {
-                Ok(created) => {
+            if let Some(one_api) = provisioned.clone() {
+                let mapping = OneApiMapping {
+                    agent_id: profile.id,
+                    idempotency_key,
+                    one_api_token_id: one_api.token_id.clone(),
+                    one_api_access_token: one_api.access_token,
+                    one_api_channel_id: one_api.channel_id.clone(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+
+                if let Err(err) = store.save_mapping(mapping).await {
+                    let reason = format!("persist one-api mapping failed: {err}");
+                    if let Err(update_err) = store
+                        .update_agent_state(
+                            profile.id,
+                            AgentLifecycleState::Failed,
+                            Some(reason.clone()),
+                        )
+                        .await
+                    {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32014,
+                            format!(
+                                "{reason}; additionally failed to persist failed state: {update_err}"
+                            ),
+                        );
+                    }
+
+                    return JsonRpcResponse::error(request.id, -32014, reason);
+                }
+            }
+
+            match store
+                .update_agent_state(profile.id, AgentLifecycleState::Ready, None)
+                .await
+            {
+                Ok(ready_agent) => {
                     if let Some(one_api) = provisioned {
-                        let mapping = OneApiMapping {
-                            agent_id: created.id,
-                            idempotency_key,
-                            one_api_token_id: one_api.token_id.clone(),
-                            one_api_access_token: one_api.access_token,
-                            one_api_channel_id: one_api.channel_id.clone(),
-                            created_at: Utc::now(),
-                            updated_at: Utc::now(),
-                        };
-
-                        if let Err(err) = store.save_mapping(mapping).await {
-                            let _ = store.delete_agent(created.id).await;
-                            return JsonRpcResponse::error(
-                                request.id,
-                                -32013,
-                                format!("persist one-api mapping failed, rolled back: {err}"),
-                            );
-                        }
-
                         JsonRpcResponse::success(
                             request.id,
                             json!({
-                                "agent": created,
+                                "agent": ready_agent,
                                 "idempotent": false,
                                 "one_api": {
                                     "token_id": one_api.token_id,
@@ -686,7 +1224,7 @@ async fn handle_rpc_request(
                         JsonRpcResponse::success(
                             request.id,
                             json!({
-                                "agent": created,
+                                "agent": ready_agent,
                                 "idempotent": false
                             }),
                         )
@@ -695,7 +1233,7 @@ async fn handle_rpc_request(
                 Err(err) => JsonRpcResponse::error(
                     request.id,
                     -32011,
-                    format!("create agent failed: {err}"),
+                    format!("mark agent ready failed: {err}"),
                 ),
             }
         }
@@ -1043,7 +1581,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
             Err(_) => {
-                warn!(timeout_secs, "One-API supervisor graceful shutdown timed out");
+                warn!(
+                    timeout_secs,
+                    "One-API supervisor graceful shutdown timed out"
+                );
             }
         }
     }

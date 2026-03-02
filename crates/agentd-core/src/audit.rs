@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -41,7 +41,12 @@ pub enum EventResult {
 }
 
 impl AuditEvent {
-    pub fn new(agent_id: Uuid, event_type: EventType, payload: EventPayload, result: EventResult) -> Self {
+    pub fn new(
+        agent_id: Uuid,
+        event_type: EventType,
+        payload: EventPayload,
+        result: EventResult,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             agent_id,
