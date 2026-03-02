@@ -135,6 +135,7 @@ if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
     check_contains ".github/workflows/gates.yml" "test-gate:" "Test gate job"
     check_contains ".github/workflows/gates.yml" "security-gate:" "Security gate job"
     check_contains ".github/workflows/gates.yml" "phase-a-gate:" "Phase A gate job"
+    check_contains ".github/workflows/gates.yml" "phase-bc-gate:" "Phase B/C gate job"
     check_contains ".github/workflows/gates.yml" "gate-syscall:" "Syscall gate job"
     check_contains ".github/workflows/gates.yml" "gate-isolation:" "Isolation gate job"
     
@@ -157,7 +158,9 @@ log_info ""
 log_info "=== Step 4: Local Gate Check Script ==="
 check_file "scripts/gate-check.sh" "Gate check script"
 check_file "scripts/gates/phase-a-gate.sh" "Phase A gate script"
+check_file "scripts/gates/phase-bc-gate.sh" "Phase B/C gate script"
 check_file "scripts/rollback/phase-a-rollback.sh" "Phase A rollback script"
+check_file "scripts/faults/inject-oom-and-policy-conflict.sh" "Phase B/C fault injection script"
 
 if [ -f "$REPO_ROOT/scripts/gate-check.sh" ]; then
     check_contains "scripts/gate-check.sh" "set -euo pipefail" "Strict shell mode"
@@ -209,6 +212,20 @@ if bash -n "$REPO_ROOT/scripts/gates/phase-a-gate.sh" 2>/dev/null; then
     log_info "✓ phase-a-gate.sh syntax valid"
 else
     log_error "✗ phase-a-gate.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/gates/phase-bc-gate.sh" 2>/dev/null; then
+    log_info "✓ phase-bc-gate.sh syntax valid"
+else
+    log_error "✗ phase-bc-gate.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/faults/inject-oom-and-policy-conflict.sh" 2>/dev/null; then
+    log_info "✓ inject-oom-and-policy-conflict.sh syntax valid"
+else
+    log_error "✗ inject-oom-and-policy-conflict.sh has syntax errors"
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 

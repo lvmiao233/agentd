@@ -208,13 +208,43 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  phase-bc-gate:
+    name: Phase B/C Gate
+    runs-on: ubuntu-latest
+    needs: phase-a-gate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-gates-rust-${{ runner.os }}
+          add-job-id-key: false
+
+      - name: Run Phase B/C gate
+        run: |
+          bash scripts/gates/phase-bc-gate.sh
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-phase-bc-gate
+          path: .sisyphus/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+
   # ============================================================
   # Gate 5: System Call Gate (Placeholder - T4 Implementation)
   # ============================================================
   gate-syscall:
     name: System Call Gate
     runs-on: ubuntu-latest
-    needs: phase-a-gate
+    needs: phase-bc-gate
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -304,6 +334,7 @@ jobs:
       - test-gate
       - security-gate
       - phase-a-gate
+      - phase-bc-gate
       - gate-syscall
       - gate-isolation
     if: always()
@@ -316,6 +347,7 @@ jobs:
           echo "Test Gate: ${{ needs.test-gate.result }}"
           echo "Security Gate: ${{ needs.security-gate.result }}"
           echo "Phase A Gate: ${{ needs.phase-a-gate.result }}"
+          echo "Phase B/C Gate: ${{ needs.phase-bc-gate.result }}"
           echo "Syscall Gate: ${{ needs.gate-syscall.result }}"
           echo "Isolation Gate: ${{ needs.gate-isolation.result }}"
            
@@ -338,6 +370,10 @@ jobs:
           fi
           if [ "${{ needs.phase-a-gate.result }}" != "success" ]; then
             echo "FAILED: Phase A Gate failed"
+            exit 1
+          fi
+          if [ "${{ needs.phase-bc-gate.result }}" != "success" ]; then
+            echo "FAILED: Phase B/C Gate failed"
             exit 1
           fi
           if [ "${{ needs.gate-syscall.result }}" != "success" ]; then

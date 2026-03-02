@@ -26,6 +26,7 @@ The following GitHub Actions jobs must pass before merging to protected branches
 | `test-gate` | ✅ Required | Unit/integration tests (T4) |
 | `security-gate` | ✅ Required | Security scanning (T4) |
 | `phase-a-gate` | ✅ Required | Phase A quantitative gate (T12) |
+| `phase-bc-gate` | ✅ Required | Phase B/C fault-injection gate (T17) |
 | `gate-syscall` | ✅ Required | System call validation (T4) |
 | `gate-isolation` | ✅ Required | cgroup/systemd isolation runtime check (T4) |
 
@@ -56,6 +57,7 @@ Pattern: main
       - CI Gates / Test Gate (required)
       - CI Gates / Security Gate (required)
       - CI Gates / Phase A Gate (required)
+      - CI Gates / Phase B/C Gate (required)
       - CI Gates / System Call Gate (required)
       - CI Gates / Isolation Gate (Ubuntu 25.10) (required)
 
@@ -79,6 +81,7 @@ Each CI gate job uploads evidence to `.sisyphus/evidence/`:
 ├── evidence-test-gate/
 ├── evidence-security-gate/
 ├── evidence-phase-a-gate/
+├── evidence-phase-bc-gate/
 ├── evidence-gate-syscall/
 ├── evidence-gate-isolation/
 └── evidence-all/
