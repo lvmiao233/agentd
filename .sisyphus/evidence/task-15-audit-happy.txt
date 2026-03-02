@@ -1,0 +1,43 @@
+Task: T15 审计事件模型与持久化（happy-path evidence）
+Date: 2026-03-03
+
+Implemented
+- Added migration `crates/agentd-store/migrations/0005_audit_events.sql`
+  - `audit_events` table with indexed agent timeline
+  - trace/session/severity columns reserved for downstream correlation
+- Added store module `crates/agentd-store/src/audit.rs`
+  - `insert_event`
+  - `list_events_for_agent`
+  - enum serialization/parsing for `EventType` and `EventResult`
+- Extended `SqliteStore` (`crates/agentd-store/src/lib.rs`)
+  - `append_audit_event`
+  - `get_audit_events`
+- Upgraded schema logic in `crates/agentd-store/src/db.rs`
+  - `CURRENT_SCHEMA_VERSION = 5`
+  - migration path includes `0005_audit_events.sql`
+- Integrated daemon audit writes in `crates/agentd-daemon/src/main.rs`
+  - CreateAgent success/failure
+  - AuthorizeTool allow/ask/deny
+  - RecordUsage quota-exceeded path
+  - StartManagedAgent / StopManagedAgent success/failure
+- Added audit query RPC
+  - `ListAuditEvents` / `management.ListAuditEvents`
+- Added CLI query command (`crates/agentctl/src/main.rs`)
+  - `agentctl agent audit --agent-id <uuid> [--limit N]`
+
+Verification Commands
+1) `cargo check --workspace`
+2) `cargo test --workspace`
+3) `cargo build --workspace`
+
+Verification Result
+- All commands succeeded (exit code 0)
+- New/updated test coverage:
+  - `audit::tests::append_and_list_audit_events_roundtrip` ✅
+  - `tests::create_agent_persists_audit_event_and_query_returns_it` ✅
+  - Existing daemon/store tests remained green ✅
+
+Acceptance Evidence Mapping
+- 审计事件可写入并可按 agent 查询: ✅
+- 关键控制面动作（create/policy/quota/lifecycle）产生审计记录: ✅
+- CLI 可查询审计流（非 streaming）: ✅

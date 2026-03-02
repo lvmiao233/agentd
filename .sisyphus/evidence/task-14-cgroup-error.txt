@@ -1,0 +1,33 @@
+Task: T14 cgroup v2 + lifecycle 管理（failure-path evidence）
+Date: 2026-03-03
+
+Failure Path Coverage
+
+1) Invalid agent_id rejected by RPC param validation
+- Test: `tests::managed_agent_start_validates_agent_id_and_command`
+- Input: `StartManagedAgent { agent_id: "not-a-uuid", ... }`
+- Expected/Observed: JSON-RPC error code `-32602` (`invalid params`) ✅
+
+2) Empty command rejected by lifecycle manager
+- Test: `tests::managed_agent_start_validates_agent_id_and_command`
+- Input: `StartManagedAgent { command: "   " }`
+- Expected/Observed: JSON-RPC error code `-32017` and message contains
+  `managed agent command must be non-empty` ✅
+
+3) Crash loop restart budget exhausted
+- Test: `lifecycle::tests::lifecycle_restart_and_oom_event_are_reported`
+- Input: command exits non-zero repeatedly with `restart_max_attempts=1`
+- Expected/Observed:
+  - emits `agent.restarting` ✅
+  - emits `agent.restart_exhausted` ✅
+
+4) OOM signal exposure in lifecycle events
+- Test: `tests::managed_agent_lifecycle_emits_restart_and_oom_events`
+- Input: simulated `memory.events` update (`oom` / `oom_kill` increments)
+- Expected/Observed: emits `cgroup.oom` event via `ListLifecycleEvents` ✅
+
+Reproduction Command
+- `cargo test --workspace`
+
+Result
+- Workspace test suite passed, and all above failure paths are asserted.

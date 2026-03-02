@@ -1,0 +1,39 @@
+Task: T15 审计事件模型与持久化（failure-path evidence）
+Date: 2026-03-03
+
+Failure Paths Covered
+
+1) Invalid `ListAuditEvents` params rejected
+- Path: daemon RPC `ListAuditEvents`
+- Behavior: malformed params / invalid UUID returns `-32602` (invalid params)
+
+2) CreateAgent failure paths emit `EventType::Error`
+- Path: daemon `CreateAgent`
+- Cases:
+  - DB create failure
+  - One-API provisioning failure
+  - one_api mapping persist failure
+  - mark-ready failure
+- Behavior: error audit event persisted with metadata `error`
+
+3) Policy deny path emits `ToolDenied`
+- Path: daemon `AuthorizeTool`
+- Behavior:
+  - deny returns `-32016`
+  - corresponding audit event stored with matched rule/source layer metadata
+
+4) Quota exceeded path emits `BudgetExceeded`
+- Path: daemon `RecordUsage`
+- Behavior:
+  - returns `-32015` (`llm.quota_exceeded`)
+  - persists budget-exceeded audit event with day/current/request/limit metadata
+
+5) Managed lifecycle stop/start failures emit `Error`
+- Path: daemon `StartManagedAgent` / `StopManagedAgent`
+- Behavior: failure writes `EventType::Error` with reason metadata
+
+Reproduction Command
+- `cargo test --workspace`
+
+Result
+- Workspace tests passed and failure-path assertions are covered in daemon/store tests.

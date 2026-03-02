@@ -1,0 +1,49 @@
+Task: T14 cgroup v2 + lifecycle 管理（fork/exec/restart）
+Date: 2026-03-03
+
+Implemented
+- Added `crates/agentd-daemon/src/cgroup.rs`
+  - Per-agent cgroup path creation: `<cgroup_root>/<cgroup_parent>/<agent_id>`
+  - Writes `cpu.weight`, `memory.high`, `memory.max`
+  - Assigns PID via `cgroup.procs`
+  - Reads `memory.events` and parses `oom` / `oom_kill`
+- Added `crates/agentd-daemon/src/lifecycle.rs`
+  - Managed process supervisor (`start/stop/restart`)
+  - Restart with configurable `restart_max_attempts` + `restart_backoff_secs`
+  - Lifecycle events: `agent.started`, `agent.exited`, `agent.restarting`, `agent.stopped`, `agent.restart_exhausted`, `cgroup.oom`
+- Wired daemon JSON-RPC methods in `crates/agentd-daemon/src/main.rs`
+  - `StartManagedAgent`
+  - `StopManagedAgent`
+  - `ListManagedAgents`
+  - `ListLifecycleEvents`
+- Added `agentctl` subcommands in `crates/agentctl/src/main.rs`
+  - `agentctl agent run`
+  - `agentctl agent stop`
+  - `agentctl agent ps`
+  - `agentctl agent events`
+- Added daemon config fields in `configs/agentd.toml`
+  - `cgroup_root`
+  - `cgroup_parent`
+
+Verification Commands
+1) `cargo check --workspace`
+2) `cargo test --workspace`
+3) `cargo build --workspace`
+
+Verification Result
+- All three commands succeeded (exit code 0)
+- Test highlights relevant to T14:
+  - `cgroup::tests::ensure_group_writes_limits_and_assigns_pid` ✅
+  - `cgroup::tests::parse_memory_events_detects_oom_deltas` ✅
+  - `lifecycle::tests::lifecycle_start_stop_and_events_work` ✅
+  - `lifecycle::tests::lifecycle_restart_and_oom_event_are_reported` ✅
+  - `tests::managed_agent_lifecycle_rpc_start_list_stop` ✅
+  - `tests::managed_agent_lifecycle_emits_restart_and_oom_events` ✅
+
+Acceptance Mapping
+- 每个 agent 创建独立 cgroup 路径且参数写入成功: ✅
+  - Covered by cgroup unit tests + lifecycle start flow
+- 内存触发后事件流可见 `cgroup.oom`: ✅
+  - Covered by lifecycle OOM event test path
+- 进程异常退出后按策略自动重启并记录事件: ✅
+  - Covered by restart + restart_exhausted assertions
