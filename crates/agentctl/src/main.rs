@@ -55,6 +55,50 @@ enum AgentCommands {
         #[arg(long)]
         json: bool,
     },
+    Run {
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long, value_delimiter = ' ')]
+        args: Vec<String>,
+        #[arg(long)]
+        restart_max_attempts: Option<u32>,
+        #[arg(long)]
+        restart_backoff_secs: Option<u64>,
+        #[arg(long)]
+        cpu_weight: Option<u64>,
+        #[arg(long)]
+        memory_high: Option<String>,
+        #[arg(long)]
+        memory_max: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Stop {
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Ps {
+        #[arg(long)]
+        json: bool,
+    },
+    Events {
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    Audit {
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 async fn call_rpc(
@@ -146,6 +190,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "token_budget": token_budget,
                         "max_tokens": max_tokens,
                         "temperature": temperature,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Run {
+                agent_id,
+                command,
+                args,
+                restart_max_attempts,
+                restart_backoff_secs,
+                cpu_weight,
+                memory_high,
+                memory_max,
+                json,
+            } => {
+                info!(socket_path = %cli.socket_path, %agent_id, "Calling StartManagedAgent over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "StartManagedAgent",
+                    json!({
+                        "agent_id": agent_id,
+                        "command": command,
+                        "args": args,
+                        "restart_max_attempts": restart_max_attempts,
+                        "restart_backoff_secs": restart_backoff_secs,
+                        "cpu_weight": cpu_weight,
+                        "memory_high": memory_high,
+                        "memory_max": memory_max,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Stop { agent_id, json } => {
+                info!(socket_path = %cli.socket_path, %agent_id, "Calling StopManagedAgent over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "StopManagedAgent",
+                    json!({
+                        "agent_id": agent_id,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Ps { json } => {
+                info!(socket_path = %cli.socket_path, "Calling ListManagedAgents over UDS JSON-RPC");
+                let response = call_rpc(&cli.socket_path, "ListManagedAgents", json!({})).await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Events { limit, json } => {
+                info!(socket_path = %cli.socket_path, "Calling ListLifecycleEvents over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "ListLifecycleEvents",
+                    json!({
+                        "limit": limit,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Audit {
+                agent_id,
+                limit,
+                json,
+            } => {
+                info!(socket_path = %cli.socket_path, %agent_id, "Calling ListAuditEvents over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "ListAuditEvents",
+                    json!({
+                        "agent_id": agent_id,
+                        "limit": limit,
                     }),
                 )
                 .await?;

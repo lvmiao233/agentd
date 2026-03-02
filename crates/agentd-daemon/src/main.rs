@@ -1,14 +1,21 @@
+mod cgroup;
+mod lifecycle;
+
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
+use agentd_core::audit::{EventPayload, EventResult, EventType};
 use agentd_core::{
-    AgentError, AgentLifecycleState, AgentProfile, PolicyDecision, PolicyLayer, PolicyRule,
-    SessionPolicyOverrides,
+    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyLayer,
+    PolicyRule, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
 use chrono::Utc;
 use clap::Parser;
+use cgroup::{CgroupManager, CgroupResourceLimits};
+use lifecycle::{LifecycleManager, ManagedAgentSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
@@ -64,6 +71,10 @@ struct DaemonConfig {
     socket_path: String,
     #[serde(default = "default_db_path")]
     db_path: String,
+    #[serde(default = "default_cgroup_root")]
+    cgroup_root: String,
+    #[serde(default = "default_cgroup_parent")]
+    cgroup_parent: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,6 +121,8 @@ impl Default for DaemonConfig {
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
             socket_path: default_socket_path(),
             db_path: default_db_path(),
+            cgroup_root: default_cgroup_root(),
+            cgroup_parent: default_cgroup_parent(),
         }
     }
 }
@@ -155,6 +168,14 @@ fn default_socket_path() -> String {
 
 fn default_db_path() -> String {
     "data/agentd.db".to_string()
+}
+
+fn default_cgroup_root() -> String {
+    "/sys/fs/cgroup".to_string()
+}
+
+fn default_cgroup_parent() -> String {
+    "agentd".to_string()
 }
 
 fn default_one_api_command() -> String {
@@ -205,13 +226,23 @@ fn default_one_api_create_channel_path() -> String {
 struct RuntimeState {
     one_api_status: Arc<RwLock<String>>,
     create_agent_lock: Arc<Mutex<()>>,
+    lifecycle_manager: LifecycleManager,
 }
 
 impl RuntimeState {
+    #[cfg(test)]
     fn new(initial_status: &str) -> Self {
+        Self::with_lifecycle(
+            initial_status,
+            LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        )
+    }
+
+    fn with_lifecycle(initial_status: &str, lifecycle_manager: LifecycleManager) -> Self {
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
+            lifecycle_manager,
         }
     }
 
@@ -222,6 +253,10 @@ impl RuntimeState {
 
     async fn one_api_status(&self) -> String {
         self.one_api_status.read().await.clone()
+    }
+
+    fn lifecycle(&self) -> LifecycleManager {
+        self.lifecycle_manager.clone()
     }
 }
 
@@ -407,6 +442,56 @@ mod tests {
                 "profile_rules": profile_rules,
                 "session_overrides": session_overrides,
             }),
+        )
+    }
+
+    fn start_managed_agent_request(
+        agent_id: &str,
+        command: &str,
+        args: Vec<&str>,
+        restart_max_attempts: u32,
+    ) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(9),
+            "StartManagedAgent",
+            json!({
+                "agent_id": agent_id,
+                "command": command,
+                "args": args,
+                "restart_max_attempts": restart_max_attempts,
+                "restart_backoff_secs": 0,
+                "cpu_weight": 100,
+                "memory_high": "64M",
+                "memory_max": "128M",
+            }),
+        )
+    }
+
+    fn stop_managed_agent_request(agent_id: &str) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(10),
+            "StopManagedAgent",
+            json!({
+                "agent_id": agent_id,
+            }),
+        )
+    }
+
+    fn list_audit_events_request(agent_id: &str, limit: Option<usize>) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(15),
+            "ListAuditEvents",
+            json!({
+                "agent_id": agent_id,
+                "limit": limit,
+            }),
+        )
+    }
+
+    fn managed_test_state(root: &std::path::Path) -> RuntimeState {
+        RuntimeState::with_lifecycle(
+            "disabled",
+            LifecycleManager::new(CgroupManager::new(root, "agentd")),
         )
     }
 
@@ -735,6 +820,261 @@ mod tests {
 
         cleanup_sqlite_files(&db_path);
     }
+
+    #[tokio::test]
+    async fn managed_agent_lifecycle_rpc_start_list_stop() {
+        let db_path = test_db_path();
+        let cgroup_root =
+            std::env::temp_dir().join(format!("agentd-managed-test-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = managed_test_state(&cgroup_root);
+
+        let agent_id = Uuid::new_v4();
+        let start_response = handle_rpc_request(
+            start_managed_agent_request(
+                &agent_id.to_string(),
+                "/bin/sh",
+                vec!["-c", "sleep 1"],
+                0,
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            start_response.error.is_none(),
+            "start managed agent should succeed: {start_response:?}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let list_response = handle_rpc_request(
+            JsonRpcRequest::new(json!(11), "ListManagedAgents", json!({})),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            list_response.error.is_none(),
+            "list managed agents should succeed: {list_response:?}"
+        );
+        let listed = list_response
+            .result
+            .expect("list response result should exist")
+            .get("agents")
+            .expect("agents field should exist")
+            .as_array()
+            .expect("agents should be array")
+            .clone();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["agent_id"], json!(agent_id.to_string()));
+
+        let stop_response = handle_rpc_request(
+            stop_managed_agent_request(&agent_id.to_string()),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            stop_response.error.is_none(),
+            "stop managed agent should succeed: {stop_response:?}"
+        );
+        assert_eq!(
+            stop_response
+                .result
+                .expect("stop result should exist")
+                .get("state")
+                .expect("state field should exist"),
+            "stopped"
+        );
+
+        let _ = std::fs::remove_dir_all(cgroup_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn managed_agent_lifecycle_emits_restart_and_oom_events() {
+        let db_path = test_db_path();
+        let cgroup_root = std::env::temp_dir().join(format!("agentd-managed-oom-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = managed_test_state(&cgroup_root);
+
+        let agent_id = Uuid::new_v4();
+        let start_response = handle_rpc_request(
+            start_managed_agent_request(
+                &agent_id.to_string(),
+                "/bin/sh",
+                vec!["-c", "sleep 0.2; exit 1"],
+                1,
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(start_response.error.is_none(), "start response should succeed");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let memory_events_path = cgroup_root
+            .join("agentd")
+            .join(agent_id.to_string())
+            .join("memory.events");
+        std::fs::write(memory_events_path, "oom 2\noom_kill 1\n")
+            .expect("simulate oom events");
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let events_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(12),
+                "ListLifecycleEvents",
+                json!({
+                    "limit": 20,
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(events_response.error.is_none(), "events query should succeed");
+        let events = events_response
+            .result
+            .expect("events result should exist")
+            .get("events")
+            .expect("events field should exist")
+            .as_array()
+            .expect("events should be array")
+            .clone();
+        assert!(events
+            .iter()
+            .any(|event| event["event_type"] == json!("cgroup.oom")));
+        assert!(events
+            .iter()
+            .any(|event| event["event_type"] == json!("agent.restarting")));
+
+        let _ = handle_rpc_request(
+            stop_managed_agent_request(&agent_id.to_string()),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let _ = std::fs::remove_dir_all(cgroup_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn managed_agent_start_validates_agent_id_and_command() {
+        let db_path = test_db_path();
+        let cgroup_root =
+            std::env::temp_dir().join(format!("agentd-managed-validate-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = managed_test_state(&cgroup_root);
+
+        let invalid_id_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(13),
+                "StartManagedAgent",
+                json!({
+                    "agent_id": "not-a-uuid",
+                    "command": "/bin/sh",
+                    "args": ["-c", "sleep 1"],
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            invalid_id_response.result.is_none(),
+            "invalid agent id should fail: {invalid_id_response:?}"
+        );
+        let invalid_id_error = invalid_id_response
+            .error
+            .expect("invalid agent id should return error");
+        assert_eq!(invalid_id_error.code, -32602);
+
+        let empty_command_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(14),
+                "StartManagedAgent",
+                json!({
+                    "agent_id": Uuid::new_v4().to_string(),
+                    "command": "   ",
+                    "args": ["-c", "sleep 1"],
+                }),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            empty_command_response.result.is_none(),
+            "empty command should fail: {empty_command_response:?}"
+        );
+        let empty_command_error = empty_command_response
+            .error
+            .expect("empty command should return error");
+        assert_eq!(empty_command_error.code, -32017);
+        assert!(empty_command_error
+            .message
+            .contains("managed agent command must be non-empty"));
+
+        let _ = std::fs::remove_dir_all(cgroup_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn create_agent_persists_audit_event_and_query_returns_it() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            create_agent_request("audit-create-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let result = create.result.expect("create result should exist");
+        let agent_id = result["agent"]["id"]
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let events_response = handle_rpc_request(
+            list_audit_events_request(&agent_id, Some(20)),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            events_response.error.is_none(),
+            "list audit events should succeed: {events_response:?}"
+        );
+        let events = events_response
+            .result
+            .expect("events result should exist")
+            .get("events")
+            .expect("events field should exist")
+            .as_array()
+            .expect("events should be array")
+            .clone();
+        assert!(!events.is_empty(), "audit events should not be empty");
+        assert!(events
+            .iter()
+            .any(|event| event["event_type"] == json!("AgentCreated")));
+
+        cleanup_sqlite_files(&db_path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -785,6 +1125,44 @@ struct AuthorizeToolParams {
     agent_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct StartManagedAgentParams {
+    agent_id: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
+    restart_max_attempts: Option<u32>,
+    #[serde(default)]
+    restart_backoff_secs: Option<u64>,
+    #[serde(default)]
+    cpu_weight: Option<u64>,
+    #[serde(default)]
+    memory_high: Option<String>,
+    #[serde(default)]
+    memory_max: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StopManagedAgentParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListLifecycleEventsParams {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListAuditEventsParams {
+    agent_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 fn convert_rule_inputs(name: &str, inputs: Vec<PolicyRuleInput>) -> PolicyLayer {
     PolicyLayer {
         name: name.to_string(),
@@ -829,6 +1207,31 @@ fn profile_to_policy_layer(profile: &AgentProfile) -> PolicyLayer {
     PolicyLayer {
         name: "agent_profile".to_string(),
         rules,
+    }
+}
+
+async fn record_audit_event(
+    store: &Arc<SqliteStore>,
+    agent_id: uuid::Uuid,
+    event_type: EventType,
+    result: EventResult,
+    tool_name: Option<String>,
+    message: Option<String>,
+    metadata: serde_json::Value,
+) {
+    let event = AuditEvent::new(
+        agent_id,
+        event_type,
+        EventPayload {
+            tool_name,
+            message,
+            metadata,
+        },
+        result,
+    );
+
+    if let Err(err) = store.append_audit_event(event).await {
+        warn!(%err, %agent_id, "persist audit event failed");
     }
 }
 
@@ -1054,8 +1457,9 @@ async fn handle_rpc_request(
 
             let global_layer = convert_rule_inputs("global", params.global_rules);
             let mut profile_layer = convert_rule_inputs("agent_profile", params.profile_rules);
+            let mut evaluated_agent_id: Option<uuid::Uuid> = None;
 
-            if let Some(agent_id) = params.agent_id {
+            if let Some(agent_id) = params.agent_id.clone() {
                 let parsed_agent_id = match uuid::Uuid::parse_str(&agent_id) {
                     Ok(agent_id) => agent_id,
                     Err(err) => {
@@ -1066,6 +1470,7 @@ async fn handle_rpc_request(
                         )
                     }
                 };
+                evaluated_agent_id = Some(parsed_agent_id);
 
                 let profile = match store.get_agent(parsed_agent_id).await {
                     Ok(profile) => profile,
@@ -1097,6 +1502,21 @@ async fn handle_rpc_request(
             );
 
             if evaluation.decision == PolicyDecision::Deny {
+                if let Some(agent_id) = evaluated_agent_id {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::ToolDenied,
+                        EventResult::Failure,
+                        Some(params.tool.clone()),
+                        Some("policy.deny".to_string()),
+                        json!({
+                            "matched_rule": evaluation.matched_rule.clone(),
+                            "source_layer": evaluation.source_layer.clone(),
+                        }),
+                    )
+                    .await;
+                }
                 return JsonRpcResponse::error(
                     request.id,
                     -32016,
@@ -1115,7 +1535,243 @@ async fn handle_rpc_request(
                 );
             }
 
+            if let Some(agent_id) = evaluated_agent_id {
+                let (event_type, result, message) = match evaluation.decision {
+                    PolicyDecision::Allow => (
+                        EventType::ToolApproved,
+                        EventResult::Success,
+                        "policy.allow",
+                    ),
+                    PolicyDecision::Ask => {
+                        (EventType::ToolInvoked, EventResult::Pending, "policy.ask")
+                    }
+                    PolicyDecision::Deny => {
+                        (EventType::ToolDenied, EventResult::Failure, "policy.deny")
+                    }
+                };
+                record_audit_event(
+                    &store,
+                    agent_id,
+                    event_type,
+                    result,
+                    Some(params.tool.clone()),
+                    Some(message.to_string()),
+                    json!({
+                        "matched_rule": evaluation.matched_rule.clone(),
+                        "source_layer": evaluation.source_layer.clone(),
+                    }),
+                )
+                .await;
+            }
+
             JsonRpcResponse::success(request.id, json!(evaluation))
+        }
+        "StartManagedAgent" | "management.StartManagedAgent" => {
+            let params = match serde_json::from_value::<StartManagedAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid start managed agent params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let limits = CgroupResourceLimits {
+                cpu_weight: params.cpu_weight.unwrap_or(100),
+                memory_high: params.memory_high.unwrap_or_else(|| "256M".to_string()),
+                memory_max: params.memory_max.unwrap_or_else(|| "512M".to_string()),
+            };
+            let lifecycle_spec = ManagedAgentSpec {
+                agent_id,
+                command: params.command,
+                args: params.args,
+                env: params.env,
+                restart_max_attempts: params.restart_max_attempts.unwrap_or(3),
+                restart_backoff_secs: params.restart_backoff_secs.unwrap_or(1),
+                limits,
+            };
+
+            match state.lifecycle().start_agent(lifecycle_spec).await {
+                Ok(snapshot) => {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::AgentStarted,
+                        EventResult::Success,
+                        None,
+                        Some("managed lifecycle start".to_string()),
+                        json!({
+                            "pid": snapshot.pid,
+                            "restart_count": snapshot.restart_count,
+                            "cgroup_path": snapshot.cgroup_path,
+                        }),
+                    )
+                    .await;
+
+                    JsonRpcResponse::success(request.id, json!(snapshot))
+                }
+                Err(err) => {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::Error,
+                        EventResult::Failure,
+                        None,
+                        Some("managed lifecycle start failed".to_string()),
+                        json!({
+                            "error": err.to_string(),
+                        }),
+                    )
+                    .await;
+
+                    JsonRpcResponse::error(
+                        request.id,
+                        -32017,
+                        format!("start managed agent failed: {err}"),
+                    )
+                }
+            }
+        }
+        "StopManagedAgent" | "management.StopManagedAgent" => {
+            let params = match serde_json::from_value::<StopManagedAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid stop managed agent params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            match state.lifecycle().stop_agent(agent_id).await {
+                Ok(snapshot) => {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::AgentStopped,
+                        EventResult::Success,
+                        None,
+                        Some("managed lifecycle stop".to_string()),
+                        json!({
+                            "restart_count": snapshot.restart_count,
+                            "state": snapshot.state,
+                        }),
+                    )
+                    .await;
+
+                    JsonRpcResponse::success(request.id, json!(snapshot))
+                }
+                Err(AgentError::NotFound(message)) => {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::Error,
+                        EventResult::Failure,
+                        None,
+                        Some("managed lifecycle stop failed".to_string()),
+                        json!({"reason": message}),
+                    )
+                    .await;
+                    JsonRpcResponse::error(request.id, -32018, message)
+                }
+                Err(err) => {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::Error,
+                        EventResult::Failure,
+                        None,
+                        Some("managed lifecycle stop failed".to_string()),
+                        json!({"error": err.to_string()}),
+                    )
+                    .await;
+                    JsonRpcResponse::error(
+                        request.id,
+                        -32018,
+                        format!("stop managed agent failed: {err}"),
+                    )
+                }
+            }
+        }
+        "ListManagedAgents" | "management.ListManagedAgents" => {
+            let snapshots = state.lifecycle().list_agents().await;
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "agents": snapshots,
+                }),
+            )
+        }
+        "ListLifecycleEvents" | "management.ListLifecycleEvents" => {
+            let params = serde_json::from_value::<ListLifecycleEventsParams>(request.params)
+                .unwrap_or(ListLifecycleEventsParams { limit: None });
+            let events = state.lifecycle().list_events(params.limit).await;
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "events": events,
+                }),
+            )
+        }
+        "ListAuditEvents" | "management.ListAuditEvents" => {
+            let params = match serde_json::from_value::<ListAuditEventsParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid list audit events params: {err}"),
+                    )
+                }
+            };
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            match store.get_audit_events(agent_id).await {
+                Ok(all_events) => {
+                    let limit = params.limit.unwrap_or(all_events.len()).min(all_events.len());
+                    let events = all_events.into_iter().take(limit).collect::<Vec<_>>();
+                    JsonRpcResponse::success(request.id, json!({"events": events}))
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32019,
+                    format!("list audit events failed: {err}"),
+                ),
+            }
         }
         "ListAgents" | "management.ListAgents" => match store.list_agents().await {
             Ok(agents) => JsonRpcResponse::success(
@@ -1248,6 +1904,21 @@ async fn handle_rpc_request(
                 };
 
                 if current_day_total.saturating_add(delta_total) > limit_i64 {
+                    record_audit_event(
+                        &store,
+                        agent_id,
+                        EventType::BudgetExceeded,
+                        EventResult::Failure,
+                        Some("llm.request".to_string()),
+                        Some("llm.quota_exceeded".to_string()),
+                        json!({
+                            "day": day,
+                            "current_day_total": current_day_total,
+                            "requested_tokens": delta_total,
+                            "token_budget": limit_i64,
+                        }),
+                    )
+                    .await;
                     return JsonRpcResponse::error(
                         request.id,
                         -32015,
@@ -1357,6 +2028,21 @@ async fn handle_rpc_request(
                         }
                     }
 
+                    record_audit_event(
+                        &store,
+                        existing_agent.id,
+                        EventType::AgentCreated,
+                        EventResult::Success,
+                        None,
+                        Some("idempotent create agent hit".to_string()),
+                        json!({
+                            "idempotent": true,
+                            "provider": provider,
+                            "model": existing_agent.model.model_name,
+                        }),
+                    )
+                    .await;
+
                     return JsonRpcResponse::success(request.id, result);
                 }
                 Ok(None) => {}
@@ -1370,6 +2056,16 @@ async fn handle_rpc_request(
             }
 
             if let Err(err) = store.create_agent(profile.clone()).await {
+                record_audit_event(
+                    &store,
+                    profile.id,
+                    EventType::Error,
+                    EventResult::Failure,
+                    None,
+                    Some("create agent failed".to_string()),
+                    json!({"error": err.to_string()}),
+                )
+                .await;
                 return JsonRpcResponse::error(
                     request.id,
                     -32011,
@@ -1385,6 +2081,16 @@ async fn handle_rpc_request(
                     Ok(result) => Some(result),
                     Err(err) => {
                         let reason = format!("one-api provisioning failed: {err}");
+                        record_audit_event(
+                            &store,
+                            profile.id,
+                            EventType::Error,
+                            EventResult::Failure,
+                            None,
+                            Some("one-api provisioning failed".to_string()),
+                            json!({"error": err.to_string()}),
+                        )
+                        .await;
                         if let Err(update_err) = store
                             .update_agent_state(
                                 profile.id,
@@ -1422,6 +2128,16 @@ async fn handle_rpc_request(
 
                 if let Err(err) = store.save_mapping(mapping).await {
                     let reason = format!("persist one-api mapping failed: {err}");
+                    record_audit_event(
+                        &store,
+                        profile.id,
+                        EventType::Error,
+                        EventResult::Failure,
+                        None,
+                        Some("persist one-api mapping failed".to_string()),
+                        json!({"error": err.to_string()}),
+                    )
+                    .await;
                     if let Err(update_err) = store
                         .update_agent_state(
                             profile.id,
@@ -1448,6 +2164,21 @@ async fn handle_rpc_request(
                 .await
             {
                 Ok(ready_agent) => {
+                    record_audit_event(
+                        &store,
+                        ready_agent.id,
+                        EventType::AgentCreated,
+                        EventResult::Success,
+                        None,
+                        Some("agent created".to_string()),
+                        json!({
+                            "idempotent": false,
+                            "provider": ready_agent.model.provider,
+                            "model": ready_agent.model.model_name,
+                        }),
+                    )
+                    .await;
+
                     if let Some(one_api) = provisioned {
                         JsonRpcResponse::success(
                             request.id,
@@ -1470,11 +2201,23 @@ async fn handle_rpc_request(
                         )
                     }
                 }
-                Err(err) => JsonRpcResponse::error(
-                    request.id,
-                    -32011,
-                    format!("mark agent ready failed: {err}"),
-                ),
+                Err(err) => {
+                    record_audit_event(
+                        &store,
+                        profile.id,
+                        EventType::Error,
+                        EventResult::Failure,
+                        None,
+                        Some("mark agent ready failed".to_string()),
+                        json!({"error": err.to_string()}),
+                    )
+                    .await;
+                    JsonRpcResponse::error(
+                        request.id,
+                        -32011,
+                        format!("mark agent ready failed: {err}"),
+                    )
+                }
             }
         }
         _ => JsonRpcResponse::error(request.id, -32601, "method not found"),
@@ -1719,11 +2462,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(config_path = %args.config, "Loaded daemon config");
 
     let store = Arc::new(SqliteStore::new(Path::new(&config.daemon.db_path))?);
-    let state = RuntimeState::new(if config.one_api.enabled {
-        "starting"
-    } else {
-        "disabled"
-    });
+    let lifecycle_manager = LifecycleManager::new(CgroupManager::new(
+        config.daemon.cgroup_root.clone(),
+        config.daemon.cgroup_parent.clone(),
+    ));
+    let state = RuntimeState::with_lifecycle(
+        if config.one_api.enabled {
+            "starting"
+        } else {
+            "disabled"
+        },
+        lifecycle_manager,
+    );
 
     let health_listener = TcpListener::bind(bind_addr).await?;
 

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub mod agent;
+pub mod audit;
 pub mod db;
 pub mod one_api;
 pub mod usage;
@@ -38,6 +39,16 @@ impl SqliteStore {
     fn open_connection(&self) -> Result<Connection, AgentError> {
         Connection::open(&self.db_path)
             .map_err(|err| AgentError::Storage(format!("open sqlite failed: {err}")))
+    }
+
+    pub async fn append_audit_event(&self, event: AuditEvent) -> Result<(), AgentError> {
+        let conn = self.open_connection()?;
+        audit::insert_event(&conn, &event)
+    }
+
+    pub async fn get_audit_events(&self, agent_id: Uuid) -> Result<Vec<AuditEvent>, AgentError> {
+        let conn = self.open_connection()?;
+        audit::list_events_for_agent(&conn, agent_id)
     }
 }
 
@@ -178,4 +189,15 @@ impl AgentStore for SqliteStore {
 pub trait AuditStore: Send + Sync {
     async fn append_event(&self, event: AuditEvent) -> Result<(), AgentError>;
     async fn get_events(&self, agent_id: Uuid) -> Result<Vec<AuditEvent>, AgentError>;
+}
+
+#[async_trait]
+impl AuditStore for SqliteStore {
+    async fn append_event(&self, event: AuditEvent) -> Result<(), AgentError> {
+        self.append_audit_event(event).await
+    }
+
+    async fn get_events(&self, agent_id: Uuid) -> Result<Vec<AuditEvent>, AgentError> {
+        self.get_audit_events(agent_id).await
+    }
 }

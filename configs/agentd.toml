@@ -4,6 +4,8 @@ health_port = 7000
 shutdown_timeout_secs = 5
 socket_path = "/tmp/agentd.sock"
 db_path = "data/agentd.db"
+cgroup_root = "/sys/fs/cgroup"
+cgroup_parent = "agentd"
 
 [one_api]
 enabled = false
