@@ -4,3 +4,12 @@ health_port = 7000
 shutdown_timeout_secs = 5
 socket_path = "/tmp/agentd.sock"
 db_path = "data/agentd.db"
+
+[one_api]
+enabled = false
+command = "one-api"
+args = []
+health_url = "http://127.0.0.1:3000/health"
+startup_timeout_secs = 30
+restart_max_attempts = 3
+restart_backoff_secs = 2

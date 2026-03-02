@@ -490,7 +490,7 @@ Wave FINAL（并行独立审查）
   - Files: `Cargo.toml`, `crates/*/Cargo.toml`, `crates/agentd-core/src/*`
   - Pre-commit: `cargo check --workspace`
 
-- [ ] 5. daemon 主进程骨架 + systemd notify + health
+- [x] 5. daemon 主进程骨架 + systemd notify + health
 
   **What to do**:
   - 在 `agentd-daemon` 实现最小启动流程、信号处理和优雅退出。
@@ -562,7 +562,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-daemon/src/main.rs`, `systemd/agentd.service`, `configs/agentd.toml`
   - Pre-commit: `cargo test -p agentd-daemon`
 
-- [ ] 6. UDS JSON-RPC 协议骨架 + agentctl 基础命令
+- [x] 6. UDS JSON-RPC 协议骨架 + agentctl 基础命令
 
   **What to do**:
   - 在 `agentd-protocol` 完成 UDS 监听、JSON-RPC 编解码与基础路由。
@@ -636,7 +636,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 7. SQLite store 初始化与迁移（agent/quota）
+- [x] 7. SQLite store 初始化与迁移（agent/quota）
 
   **What to do**:
   - 在 `agentd-store` 实现数据库连接、迁移执行与健康检测。
@@ -707,7 +707,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-store/src/db.rs`, `crates/agentd-store/src/agent.rs`, `migrations/*`
   - Pre-commit: `cargo test -p agentd-store`
 
-- [ ] 8. One-API 同机托管监督器
+- [x] 8. One-API 同机托管监督器
 
   **What to do**:
   - 在 daemon 生命周期中加入 One-API 子进程拉起、探活、退出重试策略。
