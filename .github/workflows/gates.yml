@@ -89,6 +89,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-gates-rust-${{ runner.os }}
+          add-job-id-key: false
+
       - name: Build workspace
         run: |
           cargo metadata --no-deps >/tmp/cargo-metadata.json
@@ -119,6 +125,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-gates-rust-${{ runner.os }}
+          add-job-id-key: false
+
       - name: Run workspace tests
         run: |
           cargo test --workspace
@@ -146,6 +158,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-gates-rust-${{ runner.os }}
+          add-job-id-key: false
+
       - name: Run security baseline checks
         run: |
           cargo fmt --all -- --check
@@ -170,6 +188,12 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-gates-rust-${{ runner.os }}
+          add-job-id-key: false
 
       - name: Run Phase A gate
         run: |
