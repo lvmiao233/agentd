@@ -1,6 +1,6 @@
+use agentd_core::{AgentProfile, AuditEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use agentd_core::{AgentProfile, AuditEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateAgentRequest {
