@@ -1,17 +1,17 @@
 mod cgroup;
 mod lifecycle;
 
-use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::audit::{EventPayload, EventResult, EventType};
+use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
     AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyLayer,
     PolicyRule, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
+use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
-use cgroup::{CgroupManager, CgroupResourceLimits};
 use lifecycle::{LifecycleManager, ManagedAgentSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -831,12 +831,7 @@ mod tests {
 
         let agent_id = Uuid::new_v4();
         let start_response = handle_rpc_request(
-            start_managed_agent_request(
-                &agent_id.to_string(),
-                "/bin/sh",
-                vec!["-c", "sleep 1"],
-                0,
-            ),
+            start_managed_agent_request(&agent_id.to_string(), "/bin/sh", vec!["-c", "sleep 1"], 0),
             store.clone(),
             state.clone(),
             OneApiConfig::default(),
@@ -897,7 +892,8 @@ mod tests {
     #[tokio::test]
     async fn managed_agent_lifecycle_emits_restart_and_oom_events() {
         let db_path = test_db_path();
-        let cgroup_root = std::env::temp_dir().join(format!("agentd-managed-oom-{}", Uuid::new_v4()));
+        let cgroup_root =
+            std::env::temp_dir().join(format!("agentd-managed-oom-{}", Uuid::new_v4()));
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
         let state = managed_test_state(&cgroup_root);
 
@@ -914,15 +910,17 @@ mod tests {
             OneApiConfig::default(),
         )
         .await;
-        assert!(start_response.error.is_none(), "start response should succeed");
+        assert!(
+            start_response.error.is_none(),
+            "start response should succeed"
+        );
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         let memory_events_path = cgroup_root
             .join("agentd")
             .join(agent_id.to_string())
             .join("memory.events");
-        std::fs::write(memory_events_path, "oom 2\noom_kill 1\n")
-            .expect("simulate oom events");
+        std::fs::write(memory_events_path, "oom 2\noom_kill 1\n").expect("simulate oom events");
 
         tokio::time::sleep(Duration::from_millis(700)).await;
         let events_response = handle_rpc_request(
@@ -938,7 +936,10 @@ mod tests {
             OneApiConfig::default(),
         )
         .await;
-        assert!(events_response.error.is_none(), "events query should succeed");
+        assert!(
+            events_response.error.is_none(),
+            "events query should succeed"
+        );
         let events = events_response
             .result
             .expect("events result should exist")
@@ -953,6 +954,85 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event["event_type"] == json!("agent.restarting")));
+
+        let _ = handle_rpc_request(
+            stop_managed_agent_request(&agent_id.to_string()),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let _ = std::fs::remove_dir_all(cgroup_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subscribe_events_returns_next_cursor_after_lifecycle_event() {
+        let db_path = test_db_path();
+        let cgroup_root =
+            std::env::temp_dir().join(format!("agentd-managed-subscribe-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = managed_test_state(&cgroup_root);
+
+        let agent_id = Uuid::new_v4();
+        let start_response = handle_rpc_request(
+            start_managed_agent_request(
+                &agent_id.to_string(),
+                "/bin/sh",
+                vec!["-c", "sleep 0.2"],
+                0,
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            start_response.error.is_none(),
+            "start response should succeed: {start_response:?}"
+        );
+
+        let subscribe_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(21),
+                "SubscribeEvents",
+                json!({
+                    "limit": 10,
+                    "wait_timeout_secs": 2,
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+
+        assert!(
+            subscribe_response.error.is_none(),
+            "subscribe should succeed: {subscribe_response:?}"
+        );
+
+        let result = subscribe_response
+            .result
+            .expect("subscribe result should exist");
+        let events = result
+            .get("events")
+            .expect("events should exist")
+            .as_array()
+            .expect("events should be array")
+            .clone();
+        assert!(
+            !events.is_empty(),
+            "subscribe should return at least one event"
+        );
+        assert!(
+            result
+                .get("next_cursor")
+                .and_then(|cursor| cursor.as_str())
+                .is_some(),
+            "next_cursor should be returned"
+        );
 
         let _ = handle_rpc_request(
             stop_managed_agent_request(&agent_id.to_string()),
@@ -1154,6 +1234,16 @@ struct StopManagedAgentParams {
 struct ListLifecycleEventsParams {
     #[serde(default)]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscribeEventsParams {
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    wait_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1738,6 +1828,55 @@ async fn handle_rpc_request(
                 }),
             )
         }
+        "SubscribeEvents" | "management.SubscribeEvents" => {
+            let params = serde_json::from_value::<SubscribeEventsParams>(request.params).unwrap_or(
+                SubscribeEventsParams {
+                    cursor: None,
+                    limit: Some(100),
+                    wait_timeout_secs: Some(5),
+                },
+            );
+            let wait_timeout_secs = params.wait_timeout_secs.unwrap_or(5);
+
+            let mut events = state
+                .lifecycle()
+                .list_events_since(params.cursor.as_deref(), params.limit)
+                .await;
+
+            if events.is_empty() && wait_timeout_secs > 0 {
+                let mut subscription = state.lifecycle().subscribe_events();
+                let wait_result = tokio::time::timeout(
+                    Duration::from_secs(wait_timeout_secs),
+                    subscription.recv(),
+                )
+                .await;
+
+                match wait_result {
+                    Ok(Ok(_)) => {
+                        events = state
+                            .lifecycle()
+                            .list_events_since(params.cursor.as_deref(), params.limit)
+                            .await;
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        events = state
+                            .lifecycle()
+                            .list_events_since(None, params.limit)
+                            .await;
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => {}
+                }
+            }
+
+            let next_cursor = events.last().map(|event| event.event_id.clone());
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "events": events,
+                    "next_cursor": next_cursor,
+                }),
+            )
+        }
         "ListAuditEvents" | "management.ListAuditEvents" => {
             let params = match serde_json::from_value::<ListAuditEventsParams>(request.params) {
                 Ok(params) => params,
@@ -1762,7 +1901,10 @@ async fn handle_rpc_request(
 
             match store.get_audit_events(agent_id).await {
                 Ok(all_events) => {
-                    let limit = params.limit.unwrap_or(all_events.len()).min(all_events.len());
+                    let limit = params
+                        .limit
+                        .unwrap_or(all_events.len())
+                        .min(all_events.len());
                     let events = all_events.into_iter().take(limit).collect::<Vec<_>>();
                     JsonRpcResponse::success(request.id, json!({"events": events}))
                 }

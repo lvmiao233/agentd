@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
@@ -68,14 +68,17 @@ pub struct LifecycleManager {
     cgroup: CgroupManager,
     agents: Arc<Mutex<HashMap<Uuid, ManagedAgentHandle>>>,
     events: Arc<RwLock<Vec<LifecycleEvent>>>,
+    event_tx: broadcast::Sender<LifecycleEvent>,
 }
 
 impl LifecycleManager {
     pub fn new(cgroup: CgroupManager) -> Self {
+        let (event_tx, _) = broadcast::channel(EVENT_BUFFER_LIMIT);
         Self {
             cgroup,
             agents: Arc::new(Mutex::new(HashMap::new())),
             events: Arc::new(RwLock::new(Vec::new())),
+            event_tx,
         }
     }
 
@@ -116,7 +119,9 @@ impl LifecycleManager {
         let manager = self.clone();
         let snapshot_clone = snapshot.clone();
         let task = tokio::spawn(async move {
-            manager.run_agent_supervisor(spec, snapshot_clone, stop_rx).await;
+            manager
+                .run_agent_supervisor(spec, snapshot_clone, stop_rx)
+                .await;
         });
 
         guard.insert(
@@ -169,13 +174,51 @@ impl LifecycleManager {
         events[events.len().saturating_sub(keep)..].to_vec()
     }
 
+    pub async fn list_events_since(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Vec<LifecycleEvent> {
+        let events = self.events.read().await;
+        if events.is_empty() {
+            return Vec::new();
+        }
+
+        let mut collected = if let Some(cursor_id) = cursor {
+            if let Some(position) = events.iter().position(|event| event.event_id == cursor_id) {
+                events[position + 1..].to_vec()
+            } else {
+                let requested = limit.unwrap_or(events.len());
+                let keep = requested.min(events.len());
+                events[events.len().saturating_sub(keep)..].to_vec()
+            }
+        } else {
+            let requested = limit.unwrap_or(events.len());
+            let keep = requested.min(events.len());
+            events[events.len().saturating_sub(keep)..].to_vec()
+        };
+
+        if let Some(max_items) = limit {
+            if collected.len() > max_items {
+                collected.truncate(max_items);
+            }
+        }
+
+        collected
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<LifecycleEvent> {
+        self.event_tx.subscribe()
+    }
+
     async fn push_event(&self, event: LifecycleEvent) {
         let mut events = self.events.write().await;
-        events.push(event);
+        events.push(event.clone());
         if events.len() > EVENT_BUFFER_LIMIT {
             let drop_n = events.len() - EVENT_BUFFER_LIMIT;
             events.drain(0..drop_n);
         }
+        let _ = self.event_tx.send(event);
     }
 
     async fn run_agent_supervisor(
@@ -304,7 +347,10 @@ impl LifecycleManager {
                 status = child.wait() => status,
             };
 
-            let memory_after = self.cgroup.read_memory_events(spec.agent_id).unwrap_or_default();
+            let memory_after = self
+                .cgroup
+                .read_memory_events(spec.agent_id)
+                .unwrap_or_default();
             if memory_after.oom_detected_since(memory_before) {
                 self.push_event(new_event(
                     spec.agent_id,
@@ -500,6 +546,47 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| e.event_type == "agent.restart_exhausted"));
+
+        let _ = manager.stop_agent(agent_id).await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn list_events_since_cursor_and_subscription_work() {
+        let root = temp_cgroup_root();
+        let manager = test_manager(&root);
+        let agent_id = Uuid::new_v4();
+
+        let mut subscription = manager.subscribe_events();
+        manager
+            .start_agent(ManagedAgentSpec {
+                agent_id,
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 0.1".to_string()],
+                env: HashMap::new(),
+                restart_max_attempts: 0,
+                restart_backoff_secs: 0,
+                limits: CgroupResourceLimits::default(),
+            })
+            .await
+            .expect("start managed agent should succeed");
+
+        let first_event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+            .await
+            .expect("subscription should receive event in time")
+            .expect("subscription should receive valid event");
+        assert_eq!(first_event.agent_id, agent_id);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let replayed = manager
+            .list_events_since(Some(&first_event.event_id), Some(20))
+            .await;
+        assert!(
+            replayed
+                .iter()
+                .all(|event| event.event_id != first_event.event_id),
+            "replayed events should exclude cursor event"
+        );
 
         let _ = manager.stop_agent(agent_id).await;
         let _ = std::fs::remove_dir_all(root);

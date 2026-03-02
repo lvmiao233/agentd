@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::time::{sleep, Duration};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -89,6 +90,12 @@ enum AgentCommands {
         #[arg(long)]
         limit: Option<usize>,
         #[arg(long)]
+        follow: bool,
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        reconnect_delay_secs: u64,
+        #[arg(long)]
         json: bool,
     },
     Audit {
@@ -136,6 +143,69 @@ fn print_response(
     }
 
     Ok(())
+}
+
+fn print_event(event: &Value, as_json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if as_json {
+        println!("{}", serde_json::to_string(event)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(event)?);
+    }
+    Ok(())
+}
+
+async fn follow_events(
+    socket_path: &str,
+    limit: Option<usize>,
+    as_json: bool,
+    mut cursor: Option<String>,
+    reconnect_delay_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let response = call_rpc(
+            socket_path,
+            "SubscribeEvents",
+            json!({
+                "cursor": cursor,
+                "limit": limit,
+                "wait_timeout_secs": 5,
+            }),
+        )
+        .await;
+
+        let response = match response {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("event stream reconnecting after transport error: {err}");
+                sleep(Duration::from_secs(reconnect_delay_secs)).await;
+                continue;
+            }
+        };
+
+        if let Some(error) = response.error {
+            eprintln!(
+                "event stream reconnecting after rpc error {}: {}",
+                error.code, error.message
+            );
+            sleep(Duration::from_secs(reconnect_delay_secs)).await;
+            continue;
+        }
+
+        let result = response.result.unwrap_or(json!({}));
+        let events = result
+            .get("events")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        for event in &events {
+            print_event(event, as_json)?;
+        }
+
+        if let Some(next_cursor) = result.get("next_cursor").and_then(Value::as_str) {
+            cursor = Some(next_cursor.to_string());
+        }
+    }
 }
 
 #[tokio::main]
@@ -241,17 +311,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let response = call_rpc(&cli.socket_path, "ListManagedAgents", json!({})).await?;
                 print_response(response, json)?;
             }
-            AgentCommands::Events { limit, json } => {
-                info!(socket_path = %cli.socket_path, "Calling ListLifecycleEvents over UDS JSON-RPC");
-                let response = call_rpc(
-                    &cli.socket_path,
-                    "ListLifecycleEvents",
-                    json!({
-                        "limit": limit,
-                    }),
-                )
-                .await?;
-                print_response(response, json)?;
+            AgentCommands::Events {
+                limit,
+                follow,
+                cursor,
+                reconnect_delay_secs,
+                json,
+            } => {
+                if follow {
+                    info!(socket_path = %cli.socket_path, "Calling SubscribeEvents over UDS JSON-RPC in follow mode");
+                    follow_events(&cli.socket_path, limit, json, cursor, reconnect_delay_secs)
+                        .await?;
+                } else {
+                    info!(socket_path = %cli.socket_path, "Calling ListLifecycleEvents over UDS JSON-RPC");
+                    let response = call_rpc(
+                        &cli.socket_path,
+                        "ListLifecycleEvents",
+                        json!({
+                            "limit": limit,
+                        }),
+                    )
+                    .await?;
+                    print_response(response, json)?;
+                }
             }
             AgentCommands::Audit {
                 agent_id,
