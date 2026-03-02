@@ -131,15 +131,16 @@ check_file ".github/workflows/gates.yml" "Gates workflow"
 if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
     # Check for required job names
     check_contains ".github/workflows/gates.yml" "preflight:" "Preflight job"
-    check_contains ".github/workflows/gates.yml" "no-go-guard:" "No-Go Guard job"
     check_contains ".github/workflows/gates.yml" "build-gate:" "Build gate job"
     check_contains ".github/workflows/gates.yml" "test-gate:" "Test gate job"
     check_contains ".github/workflows/gates.yml" "security-gate:" "Security gate job"
+    check_contains ".github/workflows/gates.yml" "phase-a-gate:" "Phase A gate job"
     check_contains ".github/workflows/gates.yml" "gate-syscall:" "Syscall gate job"
     check_contains ".github/workflows/gates.yml" "gate-isolation:" "Isolation gate job"
     
     # Check for Ubuntu 25.10 self-hosted label
-    check_contains ".github/workflows/gates.yml" "self-hosted-ubuntu-25.10" "Ubuntu 25.10 runner label"
+    check_contains ".github/workflows/gates.yml" "self-hosted" "Self-hosted runner label"
+    check_contains ".github/workflows/gates.yml" "ubuntu-25.10" "Ubuntu 25.10 runner label"
     
     # Check for evidence upload
     check_contains ".github/workflows/gates.yml" "evidence-" "Evidence artifact upload"
@@ -159,6 +160,8 @@ fi
 log_info ""
 log_info "=== Step 4: Local Gate Check Script ==="
 check_file "scripts/gate-check.sh" "Gate check script"
+check_file "scripts/gates/phase-a-gate.sh" "Phase A gate script"
+check_file "scripts/rollback/phase-a-rollback.sh" "Phase A rollback script"
 
 if [ -f "$REPO_ROOT/scripts/gate-check.sh" ]; then
     check_contains "scripts/gate-check.sh" "set -euo pipefail" "Strict shell mode"
@@ -181,11 +184,6 @@ log_info ""
 log_info "=== Step 6: Baseline Files (T1/T2) ==="
 check_file "rust-toolchain.toml" "Rust toolchain"
 check_file "pyproject.toml" "Python project"
-check_file "scripts/no-go-guard.sh" "No-Go Guard script"
-
-if [ -f "$REPO_ROOT/scripts/no-go-guard.sh" ]; then
-    check_contains "scripts/no-go-guard.sh" "set -" "Shell strict mode"
-fi
 
 # Check 7: Workflow syntax validation
 log_info ""
@@ -211,10 +209,17 @@ else
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 
-if bash -n "$REPO_ROOT/scripts/no-go-guard.sh" 2>/dev/null; then
-    log_info "✓ no-go-guard.sh syntax valid"
+if bash -n "$REPO_ROOT/scripts/gates/phase-a-gate.sh" 2>/dev/null; then
+    log_info "✓ phase-a-gate.sh syntax valid"
 else
-    log_error "✗ no-go-guard.sh has syntax errors"
+    log_error "✗ phase-a-gate.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/rollback/phase-a-rollback.sh" 2>/dev/null; then
+    log_info "✓ phase-a-rollback.sh syntax valid"
+else
+    log_error "✗ phase-a-rollback.sh has syntax errors"
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 

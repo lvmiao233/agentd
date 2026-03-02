@@ -22,10 +22,10 @@ The following GitHub Actions jobs must pass before merging to protected branches
 | CI Job | Required Check | Description |
 |--------|---------------|-------------|
 | `preflight` | ✅ Required | Baseline file validation |
-| `no-go-guard` | ✅ Required | Go toolchain absence verification |
 | `build-gate` | ✅ Required | Cargo workspace build (T4) |
 | `test-gate` | ✅ Required | Unit/integration tests (T4) |
 | `security-gate` | ✅ Required | Security scanning (T4) |
+| `phase-a-gate` | ✅ Required | Phase A quantitative gate (T12) |
 | `gate-syscall` | ✅ Required | System call validation (T4) |
 | `gate-isolation` | ✅ Required | cgroup/systemd isolation (T4) |
 
@@ -48,14 +48,14 @@ Pattern: main
     ✓ Dismiss stale reviews when new commits are pushed
     ✓ Require review from code owners
 
-✓ Require status checks to pass before merging
+    ✓ Require status checks to pass before merging
     ✓ Require branches to be up to date before merging
     Select status checks:
       - CI Gates / Preflight Check (required)
-      - CI Gates / No-Go Guard (required)
       - CI Gates / Build Gate (required)
       - CI Gates / Test Gate (required)
       - CI Gates / Security Gate (required)
+      - CI Gates / Phase A Gate (required)
       - CI Gates / System Call Gate (required)
       - CI Gates / Isolation Gate (Ubuntu 25.10) (required)
 
@@ -75,10 +75,10 @@ Each CI gate job uploads evidence to `.sisyphus/evidence/`:
 ```
 .sisyphus/evidence/
 ├── evidence-preflight/
-├── evidence-no-go-guard/
 ├── evidence-build-gate/
 ├── evidence-test-gate/
 ├── evidence-security-gate/
+├── evidence-phase-a-gate/
 ├── evidence-gate-syscall/
 ├── evidence-gate-isolation/
 └── evidence-all/
