@@ -1,0 +1,1 @@
+{"status": "dry_run", "config": {"base_url": "http://env:3000/v1", "model": "gpt-4o-mini", "timeout": 60}}

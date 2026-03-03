@@ -1,0 +1,1 @@
+{"status": "failed", "stage": "config", "error": "invalid_config", "reason_code": "INVALID_BASE_URL", "message": "base_url validation failed: base_url must be a valid URL, got: not-a-url"}

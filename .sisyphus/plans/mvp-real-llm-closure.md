@@ -217,7 +217,7 @@ Max Concurrent: 5
   - Files: `scripts/gates/*`, `tests/*`
   - Pre-commit: `bash scripts/gates/preflight-real-oneapi.sh --dry-run`
 
-- [ ] 2. agent-lite 引入真实 LLM 客户端依赖与配置注入
+- [x] 2. agent-lite 引入真实 LLM 客户端依赖与配置注入
 
   **What to do**:
   - 在 `python/agentd-agent-lite` 增加 OpenAI-compatible 客户端依赖与配置读取（base_url/api_key/model/timeout）。
@@ -248,9 +248,9 @@ Max Concurrent: 5
   - One-API README `Usage` - OpenAI-compatible `base_url` / token 使用方式。
 
   **Acceptance Criteria**:
-  - [ ] 配置缺失测试先失败后通过。
-  - [ ] 支持通过环境变量与参数注入 base_url/api_key/model。
-  - [ ] 无真实请求时（dry-run）不触发网络调用。
+  - [x] 配置缺失测试先失败后通过。
+  - [x] 支持通过环境变量与参数注入 base_url/api_key/model。
+  - [x] 无真实请求时（dry-run）不触发网络调用。
 
   **QA Scenarios (MANDATORY)**:
   ```
