@@ -4,6 +4,34 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy)]
+pub enum UsageWindow {
+    OneHour,
+    TwentyFourHours,
+    SevenDays,
+}
+
+impl UsageWindow {
+    pub fn from_str(value: &str) -> Result<Self, AgentError> {
+        match value {
+            "1h" => Ok(Self::OneHour),
+            "24h" => Ok(Self::TwentyFourHours),
+            "7d" => Ok(Self::SevenDays),
+            _ => Err(AgentError::InvalidInput(format!(
+                "unsupported usage window '{value}', expected one of: 1h, 24h, 7d"
+            ))),
+        }
+    }
+
+    fn sqlite_modifier(self) -> &'static str {
+        match self {
+            Self::OneHour => "-1 hour",
+            Self::TwentyFourHours => "-24 hours",
+            Self::SevenDays => "-7 days",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelUsageBreakdown {
     pub model_name: String,
@@ -48,6 +76,32 @@ pub fn record_usage(
     let day = Utc::now().date_naive().format("%Y-%m-%d").to_string();
     let updated_at = Utc::now().to_rfc3339();
     let agent_id = agent_id.to_string();
+
+    conn.execute(
+        r#"
+        INSERT INTO usage_records (
+            id,
+            agent_id,
+            model_name,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost_usd,
+            created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);
+        "#,
+        params![
+            Uuid::new_v4().to_string(),
+            agent_id,
+            model_name,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost_usd,
+            updated_at,
+        ],
+    )
+    .map_err(|err| AgentError::Storage(format!("insert usage_records failed: {err}")))?;
 
     conn.execute(
         r#"
@@ -196,6 +250,87 @@ pub fn fetch_usage_summary(
     })
 }
 
+pub fn fetch_usage_summary_in_window(
+    conn: &Connection,
+    agent_id: Uuid,
+    window: UsageWindow,
+) -> Result<AgentUsageSummary, AgentError> {
+    let modifier = window.sqlite_modifier();
+
+    let (input_tokens, output_tokens, total_tokens, total_cost_usd): (i64, i64, i64, f64) = conn
+        .query_row(
+            r#"
+            SELECT
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(cost_usd), 0.0)
+            FROM usage_records
+            WHERE agent_id = ?1
+              AND datetime(created_at) >= datetime('now', ?2);
+            "#,
+            params![agent_id.to_string(), modifier],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|err| {
+            AgentError::Storage(format!("query usage_records aggregate failed: {err}"))
+        })?;
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                model_name,
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(cost_usd), 0.0)
+            FROM usage_records
+            WHERE agent_id = ?1
+              AND datetime(created_at) >= datetime('now', ?2)
+            GROUP BY model_name
+            ORDER BY COALESCE(SUM(total_tokens), 0) DESC;
+            "#,
+        )
+        .map_err(|err| {
+            AgentError::Storage(format!(
+                "prepare usage window breakdown query failed: {err}"
+            ))
+        })?;
+
+    let rows = stmt
+        .query_map(params![agent_id.to_string(), modifier], |row| {
+            Ok(ModelUsageBreakdown {
+                model_name: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+                total_tokens: row.get(3)?,
+                cost_usd: row.get(4)?,
+            })
+        })
+        .map_err(|err| {
+            AgentError::Storage(format!(
+                "execute usage window breakdown query failed: {err}"
+            ))
+        })?;
+
+    let mut model_cost_breakdown = Vec::new();
+    for row in rows {
+        let usage =
+            row.map_err(|err| AgentError::Storage(format!("read usage window row failed: {err}")))?;
+        model_cost_breakdown.push(usage);
+    }
+
+    Ok(AgentUsageSummary {
+        agent_id,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        total_cost_usd,
+        model_cost_breakdown,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +382,70 @@ mod tests {
             "claude-4-sonnet"
         );
         assert_eq!(summary.model_cost_breakdown[0].total_tokens, 130);
+
+        std::fs::remove_file(&db_path).expect("cleanup temp db");
+    }
+
+    #[test]
+    fn usage_window_filters_records_by_created_time() {
+        let db_path =
+            std::env::temp_dir().join(format!("agentd-store-window-{}.sqlite", Uuid::new_v4()));
+        db::initialize_database(&db_path).expect("initialize db");
+        let conn = Connection::open(&db_path).expect("open db");
+
+        conn.execute(
+            r#"
+            INSERT INTO agents (
+                id, name, model_provider, model_name,
+                permission_policy, allowed_tools_json, denied_tools_json,
+                lifecycle_state, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
+            "#,
+            params![
+                "4fe30ec7-8930-41f2-bbc1-955fbd7157f4",
+                "window-agent",
+                "one-api",
+                "claude-4-sonnet",
+                "ask",
+                "[]",
+                "[]",
+                "ready",
+                Utc::now().to_rfc3339(),
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .expect("insert agent fixture");
+
+        let agent_id = Uuid::parse_str("4fe30ec7-8930-41f2-bbc1-955fbd7157f4").expect("uuid");
+        record_usage(&conn, agent_id, "claude-4-sonnet", 30, 20, 0.09).expect("record usage");
+
+        conn.execute(
+            r#"
+            INSERT INTO usage_records (
+                id, agent_id, model_name, input_tokens, output_tokens, total_tokens, cost_usd, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now', '-9 days'));
+            "#,
+            params![
+                Uuid::new_v4().to_string(),
+                agent_id.to_string(),
+                "claude-3-5-haiku",
+                10_i64,
+                5_i64,
+                15_i64,
+                0.01_f64,
+            ],
+        )
+        .expect("insert old usage record");
+
+        let one_hour =
+            fetch_usage_summary_in_window(&conn, agent_id, UsageWindow::OneHour).expect("1h");
+        assert_eq!(one_hour.total_tokens, 50);
+        assert!((one_hour.total_cost_usd - 0.09).abs() < 1e-9);
+
+        let seven_days =
+            fetch_usage_summary_in_window(&conn, agent_id, UsageWindow::SevenDays).expect("7d");
+        assert_eq!(seven_days.total_tokens, 50);
+        assert_eq!(seven_days.model_cost_breakdown.len(), 1);
 
         std::fs::remove_file(&db_path).expect("cleanup temp db");
     }

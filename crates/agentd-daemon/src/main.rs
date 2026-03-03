@@ -8,7 +8,7 @@ use agentd_core::{
     PolicyRule, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
-use agentd_store::{AgentStore, OneApiMapping, SqliteStore};
+use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
@@ -407,6 +407,17 @@ mod tests {
         )
     }
 
+    fn get_usage_window_request(agent_id: &str, window: &str) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(105),
+            "GetUsage",
+            json!({
+                "agent_id": agent_id,
+                "window": window,
+            }),
+        )
+    }
+
     fn record_usage_request(
         agent_id: &str,
         model_name: &str,
@@ -728,8 +739,8 @@ mod tests {
 
         let final_usage = handle_rpc_request(
             get_usage_request(&created_agent_id),
-            store,
-            state,
+            store.clone(),
+            state.clone(),
             OneApiConfig::default(),
         )
         .await;
@@ -745,6 +756,39 @@ mod tests {
             summary["model_cost_breakdown"][0]["model_name"],
             json!("claude-4-sonnet")
         );
+
+        for window in ["1h", "24h", "7d"] {
+            let window_usage = handle_rpc_request(
+                get_usage_window_request(&created_agent_id, window),
+                store.clone(),
+                state.clone(),
+                OneApiConfig::default(),
+            )
+            .await;
+            assert!(
+                window_usage.error.is_none(),
+                "window usage query should succeed for {window}: {window_usage:?}"
+            );
+            let window_summary = window_usage.result.expect("window usage summary");
+            assert_eq!(window_summary["total_tokens"], json!(90));
+            assert!(window_summary.get("total_cost_usd").is_some());
+            assert!(window_summary.get("model_cost_breakdown").is_some());
+        }
+
+        let invalid_window_usage = handle_rpc_request(
+            get_usage_window_request(&created_agent_id, "2d"),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        let invalid_window_error = invalid_window_usage
+            .error
+            .expect("invalid window should fail");
+        assert_eq!(invalid_window_error.code, -32602);
+        assert!(invalid_window_error
+            .message
+            .contains("unsupported usage window"));
 
         cleanup_sqlite_files(&db_path);
     }
@@ -1174,6 +1218,8 @@ struct CreateAgentParams {
 #[derive(Debug, Deserialize)]
 struct GetUsageParams {
     agent_id: String,
+    #[serde(default)]
+    window: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1949,7 +1995,22 @@ async fn handle_rpc_request(
                 }
             };
 
-            match store.get_usage(agent_id).await {
+            let usage_result = if let Some(window) = params.window.as_deref() {
+                match UsageWindow::from_str(window) {
+                    Ok(window) => store.get_usage_in_window(agent_id, window).await,
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32602,
+                            format!("invalid get usage params: {err}"),
+                        )
+                    }
+                }
+            } else {
+                store.get_usage(agent_id).await
+            };
+
+            match usage_result {
                 Ok(usage) => JsonRpcResponse::success(request.id, json!(usage)),
                 Err(err) => {
                     JsonRpcResponse::error(request.id, -32012, format!("get usage failed: {err}"))

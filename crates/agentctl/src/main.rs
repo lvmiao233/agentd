@@ -26,6 +26,8 @@ enum Commands {
     Usage {
         agent_id: String,
         #[arg(long)]
+        window: Option<String>,
+        #[arg(long)]
         json: bool,
     },
     Agent {
@@ -222,13 +224,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = call_rpc(&cli.socket_path, "GetHealth", json!({})).await?;
             print_response(response, json)?;
         }
-        Commands::Usage { agent_id, json } => {
+        Commands::Usage {
+            agent_id,
+            window,
+            json,
+        } => {
             info!(socket_path = %cli.socket_path, %agent_id, "Calling GetUsage over UDS JSON-RPC");
             let response = call_rpc(
                 &cli.socket_path,
                 "GetUsage",
                 json!({
                     "agent_id": agent_id,
+                    "window": window,
                 }),
             )
             .await?;

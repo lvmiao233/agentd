@@ -12,7 +12,7 @@ pub mod one_api;
 pub mod usage;
 
 pub use one_api::OneApiMapping;
-pub use usage::AgentUsageSummary;
+pub use usage::{AgentUsageSummary, UsageWindow};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -85,6 +85,11 @@ pub trait AgentStore: Send + Sync {
         cost_usd: f64,
     ) -> Result<AgentUsageSummary, AgentError>;
     async fn get_usage(&self, agent_id: Uuid) -> Result<AgentUsageSummary, AgentError>;
+    async fn get_usage_in_window(
+        &self,
+        agent_id: Uuid,
+        window: UsageWindow,
+    ) -> Result<AgentUsageSummary, AgentError>;
     async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError>;
 }
 
@@ -177,6 +182,15 @@ impl AgentStore for SqliteStore {
     async fn get_usage(&self, agent_id: Uuid) -> Result<AgentUsageSummary, AgentError> {
         let conn = self.open_connection()?;
         usage::fetch_usage_summary(&conn, agent_id)
+    }
+
+    async fn get_usage_in_window(
+        &self,
+        agent_id: Uuid,
+        window: UsageWindow,
+    ) -> Result<AgentUsageSummary, AgentError> {
+        let conn = self.open_connection()?;
+        usage::fetch_usage_summary_in_window(&conn, agent_id, window)
     }
 
     async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError> {
