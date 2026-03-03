@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -75,6 +75,8 @@ struct DaemonConfig {
     cgroup_root: String,
     #[serde(default = "default_cgroup_parent")]
     cgroup_parent: String,
+    #[serde(default = "default_agent_card_root")]
+    agent_card_root: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +125,7 @@ impl Default for DaemonConfig {
             db_path: default_db_path(),
             cgroup_root: default_cgroup_root(),
             cgroup_parent: default_cgroup_parent(),
+            agent_card_root: default_agent_card_root(),
         }
     }
 }
@@ -178,6 +181,10 @@ fn default_cgroup_parent() -> String {
     "agentd".to_string()
 }
 
+fn default_agent_card_root() -> String {
+    "data/agents".to_string()
+}
+
 fn default_one_api_command() -> String {
     "one-api".to_string()
 }
@@ -227,6 +234,7 @@ struct RuntimeState {
     one_api_status: Arc<RwLock<String>>,
     create_agent_lock: Arc<Mutex<()>>,
     lifecycle_manager: LifecycleManager,
+    agent_card_root: Arc<PathBuf>,
 }
 
 impl RuntimeState {
@@ -239,10 +247,23 @@ impl RuntimeState {
     }
 
     fn with_lifecycle(initial_status: &str, lifecycle_manager: LifecycleManager) -> Self {
+        Self::with_lifecycle_and_agent_card_root(
+            initial_status,
+            lifecycle_manager,
+            PathBuf::from(default_agent_card_root()),
+        )
+    }
+
+    fn with_lifecycle_and_agent_card_root(
+        initial_status: &str,
+        lifecycle_manager: LifecycleManager,
+        agent_card_root: PathBuf,
+    ) -> Self {
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
             lifecycle_manager,
+            agent_card_root: Arc::new(agent_card_root),
         }
     }
 
@@ -258,6 +279,7 @@ impl RuntimeState {
     fn lifecycle(&self) -> LifecycleManager {
         self.lifecycle_manager.clone()
     }
+
 }
 
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -500,10 +522,54 @@ mod tests {
     }
 
     fn managed_test_state(root: &std::path::Path) -> RuntimeState {
-        RuntimeState::with_lifecycle(
+        RuntimeState::with_lifecycle_and_agent_card_root(
             "disabled",
             LifecycleManager::new(CgroupManager::new(root, "agentd")),
+            root.join("agent-cards"),
         )
+    }
+
+    #[tokio::test]
+    async fn create_agent_returns_a2a_card_path_and_persists_card_file() {
+        let db_path = test_db_path();
+        let card_root = std::env::temp_dir().join(format!("agentd-card-test-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::with_lifecycle_and_agent_card_root(
+            "disabled",
+            LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+            card_root.clone(),
+        );
+
+        let response = handle_rpc_request(
+            create_agent_request("card-agent", "claude-4-sonnet"),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            response.error.is_none(),
+            "create should succeed: {response:?}"
+        );
+
+        let result = response.result.expect("create result should exist");
+        let card_path = result["agent_card_path"]
+            .as_str()
+            .expect("agent_card_path should be string")
+            .to_string();
+        let card_content = std::fs::read_to_string(&card_path).expect("agent card should be written");
+        let card_json: Value =
+            serde_json::from_str(&card_content).expect("agent card should be valid json");
+
+        assert_eq!(card_json["name"], json!("card-agent"));
+        assert_eq!(card_json["model"], json!("claude-4-sonnet"));
+        assert!(
+            card_json.get("agent_id").and_then(Value::as_str).is_some(),
+            "agent card should contain agent_id"
+        );
+
+        let _ = std::fs::remove_dir_all(card_root);
+        cleanup_sqlite_files(&db_path);
     }
 
     #[tokio::test]
@@ -1548,6 +1614,40 @@ fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> 
     }
 }
 
+fn build_a2a_agent_card(profile: &AgentProfile) -> Value {
+    json!({
+        "agent_id": profile.id.to_string(),
+        "name": profile.name,
+        "version": "0.1.0",
+        "model": profile.model.model_name,
+        "provider": profile.model.provider,
+        "capabilities": {
+            "protocol": "a2a-compatible",
+            "tools": {
+                "allowed": profile.permissions.allowed_tools,
+                "denied": profile.permissions.denied_tools,
+                "default_policy": format!("{:?}", profile.permissions.policy).to_ascii_lowercase()
+            }
+        }
+    })
+}
+
+fn persist_agent_card(root: &Path, profile: &AgentProfile) -> Result<PathBuf, AgentError> {
+    let card_path = root.join(profile.id.to_string()).join("agent.json");
+    if let Some(parent_dir) = card_path.parent() {
+        std::fs::create_dir_all(parent_dir)
+            .map_err(|err| AgentError::Runtime(format!("create agent card directory failed: {err}")))?;
+    }
+
+    let card_json = build_a2a_agent_card(profile);
+    let card_content = serde_json::to_string_pretty(&card_json)
+        .map_err(|err| AgentError::Runtime(format!("serialize agent card failed: {err}")))?;
+    std::fs::write(&card_path, card_content)
+        .map_err(|err| AgentError::Runtime(format!("write agent card failed: {err}")))?;
+
+    Ok(card_path)
+}
+
 async fn record_audit_event(
     store: &Arc<SqliteStore>,
     agent_id: uuid::Uuid,
@@ -2468,6 +2568,24 @@ async fn handle_rpc_request(
                     )
                     .await;
 
+                    let card_path = match persist_agent_card(&state.agent_card_root, &existing_agent)
+                    {
+                        Ok(path) => path,
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32018,
+                                format!("persist agent card failed: {err}"),
+                            )
+                        }
+                    };
+                    if let Some(result_obj) = result.as_object_mut() {
+                        result_obj.insert(
+                            "agent_card_path".to_string(),
+                            json!(card_path.to_string_lossy().to_string()),
+                        );
+                    }
+
                     return JsonRpcResponse::success(request.id, result);
                 }
                 Ok(None) => {}
@@ -2589,6 +2707,16 @@ async fn handle_rpc_request(
                 .await
             {
                 Ok(ready_agent) => {
+                    let card_path = match persist_agent_card(&state.agent_card_root, &ready_agent) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32018,
+                                format!("persist agent card failed: {err}"),
+                            )
+                        }
+                    };
                     record_audit_event(
                         &store,
                         ready_agent.id,
@@ -2610,6 +2738,7 @@ async fn handle_rpc_request(
                             json!({
                                 "agent": ready_agent,
                                 "idempotent": false,
+                                "agent_card_path": card_path.to_string_lossy().to_string(),
                                 "one_api": {
                                     "token_id": one_api.token_id,
                                     "channel_id": one_api.channel_id,
@@ -2621,7 +2750,8 @@ async fn handle_rpc_request(
                             request.id,
                             json!({
                                 "agent": ready_agent,
-                                "idempotent": false
+                                "idempotent": false,
+                                "agent_card_path": card_path.to_string_lossy().to_string()
                             }),
                         )
                     }
@@ -2891,13 +3021,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.daemon.cgroup_root.clone(),
         config.daemon.cgroup_parent.clone(),
     ));
-    let state = RuntimeState::with_lifecycle(
+    let state = RuntimeState::with_lifecycle_and_agent_card_root(
         if config.one_api.enabled {
             "starting"
         } else {
             "disabled"
         },
         lifecycle_manager,
+        PathBuf::from(config.daemon.agent_card_root.clone()),
     );
 
     let health_listener = TcpListener::bind(bind_addr).await?;
