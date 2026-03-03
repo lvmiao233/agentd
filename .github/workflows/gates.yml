@@ -1,5 +1,6 @@
+---
 # CI Gates Workflow
-# 
+#
 # This workflow defines the hard gates for CI/CD.
 # Each job represents a required checkpoint before merge.
 #
@@ -17,7 +18,7 @@
 
 name: CI Gates
 
-on:
+"on":
   push:
     branches: [main, master]
   pull_request:
@@ -43,7 +44,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Check required files exist
         id: check
         run: |
@@ -391,8 +392,9 @@ jobs:
           echo "Phase B/C Gate: ${{ needs.phase-bc-gate.result }}"
           echo "Syscall Gate: ${{ needs.gate-syscall.result }}"
           echo "Isolation Gate: ${{ needs.gate-isolation.result }}"
-          echo "Release Candidate Gate: ${{ needs.release-candidate-gate.result }}"
-           
+          release_candidate_result="${{ needs.release-candidate-gate.result }}"
+          echo "Release Candidate Gate: ${release_candidate_result}"
+
           # Fail if any required gate failed
           if [ "${{ needs.preflight.result }}" != "success" ]; then
             echo "FAILED: Preflight check failed"
