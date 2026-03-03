@@ -209,6 +209,9 @@ ok_payload = rpc("RecordUsage", {
     "input_tokens": 60,
     "output_tokens": 30,
     "cost_usd": 0.15,
+    "provider_request_id": "phase-a-record-ok",
+    "usage_source": "provider",
+    "transport_mode": "real",
 })
 open(ok_path, "wb").write(ok_payload)
 
@@ -218,6 +221,9 @@ over_payload = rpc("RecordUsage", {
     "input_tokens": 20,
     "output_tokens": 5,
     "cost_usd": 0.05,
+    "provider_request_id": "phase-a-record-over",
+    "usage_source": "provider",
+    "transport_mode": "real",
 })
 open(over_path, "wb").write(over_payload)
 PY
