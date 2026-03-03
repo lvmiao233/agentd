@@ -1,0 +1,7 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=SKIP
+ASSERT closure_request=SKIP
+ASSERT closure_response=SKIP
+mode=dry_run
+binaries_checked=agentd,agentctl
+preflight_script_found=/home/vipa/agentd/scripts/gates/preflight-real-oneapi.sh

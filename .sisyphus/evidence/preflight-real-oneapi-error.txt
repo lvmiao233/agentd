@@ -1,0 +1,8 @@
+preflight_real_oneapi=failed
+reason=ONE_API_HEALTH_UNREACHABLE
+base_url=http://127.0.0.1:1
+health_endpoint=
+health=false
+models_checked=false
+env_ready=false
+models_visible_count=0

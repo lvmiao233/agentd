@@ -1,0 +1,7 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=PASS
+ASSERT closure_request=PASS
+ASSERT closure_response=FAIL
+EXPECTED_FAILURE invalid_credentials
+reason=closure_failed_with_invalid_credentials
+agent_id=unknown
