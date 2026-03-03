@@ -64,6 +64,20 @@ enum AgentCommands {
         #[arg(long)]
         json: bool,
     },
+    Inspect {
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        audit_limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    Delete {
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     Run {
         #[arg(long)]
         builtin: Option<String>,
@@ -393,6 +407,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "permission_policy": permission_policy,
                         "allowed_tools": allow_tools,
                         "denied_tools": deny_tools,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Inspect {
+                agent_id,
+                audit_limit,
+                json,
+            } => {
+                info!(socket_path = %cli.socket_path, %agent_id, "Calling GetAgent over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "GetAgent",
+                    json!({
+                        "agent_id": agent_id,
+                        "audit_limit": audit_limit,
+                    }),
+                )
+                .await?;
+                print_response(response, json)?;
+            }
+            AgentCommands::Delete { agent_id, json } => {
+                info!(socket_path = %cli.socket_path, %agent_id, "Calling DeleteAgent over UDS JSON-RPC");
+                let response = call_rpc(
+                    &cli.socket_path,
+                    "DeleteAgent",
+                    json!({
+                        "agent_id": agent_id,
                     }),
                 )
                 .await?;

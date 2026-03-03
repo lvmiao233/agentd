@@ -1,0 +1,15 @@
+[agent]
+name = "my-coding-agent"
+
+[llm]
+models = ["claude-4-sonnet", "gpt-4.1-mini"]
+token_budget_daily = 500000
+fallback_model = "gpt-4.1-mini"
+
+[policy]
+"*" = "ask"
+bash = "ask"
+edit = "allow"
+web_fetch = "deny"
+"read:*.env" = "deny"
+"read:*" = "allow"

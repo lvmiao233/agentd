@@ -1,0 +1,8 @@
+Task: T13 profile load invalid failure path
+Command: cargo run -p agentd-daemon -- --config /tmp/agentd-t13-invalid-x2q9nrjk/agentd-invalid.toml --one-api-enabled false
+Exit code: 1
+
+stderr:
+Error: InvalidInput("profile /tmp/agentd-t13-invalid-x2q9nrjk/profiles/broken.toml missing policy.* default rule")
+
+Result: PASS (error includes file path and field-path style clue: policy.*)

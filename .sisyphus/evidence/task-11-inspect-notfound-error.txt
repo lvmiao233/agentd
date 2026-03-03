@@ -1,0 +1,8 @@
+Task: T11 inspect not-found failure path
+Command: cargo run -p agentctl -- agent inspect --agent-id 9c00cc97-b0a3-4c03-87d1-86cb569f279f --json
+Exit code: 1
+
+stderr:
+Error: "RPC error -32010: agent not found: 9c00cc97-b0a3-4c03-87d1-86cb569f279f"
+
+Result: PASS (stable not-found class error returned)

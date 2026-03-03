@@ -1,0 +1,15 @@
+{
+  "task": "T12 delete happy path",
+  "create_command": "cargo run -p agentctl -- agent create --name qa-t11t12 --model claude-4-sonnet --json",
+  "delete_command": "cargo run -p agentctl -- agent delete --agent-id faa9e5a8-f7a6-4eed-9774-9e5ce3c554b4 --json",
+  "list_command": "cargo run -p agentctl -- agent list --json",
+  "delete_exit_code": 0,
+  "delete_response": {
+    "agent_id": "faa9e5a8-f7a6-4eed-9774-9e5ce3c554b4",
+    "success": true
+  },
+  "post_delete_list": {
+    "agents": []
+  },
+  "result": "PASS"
+}

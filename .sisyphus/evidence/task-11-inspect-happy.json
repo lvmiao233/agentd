@@ -1,0 +1,33 @@
+{
+  "task": "T11 inspect happy path",
+  "command": "cargo run -p agentctl -- agent inspect --agent-id faa9e5a8-f7a6-4eed-9774-9e5ce3c554b4 --json",
+  "exit_code": 0,
+  "assertions": {
+    "has_profile": true,
+    "has_permissions": true,
+    "has_budget": true,
+    "has_model": true,
+    "contains_sensitive_access_token": false
+  },
+  "response_excerpt": {
+    "profile": {
+      "id": "faa9e5a8-f7a6-4eed-9774-9e5ce3c554b4",
+      "name": "qa-t11t12",
+      "model": {
+        "provider": "one-api",
+        "model_name": "claude-4-sonnet"
+      },
+      "permissions": {
+        "policy": "Ask",
+        "allowed_tools": [],
+        "denied_tools": []
+      },
+      "budget": {
+        "token_limit": null,
+        "cost_limit_usd": null,
+        "time_limit_seconds": null
+      }
+    },
+    "audit_events_count": 1
+  }
+}

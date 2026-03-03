@@ -1,0 +1,8 @@
+Task: T12 delete not-found failure path
+Command: cargo run -p agentctl -- agent delete --agent-id 42416bba-a1b5-4a80-8428-d1bbe07e7619 --json
+Exit code: 1
+
+stderr:
+Error: "RPC error -32010: agent not found: 42416bba-a1b5-4a80-8428-d1bbe07e7619"
+
+Result: PASS (stable not-found class error returned)

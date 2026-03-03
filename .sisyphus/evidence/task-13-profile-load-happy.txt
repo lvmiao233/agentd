@@ -1,0 +1,10 @@
+Task: T13 profile load happy path
+Daemon command: cargo run -p agentd-daemon -- --db-path /tmp/agentd-t13-happy.db --one-api-enabled false
+Profile source: configs/agents/example.toml
+Log file: /tmp/agentd-t13-happy.log
+
+Assertions:
+- contains "Loaded agent profiles": true
+- contains profile name "my-coding-agent": true
+
+Result: PASS

@@ -15,7 +15,7 @@ use clap::Parser;
 use lifecycle::{LifecycleManager, ManagedAgentSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -77,6 +77,8 @@ struct DaemonConfig {
     cgroup_parent: String,
     #[serde(default = "default_agent_card_root")]
     agent_card_root: String,
+    #[serde(default = "default_agent_profiles_dir")]
+    agent_profiles_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,6 +128,7 @@ impl Default for DaemonConfig {
             cgroup_root: default_cgroup_root(),
             cgroup_parent: default_cgroup_parent(),
             agent_card_root: default_agent_card_root(),
+            agent_profiles_dir: default_agent_profiles_dir(),
         }
     }
 }
@@ -183,6 +186,10 @@ fn default_cgroup_parent() -> String {
 
 fn default_agent_card_root() -> String {
     "data/agents".to_string()
+}
+
+fn default_agent_profiles_dir() -> String {
+    "configs/agents".to_string()
 }
 
 fn default_one_api_command() -> String {
@@ -446,6 +453,27 @@ mod tests {
         )
     }
 
+    fn get_agent_request(agent_id: &str, audit_limit: Option<usize>) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(205),
+            "GetAgent",
+            json!({
+                "agent_id": agent_id,
+                "audit_limit": audit_limit,
+            }),
+        )
+    }
+
+    fn delete_agent_request(agent_id: &str) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(206),
+            "DeleteAgent",
+            json!({
+                "agent_id": agent_id,
+            }),
+        )
+    }
+
     fn get_usage_window_request(agent_id: &str, window: &str) -> JsonRpcRequest {
         JsonRpcRequest::new(
             json!(105),
@@ -619,6 +647,182 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(card_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_agent_returns_profile_and_recent_audit_events() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let created = handle_rpc_request(
+            create_agent_request("inspect-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
+        let agent_id = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let usage_record = handle_rpc_request(
+            record_usage_request(
+                &agent_id,
+                "claude-4-sonnet",
+                10,
+                5,
+                0.02,
+                UsageEvidence::provider_real("req-inspect-1"),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            usage_record.error.is_none(),
+            "usage record should succeed: {usage_record:?}"
+        );
+
+        let inspected = handle_rpc_request(
+            get_agent_request(&agent_id, Some(3)),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            inspected.error.is_none(),
+            "inspect should succeed: {inspected:?}"
+        );
+
+        let result = inspected.result.expect("inspect result should exist");
+        assert_eq!(result["profile"]["id"], json!(agent_id));
+        assert!(result["profile"]["model"].is_object());
+        assert!(result["profile"]["permissions"].is_object());
+        assert!(result["profile"]["budget"].is_object());
+        assert!(result["audit_events"].is_array());
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_agent_returns_not_found_for_unknown_id() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let response = handle_rpc_request(
+            get_agent_request(&Uuid::new_v4().to_string(), None),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let err = response.error.expect("unknown agent inspect should fail");
+        assert_eq!(err.code, -32010);
+        assert!(err.message.contains("agent not found"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn delete_agent_removes_agent_from_list() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let created = handle_rpc_request(
+            create_agent_request("delete-agent", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
+        let agent_id = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let delete_response = handle_rpc_request(
+            delete_agent_request(&agent_id),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            delete_response.error.is_none(),
+            "delete should succeed: {delete_response:?}"
+        );
+        let delete_result = delete_response.result.expect("delete result should exist");
+        assert_eq!(delete_result["success"], json!(true));
+
+        let list_response = handle_rpc_request(
+            JsonRpcRequest::new(json!(207), "ListAgents", json!({})),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            list_response.error.is_none(),
+            "list should succeed: {list_response:?}"
+        );
+        let listed = list_response
+            .result
+            .expect("list result should exist")
+            .get("agents")
+            .and_then(Value::as_array)
+            .expect("agents should be array")
+            .clone();
+        assert!(!listed.iter().any(|agent| agent["id"] == json!(agent_id)));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn delete_agent_returns_not_found_for_unknown_id() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let response = handle_rpc_request(
+            delete_agent_request(&Uuid::new_v4().to_string()),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let err = response.error.expect("unknown agent delete should fail");
+        assert_eq!(err.code, -32010);
+        assert!(err.message.contains("agent not found"));
+
         cleanup_sqlite_files(&db_path);
     }
 
@@ -1790,6 +1994,41 @@ struct ListAuditEventsParams {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GetAgentParams {
+    agent_id: String,
+    #[serde(default)]
+    audit_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteAgentParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentProfileFile {
+    agent: AgentFileSection,
+    llm: LlmFileSection,
+    policy: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentFileSection {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlmFileSection {
+    models: Vec<String>,
+    #[serde(default)]
+    token_budget_daily: Option<u64>,
+    #[serde(default)]
+    fallback_model: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+}
+
 fn convert_rule_inputs(name: &str, inputs: Vec<PolicyRuleInput>) -> PolicyLayer {
     PolicyLayer {
         name: name.to_string(),
@@ -1846,6 +2085,256 @@ fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> 
             "unsupported permission_policy: {}",
             value
         ))),
+    }
+}
+
+fn parse_profile_policy(
+    policy: &BTreeMap<String, String>,
+    profile_path: &Path,
+) -> Result<(PermissionPolicy, Vec<String>, Vec<String>), AgentError> {
+    let default_raw = policy.get("*").ok_or_else(|| {
+        AgentError::InvalidInput(format!(
+            "profile {} missing policy.* default rule",
+            profile_path.display()
+        ))
+    })?;
+    let default_policy = parse_permission_policy(default_raw).map_err(|err| {
+        AgentError::InvalidInput(format!(
+            "profile {} policy.* error: {err}",
+            profile_path.display()
+        ))
+    })?;
+
+    let mut allowed_tools = Vec::new();
+    let mut denied_tools = Vec::new();
+
+    for (pattern, decision_raw) in policy {
+        if pattern == "*" {
+            continue;
+        }
+
+        let decision = parse_permission_policy(decision_raw).map_err(|err| {
+            AgentError::InvalidInput(format!(
+                "profile {} policy.{pattern} error: {err}",
+                profile_path.display()
+            ))
+        })?;
+
+        match decision {
+            PermissionPolicy::Allow => allowed_tools.push(pattern.clone()),
+            PermissionPolicy::Deny => denied_tools.push(pattern.clone()),
+            PermissionPolicy::Ask => {
+                if default_policy != PermissionPolicy::Ask {
+                    return Err(AgentError::InvalidInput(format!(
+                        "profile {} policy.{pattern}=ask is unsupported when policy.* != ask",
+                        profile_path.display()
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok((default_policy, allowed_tools, denied_tools))
+}
+
+fn parse_agent_profile_file(
+    profile_path: &Path,
+    content: &str,
+) -> Result<AgentProfile, Box<dyn std::error::Error>> {
+    let parsed: AgentProfileFile = toml::from_str(content).map_err(|err| {
+        AgentError::InvalidInput(format!(
+            "profile {} parse failed: {err}",
+            profile_path.display()
+        ))
+    })?;
+
+    if parsed.agent.name.trim().is_empty() {
+        return Err(AgentError::InvalidInput(format!(
+            "profile {} agent.name must be non-empty",
+            profile_path.display()
+        ))
+        .into());
+    }
+    if parsed.llm.models.is_empty() {
+        return Err(AgentError::InvalidInput(format!(
+            "profile {} llm.models must contain at least one model",
+            profile_path.display()
+        ))
+        .into());
+    }
+
+    if let Some(fallback_model) = parsed.llm.fallback_model.as_ref() {
+        if !parsed
+            .llm
+            .models
+            .iter()
+            .any(|model| model == fallback_model)
+        {
+            return Err(AgentError::InvalidInput(format!(
+                "profile {} llm.fallback_model must exist in llm.models",
+                profile_path.display()
+            ))
+            .into());
+        }
+    }
+
+    let model_name = parsed
+        .llm
+        .fallback_model
+        .clone()
+        .unwrap_or_else(|| parsed.llm.models[0].clone());
+    let provider = parsed
+        .llm
+        .provider
+        .clone()
+        .unwrap_or_else(|| "one-api".to_string());
+
+    let (default_policy, allowed_tools, denied_tools) =
+        parse_profile_policy(&parsed.policy, profile_path)?;
+
+    let mut profile = AgentProfile::new(
+        parsed.agent.name,
+        ModelConfig {
+            provider,
+            model_name,
+            max_tokens: None,
+            temperature: None,
+        },
+    );
+    profile.budget.token_limit = parsed.llm.token_budget_daily;
+    profile.permissions.policy = default_policy;
+    profile.permissions.allowed_tools = allowed_tools;
+    profile.permissions.denied_tools = denied_tools;
+
+    Ok(profile)
+}
+
+fn load_agent_profiles(
+    profiles_dir: &Path,
+) -> Result<Vec<AgentProfile>, Box<dyn std::error::Error>> {
+    if !profiles_dir.exists() {
+        info!(profiles_dir = %profiles_dir.display(), "Agent profile directory not found, skipping profile load");
+        return Ok(Vec::new());
+    }
+
+    if !profiles_dir.is_dir() {
+        return Err(AgentError::InvalidInput(format!(
+            "agent profile path is not a directory: {}",
+            profiles_dir.display()
+        ))
+        .into());
+    }
+
+    let mut profile_paths = std::fs::read_dir(profiles_dir)?
+        .filter_map(|entry_result| entry_result.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("toml"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    profile_paths.sort();
+
+    let mut profiles = Vec::with_capacity(profile_paths.len());
+    for profile_path in profile_paths {
+        let content = std::fs::read_to_string(&profile_path).map_err(|err| {
+            AgentError::InvalidInput(format!(
+                "profile {} read failed: {err}",
+                profile_path.display()
+            ))
+        })?;
+        let profile = parse_agent_profile_file(&profile_path, &content)?;
+        profiles.push(profile);
+    }
+
+    Ok(profiles)
+}
+
+#[cfg(test)]
+mod profile_loader_tests {
+    use super::*;
+
+    fn temp_profiles_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("agentd-profiles-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn load_agent_profiles_accepts_example_schema() {
+        let dir = temp_profiles_dir();
+        std::fs::create_dir_all(&dir).expect("create temp profiles dir");
+        let file = dir.join("example.toml");
+        std::fs::write(
+            &file,
+            r#"
+[agent]
+name = "sample"
+
+[llm]
+models = ["claude-4-sonnet", "gpt-4.1-mini"]
+token_budget_daily = 500000
+fallback_model = "gpt-4.1-mini"
+
+[policy]
+"*" = "ask"
+bash = "ask"
+edit = "allow"
+web_fetch = "deny"
+"#,
+        )
+        .expect("write valid profile");
+
+        let profiles = load_agent_profiles(&dir).expect("profiles should load");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "sample");
+        assert_eq!(profiles[0].model.model_name, "gpt-4.1-mini");
+        assert_eq!(profiles[0].budget.token_limit, Some(500000));
+        assert_eq!(profiles[0].permissions.policy, PermissionPolicy::Ask);
+        assert!(profiles[0]
+            .permissions
+            .allowed_tools
+            .contains(&"edit".to_string()));
+        assert!(profiles[0]
+            .permissions
+            .denied_tools
+            .contains(&"web_fetch".to_string()));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_agent_profiles_returns_error_for_invalid_profile() {
+        let dir = temp_profiles_dir();
+        std::fs::create_dir_all(&dir).expect("create temp profiles dir");
+        let file = dir.join("invalid.toml");
+        std::fs::write(
+            &file,
+            r#"
+[agent]
+name = "bad"
+
+[llm]
+models = ["claude-4-sonnet"]
+
+[policy]
+edit = "allow"
+"#,
+        )
+        .expect("write invalid profile");
+
+        let err = load_agent_profiles(&dir).expect_err("invalid profile should fail");
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("invalid.toml"));
+        assert!(err_msg.contains("policy.*"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_agent_profiles_returns_empty_for_missing_dir() {
+        let dir = temp_profiles_dir();
+        let profiles = load_agent_profiles(&dir).expect("missing dir should be skipped");
+        assert!(profiles.is_empty());
     }
 }
 
@@ -2558,6 +3047,151 @@ async fn handle_rpc_request(
                     request.id,
                     -32019,
                     format!("list audit events failed: {err}"),
+                ),
+            }
+        }
+        "GetAgent" | "management.GetAgent" => {
+            let params = match serde_json::from_value::<GetAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid get agent params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let profile = match store.get_agent(agent_id).await {
+                Ok(profile) => profile,
+                Err(AgentError::NotFound(message)) => {
+                    return JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32010,
+                        format!("get agent failed: {err}"),
+                    )
+                }
+            };
+
+            let audit_events = match store.get_audit_events(agent_id).await {
+                Ok(mut events) => {
+                    let limit = params.audit_limit.unwrap_or(10).min(events.len());
+                    events.truncate(limit);
+                    events
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32019,
+                        format!("get agent audit summary failed: {err}"),
+                    )
+                }
+            };
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "profile": profile,
+                    "audit_events": audit_events,
+                }),
+            )
+        }
+        "DeleteAgent" | "management.DeleteAgent" => {
+            let params = match serde_json::from_value::<DeleteAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid delete agent params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            if let Err(err) = store.get_agent(agent_id).await {
+                return match err {
+                    AgentError::NotFound(message) => {
+                        JsonRpcResponse::error(request.id, -32010, message)
+                    }
+                    _ => JsonRpcResponse::error(
+                        request.id,
+                        -32010,
+                        format!("query agent before delete failed: {err}"),
+                    ),
+                };
+            }
+
+            let managed_agents = state.lifecycle().list_agents().await;
+            if managed_agents
+                .iter()
+                .any(|agent| agent.agent_id == agent_id)
+            {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32020,
+                    format!(
+                        "cannot delete running managed agent: {} (stop it first)",
+                        agent_id
+                    ),
+                );
+            }
+
+            record_audit_event(
+                &store,
+                &audit_context,
+                agent_id,
+                EventType::AgentStopped,
+                EventResult::Success,
+                EventPayload {
+                    tool_name: None,
+                    message: Some("agent deleted".to_string()),
+                    metadata: json!({
+                        "action": "delete_agent",
+                    }),
+                },
+            )
+            .await;
+
+            match store.delete_agent(agent_id).await {
+                Ok(()) => JsonRpcResponse::success(
+                    request.id,
+                    json!({
+                        "success": true,
+                        "agent_id": agent_id,
+                    }),
+                ),
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32011,
+                    format!("delete agent failed: {err}"),
                 ),
             }
         }
@@ -3388,6 +4022,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting agentd daemon");
     info!(config_path = %args.config, "Loaded daemon config");
+
+    let loaded_profiles = load_agent_profiles(Path::new(&config.daemon.agent_profiles_dir))?;
+    if loaded_profiles.is_empty() {
+        info!("No agent profiles loaded");
+    } else {
+        let profile_names = loaded_profiles
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect::<Vec<_>>();
+        info!(
+            profiles_dir = %config.daemon.agent_profiles_dir,
+            count = loaded_profiles.len(),
+            names = ?profile_names,
+            "Loaded agent profiles"
+        );
+    }
 
     let store = Arc::new(SqliteStore::new(Path::new(&config.daemon.db_path))?);
     let lifecycle_manager = LifecycleManager::new(CgroupManager::new(
