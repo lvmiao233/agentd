@@ -1,0 +1,5 @@
+task_1_repo_bootstrap_fallback=passed
+method=dry_run_fallback_rehearsal
+command=bash scripts/bootstrap-repo.sh --dry-run
+exit_code=0
+fallback_sequence_logged=true

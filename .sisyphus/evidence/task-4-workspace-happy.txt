@@ -1,0 +1,5 @@
+task_4_workspace_happy=passed
+method=workspace_validation
+command_1=cargo metadata --no-deps
+command_2=cargo check --workspace
+result=workspace_members_listed_and_check_passed

@@ -1,0 +1,5 @@
+task_3_ci_error=passed
+method=failure_injection
+scenario=workflow_file_temporarily_hidden
+command=bash scripts/gate-check.sh --local
+expected=.github/workflows/gates.yml missing

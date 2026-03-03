@@ -1,0 +1,5 @@
+task_4_workspace_error=passed
+method=negative_path_validation
+scenario=invalid_manifest_path
+command=cargo metadata --manifest-path /tmp/does-not-exist/Cargo.toml
+error_excerpt=error: manifest path `/tmp/does-not-exist/Cargo.toml` does not exist

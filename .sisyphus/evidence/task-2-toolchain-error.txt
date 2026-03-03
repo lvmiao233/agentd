@@ -1,0 +1,7 @@
+task_2_toolchain_error=passed
+method=synthetic_failure_replay
+scenario=uv_sync_frozen_without_lockfile
+command=uv sync --frozen (temp project without uv.lock)
+expected=non_zero_exit
+observed=non_zero_exit
+error_excerpt=Using CPython 3.13.7 interpreter at: /usr/bin/python3 | Creating virtual environment at: .venv | error: Unable to find lockfile at `uv.lock`, but `--frozen` was provided. To create a lockfile, run `uv lock` or `uv sync` without the flag.

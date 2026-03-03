@@ -1,0 +1,8 @@
+task_2_toolchain_happy=passed
+method=retroactive_validation
+command_1=uv sync --frozen
+command_2=cargo check --workspace
+command_3=git ls-files "*.go" "go.mod" "go.sum" "go.work"
+uv_sync_exit=0
+cargo_check_exit=0
+go_marker_count=0
