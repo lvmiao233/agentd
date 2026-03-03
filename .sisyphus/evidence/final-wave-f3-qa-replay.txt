@@ -1,0 +1,13 @@
+f3_real_qa_replay=approved
+scenario_happy_and_error_replayed=yes
+phase_a_gate=passed
+phase_bc_gate_happy=passed
+phase_bc_gate_error_injected=passed
+task_18_lite_gate=passed
+task_19_demo_happy=passed
+task_19_demo_tamper_error=passed
+task_20_rc_happy=passed
+task_20_rc_secret_leak_error=passed
+phase_a_rollback_dry_run=passed
+final_rollback_dry_run=passed
+task_1_to_9_retro_backfill=completed

@@ -1,0 +1,5 @@
+phase_bc_gate=failed
+reason=fault marker detected
+failed_items=oom,policy_conflict
+marker=/tmp/agentd-phasebc-fault-marker
+local_mode=true

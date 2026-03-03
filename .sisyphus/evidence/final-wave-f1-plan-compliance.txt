@@ -1,0 +1,7 @@
+f1_plan_compliance=approved
+must_have=4/4
+must_not_have=4/4
+top_level_tasks=20/20
+required_task_evidence=40/40
+verification_method=plan_audit_plus_evidence_backfill_validation
+notes=task-1~task-9 evidence backfilled with reproducible command traces in .sisyphus/evidence/task-*.txt

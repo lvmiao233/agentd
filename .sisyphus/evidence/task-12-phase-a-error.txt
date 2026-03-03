@@ -1,0 +1,4 @@
+phase_a_rollback=dry_run
+baseline=HEAD
+verify_cmd=cargo check --workspace
+planned_commands=git reset --hard HEAD && git clean -fd && cargo check --workspace

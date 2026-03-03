@@ -1,0 +1,4 @@
+phase_bc_gate=passed
+checks=subscribe_events,restart_and_oom,policy_deny,usage_window_consistency
+fault_marker_present=false
+local_mode=true

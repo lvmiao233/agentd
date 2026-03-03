@@ -1,0 +1,17 @@
+{
+  "phase": "A",
+  "status": "pass",
+  "startup_latency_ms": 33,
+  "create_success_rate": 1.0,
+  "request_success_rate": 1.0,
+  "usage_accuracy": {
+    "expected_total_tokens": 90,
+    "actual_total_tokens": 90
+  },
+  "quota_gate": {
+    "blocked": true,
+    "error_code": -32015,
+    "error_message": "llm.quota_exceeded: daily token budget 100 exceeded by requested 25 tokens"
+  },
+  "agent_id": "d5f4a894-b65e-4b62-8dae-5af7184e0081"
+}

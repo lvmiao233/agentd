@@ -1,0 +1,7 @@
+f4_scope_fidelity=approved
+go_files_detected=0
+go_toolchain_markers_detected=0
+forbidden_scope_keywords_in_runtime_code=0
+scope_creep=none_detected
+guardrails_status=pass
+notes=no_mvp_external_expansion_patterns_found_in_crates_scripts_python
