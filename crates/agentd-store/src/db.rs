@@ -2,7 +2,7 @@ use agentd_core::AgentError;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 6;
+pub const CURRENT_SCHEMA_VERSION: i32 = 7;
 
 const MIGRATION_0001_SQL: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_0002_SQL: &str = include_str!("../migrations/0002_one_api_mappings.sql");
@@ -10,6 +10,7 @@ const MIGRATION_0003_SQL: &str = include_str!("../migrations/0003_agent_lifecycl
 const MIGRATION_0004_SQL: &str = include_str!("../migrations/0004_quota_usage_model_breakdown.sql");
 const MIGRATION_0005_SQL: &str = include_str!("../migrations/0005_audit_events.sql");
 const MIGRATION_0006_SQL: &str = include_str!("../migrations/0006_usage_records_window.sql");
+const MIGRATION_0007_SQL: &str = include_str!("../migrations/0007_backfill_audit_context.sql");
 
 pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
     if let Some(parent_dir) = path.parent() {
@@ -36,31 +37,40 @@ pub fn initialize_database(path: &Path) -> Result<(), AgentError> {
             apply_migration_0003(&mut conn)?;
             apply_migration_0004(&mut conn)?;
             apply_migration_0005(&mut conn)?;
-            apply_migration_0006(&mut conn)
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
         }
         1 => {
             apply_migration_0002(&mut conn)?;
             apply_migration_0003(&mut conn)?;
             apply_migration_0004(&mut conn)?;
             apply_migration_0005(&mut conn)?;
-            apply_migration_0006(&mut conn)
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
         }
         2 => {
             apply_migration_0003(&mut conn)?;
             apply_migration_0004(&mut conn)?;
             apply_migration_0005(&mut conn)?;
-            apply_migration_0006(&mut conn)
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
         }
         3 => {
             apply_migration_0004(&mut conn)?;
             apply_migration_0005(&mut conn)?;
-            apply_migration_0006(&mut conn)
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
         }
         4 => {
             apply_migration_0005(&mut conn)?;
-            apply_migration_0006(&mut conn)
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
         }
-        5 => apply_migration_0006(&mut conn),
+        5 => {
+            apply_migration_0006(&mut conn)?;
+            apply_migration_0007(&mut conn)
+        }
+        6 => apply_migration_0007(&mut conn),
         CURRENT_SCHEMA_VERSION => Ok(()),
         version if version > CURRENT_SCHEMA_VERSION => Err(AgentError::Storage(format!(
             "unsupported schema version {version}, expected <= {CURRENT_SCHEMA_VERSION}"
@@ -173,6 +183,23 @@ fn apply_migration_0006(conn: &mut Connection) -> Result<(), AgentError> {
 
     tx.execute_batch(MIGRATION_0006_SQL)
         .map_err(|err| AgentError::Storage(format!("apply migration 0006 failed: {err}")))?;
+
+    tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
+        .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;
+
+    tx.commit()
+        .map_err(|err| AgentError::Storage(format!("commit migration failed: {err}")))?;
+
+    Ok(())
+}
+
+fn apply_migration_0007(conn: &mut Connection) -> Result<(), AgentError> {
+    let tx = conn
+        .transaction()
+        .map_err(|err| AgentError::Storage(format!("start migration transaction failed: {err}")))?;
+
+    tx.execute_batch(MIGRATION_0007_SQL)
+        .map_err(|err| AgentError::Storage(format!("apply migration 0007 failed: {err}")))?;
 
     tx.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION};"))
         .map_err(|err| AgentError::Storage(format!("set schema version failed: {err}")))?;

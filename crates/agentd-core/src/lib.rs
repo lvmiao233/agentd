@@ -10,7 +10,7 @@ pub mod error;
 pub mod policy;
 pub mod profile;
 
-pub use audit::AuditEvent;
+pub use audit::{AuditContext, AuditEvent, EventSeverity};
 pub use error::AgentError;
 pub use policy::{
     PolicyDecision, PolicyEvaluation, PolicyLayer, PolicyRule, SessionPolicyOverrides,
