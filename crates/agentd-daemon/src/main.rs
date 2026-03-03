@@ -794,6 +794,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_agent_is_idempotent_over_ten_retries() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        for _ in 0..10 {
+            let response = handle_rpc_request(
+                create_agent_request("idempotent-agent", "claude-4-sonnet"),
+                store.clone(),
+                state.clone(),
+                OneApiConfig::default(),
+            )
+            .await;
+            assert!(
+                response.error.is_none(),
+                "create should succeed: {response:?}"
+            );
+        }
+
+        let list = handle_rpc_request(
+            JsonRpcRequest::new(json!(201), "ListAgents", json!({})),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(list.error.is_none(), "list should succeed: {list:?}");
+        let listed_agents = list
+            .result
+            .expect("list result should exist")
+            .get("agents")
+            .expect("agents field should exist")
+            .as_array()
+            .expect("agents should be array")
+            .clone();
+        let matched = listed_agents
+            .iter()
+            .filter(|agent| {
+                agent["name"] == json!("idempotent-agent")
+                    && agent["model"]["model_name"] == json!("claude-4-sonnet")
+            })
+            .count();
+        assert_eq!(
+            matched, 1,
+            "idempotent retries should not duplicate entities"
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn usage_recording_succeeds_for_hundred_collection_cycles() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let created = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(202),
+                "CreateAgent",
+                json!({
+                    "name": "collector-agent",
+                    "model": "claude-4-sonnet",
+                    "token_budget": 1000000,
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
+        let agent_id = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent should exist")
+            .get("id")
+            .expect("agent id should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        for cycle in 0..100 {
+            let record = handle_rpc_request(
+                record_usage_request(&agent_id, "claude-4-sonnet", 5, 3, 0.01),
+                store.clone(),
+                state.clone(),
+                OneApiConfig::default(),
+            )
+            .await;
+            assert!(
+                record.error.is_none(),
+                "usage collection cycle {cycle} should succeed: {record:?}"
+            );
+        }
+
+        let usage = handle_rpc_request(
+            get_usage_request(&agent_id),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(usage.error.is_none(), "usage should succeed: {usage:?}");
+        let summary = usage.result.expect("usage result should exist");
+        assert_eq!(summary["total_tokens"], json!(800));
+        assert_eq!(summary["input_tokens"], json!(500));
+        assert_eq!(summary["output_tokens"], json!(300));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn authorize_tool_returns_stable_policy_deny_error_code() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
