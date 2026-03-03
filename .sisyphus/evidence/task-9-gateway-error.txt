@@ -1,0 +1,4 @@
+task_9_gateway_error=passed
+method=daemon_unit_test
+command=cargo test -p agentd-daemon create_agent_records_failed_state_when_one_api_provisioning_fails
+test_excerpt=running 1 test | test tests::create_agent_records_failed_state_when_one_api_provisioning_fails ... ok |  | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.03s

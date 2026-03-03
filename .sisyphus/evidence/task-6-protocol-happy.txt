@@ -1,0 +1,6 @@
+task_6_protocol_happy=passed
+method=uds_rpc_runtime_probe
+command_1=agentctl health --json
+command_2=agentctl agent list --json
+health_status=ok
+list_count=0

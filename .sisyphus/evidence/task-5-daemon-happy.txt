@@ -1,0 +1,5 @@
+task_5_daemon_happy=passed
+method=runtime_probe
+command=agentctl health --json (temp daemon)
+daemon_status=ready
+overall_status=ok

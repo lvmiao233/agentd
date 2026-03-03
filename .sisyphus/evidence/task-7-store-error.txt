@@ -1,0 +1,6 @@
+task_7_store_error=passed
+method=invalid_storage_path_injection
+command=target/debug/agentd --db-path /proc/agentd/db.sqlite
+expected=storage_init_failure
+observed=storage_init_failure
+error_excerpt=Error: Storage("create db dir failed: No such file or directory (os error 2)")

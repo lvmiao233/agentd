@@ -1,0 +1,6 @@
+task_5_daemon_error=passed
+method=malformed_config_injection
+command=target/debug/agentd --config <invalid-toml>
+expected=non_zero_exit
+observed=non_zero_exit
+error_excerpt=Error: TomlError { message: "invalid table header\nexpected `.`, `]`", raw: Some("[daemon\ninvalid = true\n"), keys: [], span: Some(7..8) }

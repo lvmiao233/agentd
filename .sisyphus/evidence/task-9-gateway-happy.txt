@@ -1,0 +1,5 @@
+task_9_gateway_happy=passed
+method=mock_oneapi_management_api
+command=agentctl agent create --json (one_api management enabled)
+token_id=tok-test
+channel_id=channel-test

@@ -1,0 +1,5 @@
+task_8_oneapi_happy=passed
+method=managed_oneapi_local_process
+command=target/debug/agentd --config <oneapi-enabled-http-server>
+health_status=ok
+one_api_status=ready

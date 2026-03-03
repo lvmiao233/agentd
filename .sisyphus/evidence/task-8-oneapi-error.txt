@@ -1,0 +1,5 @@
+task_8_oneapi_error=passed
+method=failing_oneapi_process_injection
+command=target/debug/agentd --config <oneapi-command-exits-immediately>
+health_status=degraded
+one_api_status=starting
