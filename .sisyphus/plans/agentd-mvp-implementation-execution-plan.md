@@ -1138,7 +1138,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-policy/src/engine.rs`, `crates/agentd-policy/src/merge.rs`, `crates/agentd-core/src/policy.rs`
   - Pre-commit: `cargo test -p agentd-policy`
 
-- [ ] 14. cgroup v2 + lifecycle 管理（fork/exec/restart）
+- [x] 14. cgroup v2 + lifecycle 管理（fork/exec/restart）
 
   **What to do**:
   - 为每个 agent 创建独立 cgroup 并设置 `cpu.weight`、`memory.max`、`memory.high`。
@@ -1209,7 +1209,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-lifecycle/src/cgroup.rs`, `crates/agentd-lifecycle/src/manager.rs`, `crates/agentd-core/src/event.rs`
   - Pre-commit: `cargo test -p agentd-lifecycle`
 
-- [ ] 15. 审计事件模型与持久化（事件完整性 100%）
+- [x] 15. 审计事件模型与持久化（事件完整性 100%）
 
   **What to do**:
   - 实现统一审计事件模型与写入管道。
@@ -1282,7 +1282,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 16. 事件订阅流（UDS streaming）+ `agentctl events`
+- [x] 16. 事件订阅流（UDS streaming）+ `agentctl events`
 
   **What to do**:
   - 在协议层实现 `SubscribeEvents` streaming（UDS 长连接）。
@@ -1353,7 +1353,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentd-protocol/src/*`, `crates/agentctl/src/*`
   - Pre-commit: `cargo test -p agentd-protocol -p agentctl`
 
-- [ ] 17. `agentctl usage` 成本查询 + Phase B/C 故障注入门禁
+- [x] 17. `agentctl usage` 成本查询 + Phase B/C 故障注入门禁
 
   **What to do**:
   - 完成 `agentctl usage <agent-id>` 成本分布与时间窗查询。
