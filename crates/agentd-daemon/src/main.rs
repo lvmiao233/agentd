@@ -246,6 +246,7 @@ impl RuntimeState {
         )
     }
 
+    #[cfg(test)]
     fn with_lifecycle(initial_status: &str, lifecycle_manager: LifecycleManager) -> Self {
         Self::with_lifecycle_and_agent_card_root(
             initial_status,
