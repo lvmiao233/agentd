@@ -1,0 +1,10 @@
+task_20_rc=passed
+local_mode=true
+gate_check=passed
+phase_a_gate=passed
+phase_bc_gate=passed
+phase_d_demo_smoke=passed
+cargo_check=passed
+daemon_card_test=passed
+secret_scan=passed
+dependency_scan=skipped

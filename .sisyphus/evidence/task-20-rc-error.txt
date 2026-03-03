@@ -1,0 +1,10 @@
+task_20_rc=failed
+reason=simulated secret leakage detected
+local_mode=true
+--- secret_scan_report ---
+simulated-secret-leak: injected for rollback rehearsal
+task_20_final_rollback=dry_run
+baseline=HEAD
+planned_reset=git reset --hard HEAD
+planned_clean=git clean -fd
+planned_verify=bash scripts/release/rc-gate.sh --local
