@@ -1,7 +1,7 @@
 mod cgroup;
 mod lifecycle;
 
-use agentd_core::audit::{EventPayload, EventResult, EventType};
+use agentd_core::audit::{AuditContext, EventPayload, EventResult, EventSeverity, EventType};
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
     AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyLayer,
@@ -280,7 +280,6 @@ impl RuntimeState {
     fn lifecycle(&self) -> LifecycleManager {
         self.lifecycle_manager.clone()
     }
-
 }
 
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -530,6 +529,34 @@ mod tests {
         )
     }
 
+    async fn create_ready_agent_id(
+        store: Arc<SqliteStore>,
+        state: RuntimeState,
+        name: &str,
+    ) -> String {
+        let response = handle_rpc_request(
+            create_agent_request(name, "claude-4-sonnet"),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            response.error.is_none(),
+            "create should succeed: {response:?}"
+        );
+        response
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string()
+    }
+
     #[tokio::test]
     async fn create_agent_returns_a2a_card_path_and_persists_card_file() {
         let db_path = test_db_path();
@@ -558,7 +585,8 @@ mod tests {
             .as_str()
             .expect("agent_card_path should be string")
             .to_string();
-        let card_content = std::fs::read_to_string(&card_path).expect("agent card should be written");
+        let card_content =
+            std::fs::read_to_string(&card_path).expect("agent card should be written");
         let card_json: Value =
             serde_json::from_str(&card_content).expect("agent card should be valid json");
 
@@ -1111,7 +1139,9 @@ mod tests {
         let denied_error = denied.error.expect("authorize should deny configured tool");
         assert_eq!(denied_error.code, -32016);
         assert!(denied_error.message.contains("policy.deny"));
-        assert!(denied_error.message.contains("matched_rule=builtin.lite.echo"));
+        assert!(denied_error
+            .message
+            .contains("matched_rule=builtin.lite.echo"));
 
         cleanup_sqlite_files(&db_path);
     }
@@ -1124,7 +1154,10 @@ mod tests {
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
         let state = managed_test_state(&cgroup_root);
 
-        let agent_id = Uuid::new_v4();
+        let agent_id = Uuid::parse_str(
+            &create_ready_agent_id(store.clone(), state.clone(), "managed-rpc-start-stop").await,
+        )
+        .expect("created agent id should be valid uuid");
         let start_response = handle_rpc_request(
             start_managed_agent_request(&agent_id.to_string(), "/bin/sh", vec!["-c", "sleep 1"], 0),
             store.clone(),
@@ -1192,7 +1225,10 @@ mod tests {
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
         let state = managed_test_state(&cgroup_root);
 
-        let agent_id = Uuid::new_v4();
+        let agent_id = Uuid::parse_str(
+            &create_ready_agent_id(store.clone(), state.clone(), "managed-rpc-restart-oom").await,
+        )
+        .expect("created agent id should be valid uuid");
         let start_response = handle_rpc_request(
             start_managed_agent_request(
                 &agent_id.to_string(),
@@ -1270,7 +1306,10 @@ mod tests {
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
         let state = managed_test_state(&cgroup_root);
 
-        let agent_id = Uuid::new_v4();
+        let agent_id = Uuid::parse_str(
+            &create_ready_agent_id(store.clone(), state.clone(), "managed-rpc-subscribe").await,
+        )
+        .expect("created agent id should be valid uuid");
         let start_response = handle_rpc_request(
             start_managed_agent_request(
                 &agent_id.to_string(),
@@ -1373,12 +1412,42 @@ mod tests {
             .expect("invalid agent id should return error");
         assert_eq!(invalid_id_error.code, -32602);
 
+        let unknown_agent_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(131),
+                "StartManagedAgent",
+                json!({
+                    "agent_id": Uuid::new_v4().to_string(),
+                    "command": "/bin/sh",
+                    "args": ["-c", "sleep 1"],
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        let unknown_agent_error = unknown_agent_response
+            .error
+            .expect("unknown agent should return error");
+        assert_eq!(unknown_agent_error.code, -32010);
+        assert!(unknown_agent_error
+            .message
+            .contains("query agent for managed lifecycle failed"));
+
+        let existing_agent_id = create_ready_agent_id(
+            store.clone(),
+            state.clone(),
+            "managed-rpc-validate-empty-command",
+        )
+        .await;
+
         let empty_command_response = handle_rpc_request(
             JsonRpcRequest::new(
                 json!(14),
                 "StartManagedAgent",
                 json!({
-                    "agent_id": Uuid::new_v4().to_string(),
+                    "agent_id": existing_agent_id,
                     "command": "   ",
                     "args": ["-c", "sleep 1"],
                 }),
@@ -1447,6 +1516,23 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event["event_type"] == json!("AgentCreated")));
+        let created_event = events
+            .iter()
+            .find(|event| event["event_type"] == json!("AgentCreated"))
+            .expect("should contain AgentCreated event");
+        assert!(created_event
+            .get("event_id")
+            .and_then(Value::as_str)
+            .is_some());
+        assert!(created_event
+            .get("trace_id")
+            .and_then(Value::as_str)
+            .is_some());
+        assert!(created_event
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_some());
+        assert_eq!(created_event["severity"], json!("info"));
 
         cleanup_sqlite_files(&db_path);
     }
@@ -1636,8 +1722,9 @@ fn build_a2a_agent_card(profile: &AgentProfile) -> Value {
 fn persist_agent_card(root: &Path, profile: &AgentProfile) -> Result<PathBuf, AgentError> {
     let card_path = root.join(profile.id.to_string()).join("agent.json");
     if let Some(parent_dir) = card_path.parent() {
-        std::fs::create_dir_all(parent_dir)
-            .map_err(|err| AgentError::Runtime(format!("create agent card directory failed: {err}")))?;
+        std::fs::create_dir_all(parent_dir).map_err(|err| {
+            AgentError::Runtime(format!("create agent card directory failed: {err}"))
+        })?;
     }
 
     let card_json = build_a2a_agent_card(profile);
@@ -1649,28 +1736,52 @@ fn persist_agent_card(root: &Path, profile: &AgentProfile) -> Result<PathBuf, Ag
     Ok(card_path)
 }
 
+fn request_id_to_session_suffix(id: &Value) -> String {
+    match id {
+        Value::String(value) => {
+            if value.trim().is_empty() {
+                "empty".to_string()
+            } else {
+                value.clone()
+            }
+        }
+        Value::Number(number) => number.to_string(),
+        Value::Bool(boolean) => boolean.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(_) | Value::Object(_) => format!("json-{}", uuid::Uuid::new_v4()),
+    }
+}
+
+fn build_audit_context(request_id: &Value) -> AuditContext {
+    let session_id = format!("rpc-{}", request_id_to_session_suffix(request_id));
+    let trace_id = format!("trace-{session_id}");
+    AuditContext::new(trace_id, session_id, EventSeverity::Info)
+}
+
 async fn record_audit_event(
     store: &Arc<SqliteStore>,
+    context: &AuditContext,
     agent_id: uuid::Uuid,
     event_type: EventType,
     result: EventResult,
-    tool_name: Option<String>,
-    message: Option<String>,
-    metadata: serde_json::Value,
+    payload: EventPayload,
 ) {
-    let event = AuditEvent::new(
+    let event = AuditEvent::new_with_context(
         agent_id,
         event_type,
-        EventPayload {
-            tool_name,
-            message,
-            metadata,
-        },
-        result,
+        payload,
+        result.clone(),
+        context.with_severity(EventSeverity::from_result(&result)),
     );
 
     if let Err(err) = store.append_audit_event(event).await {
-        warn!(%err, %agent_id, "persist audit event failed");
+        warn!(
+            %err,
+            %agent_id,
+            trace_id = %context.trace_id,
+            session_id = %context.session_id,
+            "persist audit event failed"
+        );
     }
 }
 
@@ -1849,6 +1960,7 @@ async fn handle_rpc_request(
     state: RuntimeState,
     one_api_config: OneApiConfig,
 ) -> JsonRpcResponse {
+    let audit_context = build_audit_context(&request.id);
     match request.method.as_str() {
         "GetHealth" | "management.GetHealth" => {
             let storage_status = if store.health_check().is_ok() {
@@ -1944,15 +2056,18 @@ async fn handle_rpc_request(
                 if let Some(agent_id) = evaluated_agent_id {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::ToolDenied,
                         EventResult::Failure,
-                        Some(params.tool.clone()),
-                        Some("policy.deny".to_string()),
-                        json!({
-                            "matched_rule": evaluation.matched_rule.clone(),
-                            "source_layer": evaluation.source_layer.clone(),
-                        }),
+                        EventPayload {
+                            tool_name: Some(params.tool.clone()),
+                            message: Some("policy.deny".to_string()),
+                            metadata: json!({
+                                "matched_rule": evaluation.matched_rule.clone(),
+                                "source_layer": evaluation.source_layer.clone(),
+                            }),
+                        },
                     )
                     .await;
                 }
@@ -1990,15 +2105,18 @@ async fn handle_rpc_request(
                 };
                 record_audit_event(
                     &store,
+                    &audit_context,
                     agent_id,
                     event_type,
                     result,
-                    Some(params.tool.clone()),
-                    Some(message.to_string()),
-                    json!({
-                        "matched_rule": evaluation.matched_rule.clone(),
-                        "source_layer": evaluation.source_layer.clone(),
-                    }),
+                    EventPayload {
+                        tool_name: Some(params.tool.clone()),
+                        message: Some(message.to_string()),
+                        metadata: json!({
+                            "matched_rule": evaluation.matched_rule.clone(),
+                            "source_layer": evaluation.source_layer.clone(),
+                        }),
+                    },
                 )
                 .await;
             }
@@ -2028,6 +2146,14 @@ async fn handle_rpc_request(
                 }
             };
 
+            if let Err(err) = store.get_agent(agent_id).await {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32010,
+                    format!("query agent for managed lifecycle failed: {err}"),
+                );
+            }
+
             let limits = CgroupResourceLimits {
                 cpu_weight: params.cpu_weight.unwrap_or(100),
                 memory_high: params.memory_high.unwrap_or_else(|| "256M".to_string()),
@@ -2047,16 +2173,19 @@ async fn handle_rpc_request(
                 Ok(snapshot) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::AgentStarted,
                         EventResult::Success,
-                        None,
-                        Some("managed lifecycle start".to_string()),
-                        json!({
-                            "pid": snapshot.pid,
-                            "restart_count": snapshot.restart_count,
-                            "cgroup_path": snapshot.cgroup_path,
-                        }),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("managed lifecycle start".to_string()),
+                            metadata: json!({
+                                "pid": snapshot.pid,
+                                "restart_count": snapshot.restart_count,
+                                "cgroup_path": snapshot.cgroup_path,
+                            }),
+                        },
                     )
                     .await;
 
@@ -2065,14 +2194,17 @@ async fn handle_rpc_request(
                 Err(err) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::Error,
                         EventResult::Failure,
-                        None,
-                        Some("managed lifecycle start failed".to_string()),
-                        json!({
-                            "error": err.to_string(),
-                        }),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("managed lifecycle start failed".to_string()),
+                            metadata: json!({
+                                "error": err.to_string(),
+                            }),
+                        },
                     )
                     .await;
 
@@ -2107,19 +2239,30 @@ async fn handle_rpc_request(
                 }
             };
 
+            if let Err(err) = store.get_agent(agent_id).await {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32010,
+                    format!("query agent for managed lifecycle failed: {err}"),
+                );
+            }
+
             match state.lifecycle().stop_agent(agent_id).await {
                 Ok(snapshot) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::AgentStopped,
                         EventResult::Success,
-                        None,
-                        Some("managed lifecycle stop".to_string()),
-                        json!({
-                            "restart_count": snapshot.restart_count,
-                            "state": snapshot.state,
-                        }),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("managed lifecycle stop".to_string()),
+                            metadata: json!({
+                                "restart_count": snapshot.restart_count,
+                                "state": snapshot.state,
+                            }),
+                        },
                     )
                     .await;
 
@@ -2128,12 +2271,15 @@ async fn handle_rpc_request(
                 Err(AgentError::NotFound(message)) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::Error,
                         EventResult::Failure,
-                        None,
-                        Some("managed lifecycle stop failed".to_string()),
-                        json!({"reason": message}),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("managed lifecycle stop failed".to_string()),
+                            metadata: json!({"reason": message}),
+                        },
                     )
                     .await;
                     JsonRpcResponse::error(request.id, -32018, message)
@@ -2141,12 +2287,15 @@ async fn handle_rpc_request(
                 Err(err) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::Error,
                         EventResult::Failure,
-                        None,
-                        Some("managed lifecycle stop failed".to_string()),
-                        json!({"error": err.to_string()}),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("managed lifecycle stop failed".to_string()),
+                            metadata: json!({"error": err.to_string()}),
+                        },
                     )
                     .await;
                     JsonRpcResponse::error(
@@ -2412,17 +2561,20 @@ async fn handle_rpc_request(
                 if current_day_total.saturating_add(delta_total) > limit_i64 {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         agent_id,
                         EventType::BudgetExceeded,
                         EventResult::Failure,
-                        Some("llm.request".to_string()),
-                        Some("llm.quota_exceeded".to_string()),
-                        json!({
-                            "day": day,
-                            "current_day_total": current_day_total,
-                            "requested_tokens": delta_total,
-                            "token_budget": limit_i64,
-                        }),
+                        EventPayload {
+                            tool_name: Some("llm.request".to_string()),
+                            message: Some("llm.quota_exceeded".to_string()),
+                            metadata: json!({
+                                "day": day,
+                                "current_day_total": current_day_total,
+                                "requested_tokens": delta_total,
+                                "token_budget": limit_i64,
+                            }),
+                        },
                     )
                     .await;
                     return JsonRpcResponse::error(
@@ -2556,30 +2708,33 @@ async fn handle_rpc_request(
 
                     record_audit_event(
                         &store,
+                        &audit_context,
                         existing_agent.id,
                         EventType::AgentCreated,
                         EventResult::Success,
-                        None,
-                        Some("idempotent create agent hit".to_string()),
-                        json!({
-                            "idempotent": true,
-                            "provider": provider,
-                            "model": existing_agent.model.model_name,
-                        }),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("idempotent create agent hit".to_string()),
+                            metadata: json!({
+                                "idempotent": true,
+                                "provider": provider,
+                                "model": existing_agent.model.model_name,
+                            }),
+                        },
                     )
                     .await;
 
-                    let card_path = match persist_agent_card(&state.agent_card_root, &existing_agent)
-                    {
-                        Ok(path) => path,
-                        Err(err) => {
-                            return JsonRpcResponse::error(
-                                request.id,
-                                -32018,
-                                format!("persist agent card failed: {err}"),
-                            )
-                        }
-                    };
+                    let card_path =
+                        match persist_agent_card(&state.agent_card_root, &existing_agent) {
+                            Ok(path) => path,
+                            Err(err) => {
+                                return JsonRpcResponse::error(
+                                    request.id,
+                                    -32018,
+                                    format!("persist agent card failed: {err}"),
+                                )
+                            }
+                        };
                     if let Some(result_obj) = result.as_object_mut() {
                         result_obj.insert(
                             "agent_card_path".to_string(),
@@ -2602,12 +2757,15 @@ async fn handle_rpc_request(
             if let Err(err) = store.create_agent(profile.clone()).await {
                 record_audit_event(
                     &store,
+                    &audit_context,
                     profile.id,
                     EventType::Error,
                     EventResult::Failure,
-                    None,
-                    Some("create agent failed".to_string()),
-                    json!({"error": err.to_string()}),
+                    EventPayload {
+                        tool_name: None,
+                        message: Some("create agent failed".to_string()),
+                        metadata: json!({"error": err.to_string()}),
+                    },
                 )
                 .await;
                 return JsonRpcResponse::error(
@@ -2627,12 +2785,15 @@ async fn handle_rpc_request(
                         let reason = format!("one-api provisioning failed: {err}");
                         record_audit_event(
                             &store,
+                            &audit_context,
                             profile.id,
                             EventType::Error,
                             EventResult::Failure,
-                            None,
-                            Some("one-api provisioning failed".to_string()),
-                            json!({"error": err.to_string()}),
+                            EventPayload {
+                                tool_name: None,
+                                message: Some("one-api provisioning failed".to_string()),
+                                metadata: json!({"error": err.to_string()}),
+                            },
                         )
                         .await;
                         if let Err(update_err) = store
@@ -2674,12 +2835,15 @@ async fn handle_rpc_request(
                     let reason = format!("persist one-api mapping failed: {err}");
                     record_audit_event(
                         &store,
+                        &audit_context,
                         profile.id,
                         EventType::Error,
                         EventResult::Failure,
-                        None,
-                        Some("persist one-api mapping failed".to_string()),
-                        json!({"error": err.to_string()}),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("persist one-api mapping failed".to_string()),
+                            metadata: json!({"error": err.to_string()}),
+                        },
                     )
                     .await;
                     if let Err(update_err) = store
@@ -2720,16 +2884,19 @@ async fn handle_rpc_request(
                     };
                     record_audit_event(
                         &store,
+                        &audit_context,
                         ready_agent.id,
                         EventType::AgentCreated,
                         EventResult::Success,
-                        None,
-                        Some("agent created".to_string()),
-                        json!({
-                            "idempotent": false,
-                            "provider": ready_agent.model.provider,
-                            "model": ready_agent.model.model_name,
-                        }),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("agent created".to_string()),
+                            metadata: json!({
+                                "idempotent": false,
+                                "provider": ready_agent.model.provider,
+                                "model": ready_agent.model.model_name,
+                            }),
+                        },
                     )
                     .await;
 
@@ -2760,12 +2927,15 @@ async fn handle_rpc_request(
                 Err(err) => {
                     record_audit_event(
                         &store,
+                        &audit_context,
                         profile.id,
                         EventType::Error,
                         EventResult::Failure,
-                        None,
-                        Some("mark agent ready failed".to_string()),
-                        json!({"error": err.to_string()}),
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("mark agent ready failed".to_string()),
+                            metadata: json!({"error": err.to_string()}),
+                        },
                     )
                     .await;
                     JsonRpcResponse::error(
