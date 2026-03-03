@@ -983,6 +983,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_agent_with_denied_tools_enforces_policy_for_lite_runtime_tool() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(981),
+                "CreateAgent",
+                json!({
+                    "name": "lite-deny-agent",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "ask",
+                    "denied_tools": ["builtin.lite.echo"],
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            create_response.error.is_none(),
+            "create should succeed: {create_response:?}"
+        );
+        let agent_id = create_response
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let denied = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(982),
+                "AuthorizeTool",
+                json!({
+                    "agent_id": agent_id,
+                    "tool": "builtin.lite.echo",
+                    "global_rules": [],
+                    "profile_rules": [],
+                    "session_overrides": {
+                        "allow_tools": [],
+                        "ask_tools": [],
+                        "deny_tools": [],
+                    }
+                }),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let denied_error = denied.error.expect("authorize should deny configured tool");
+        assert_eq!(denied_error.code, -32016);
+        assert!(denied_error.message.contains("policy.deny"));
+        assert!(denied_error.message.contains("matched_rule=builtin.lite.echo"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn managed_agent_lifecycle_rpc_start_list_stop() {
         let db_path = test_db_path();
         let cgroup_root =
@@ -1330,6 +1397,12 @@ struct CreateAgentParams {
     max_tokens: Option<u32>,
     #[serde(default)]
     temperature: Option<f32>,
+    #[serde(default)]
+    permission_policy: Option<String>,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    denied_tools: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1460,6 +1533,18 @@ fn profile_to_policy_layer(profile: &AgentProfile) -> PolicyLayer {
     PolicyLayer {
         name: "agent_profile".to_string(),
         rules,
+    }
+}
+
+fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "allow" => Ok(PermissionPolicy::Allow),
+        "ask" => Ok(PermissionPolicy::Ask),
+        "deny" => Ok(PermissionPolicy::Deny),
+        _ => Err(AgentError::InvalidInput(format!(
+            "unsupported permission_policy: {}",
+            value
+        ))),
     }
 }
 
@@ -2299,6 +2384,26 @@ async fn handle_rpc_request(
                 },
             );
             profile.budget.token_limit = params.token_budget;
+            if let Some(permission_policy_value) = params.permission_policy.as_deref() {
+                match parse_permission_policy(permission_policy_value) {
+                    Ok(permission_policy) => {
+                        profile.permissions.policy = permission_policy;
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32602,
+                            format!("invalid create params: {err}"),
+                        );
+                    }
+                }
+            }
+            if !params.allowed_tools.is_empty() {
+                profile.permissions.allowed_tools = params.allowed_tools.clone();
+            }
+            if !params.denied_tools.is_empty() {
+                profile.permissions.denied_tools = params.denied_tools.clone();
+            }
 
             let idempotency_key =
                 format!("{}:{}:{}", profile.name, provider, profile.model.model_name);

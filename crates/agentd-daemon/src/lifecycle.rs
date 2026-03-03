@@ -381,6 +381,11 @@ impl LifecycleManager {
                 break;
             }
 
+            let exited_successfully = match &exit_status {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            };
+
             match exit_status {
                 Ok(status) => {
                     self.push_event(new_event(
@@ -403,6 +408,23 @@ impl LifecycleManager {
                     ))
                     .await;
                 }
+            }
+
+            if exited_successfully {
+                {
+                    let mut state = snapshot.write().await;
+                    state.state = ManagedAgentState::Stopped;
+                    state.pid = None;
+                    state.restart_count = restart_count;
+                }
+                self.push_event(new_event(
+                    spec.agent_id,
+                    "agent.stopped",
+                    "info",
+                    serde_json::json!({"reason": "exited_successfully"}),
+                ))
+                .await;
+                break;
             }
 
             if restart_count >= spec.restart_max_attempts {
@@ -587,6 +609,38 @@ mod tests {
                 .all(|event| event.event_id != first_event.event_id),
             "replayed events should exclude cursor event"
         );
+
+        let _ = manager.stop_agent(agent_id).await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn successful_exit_does_not_trigger_restart_loop() {
+        let root = temp_cgroup_root();
+        let manager = test_manager(&root);
+        let agent_id = Uuid::new_v4();
+
+        manager
+            .start_agent(ManagedAgentSpec {
+                agent_id,
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "exit 0".to_string()],
+                env: HashMap::new(),
+                restart_max_attempts: 3,
+                restart_backoff_secs: 0,
+                limits: CgroupResourceLimits::default(),
+            })
+            .await
+            .expect("start should succeed");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let events = manager.list_events(None).await;
+        assert!(events.iter().any(|e| e.event_type == "agent.exited"));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "agent.stopped" && e.payload["reason"] == "exited_successfully"));
+        assert!(!events.iter().any(|e| e.event_type == "agent.restarting"));
 
         let _ = manager.stop_agent(agent_id).await;
         let _ = std::fs::remove_dir_all(root);
