@@ -1,0 +1,31 @@
+{
+  "task": "T3",
+  "scenario": "single-turn-real-call-happy",
+  "provider": {
+    "base_url": "http://127.0.0.1:3000/v1",
+    "model": "gpt-5.3-codex",
+    "runtime": "one-api (non-docker binary)"
+  },
+  "agent_id": "13d749d5-c675-47e4-b6da-364834e5aebb",
+  "llm": {
+    "output": "hi from t3 👋",
+    "provider_request_id": "resp_0751d7570c5e94c60169a6b395b144819a95300d92f953a230",
+    "request_id_source": "body.id",
+    "usage_source": "provider",
+    "transport_mode": "real",
+    "input_tokens": 11,
+    "output_tokens": 43,
+    "total_tokens": 54
+  },
+  "usage_query": {
+    "total_tokens": 54,
+    "input_tokens": 11,
+    "output_tokens": 43,
+    "total_cost_usd": 0.000054
+  },
+  "checks": {
+    "llm_output_non_empty": true,
+    "provider_request_id_non_empty": true,
+    "usage_total_tokens_gt_0": true
+  }
+}

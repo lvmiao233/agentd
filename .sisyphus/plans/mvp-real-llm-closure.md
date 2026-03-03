@@ -279,7 +279,7 @@ Max Concurrent: 5
   - Files: `python/agentd-agent-lite/pyproject.toml`, `python/agentd-agent-lite/src/*`
   - Pre-commit: `pytest -q python/agentd-agent-lite/tests/test_config.py`
 
-- [ ] 3. agent-lite 单轮真实 LLM 调用回路（RED→GREEN→REFACTOR）
+- [x] 3. agent-lite 单轮真实 LLM 调用回路（RED→GREEN→REFACTOR）
 
   **What to do**:
   - 先写失败测试：给定 prompt，必须走真实 OpenAI-compatible API 并返回 assistant 文本。
@@ -310,9 +310,9 @@ Max Concurrent: 5
   - OpenAI-compatible function calling 文档（librarian 输出）- 请求/响应字段规范。
 
   **Acceptance Criteria**:
-  - [ ] RED: 单轮真实调用测试初始失败。
-  - [ ] GREEN: 调用成功并返回 assistant 文本。
-  - [ ] REFACTOR: 错误映射与日志字段稳定，测试全绿。
+  - [x] RED: 单轮真实调用测试初始失败。
+  - [x] GREEN: 调用成功并返回 assistant 文本。
+  - [x] REFACTOR: 错误映射与日志字段稳定，测试全绿。
 
   **QA Scenarios (MANDATORY)**:
   ```
