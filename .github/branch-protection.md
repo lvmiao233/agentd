@@ -29,6 +29,7 @@ The following GitHub Actions jobs must pass before merging to protected branches
 | `phase-bc-gate` | ✅ Required | Phase B/C fault-injection gate (T17) |
 | `gate-syscall` | ✅ Required | System call validation (T4) |
 | `gate-isolation` | ✅ Required | cgroup/systemd isolation runtime check (T4) |
+| `release-candidate-gate` | ✅ Required | Release candidate hardening and rollback readiness (T20) |
 
 ### Strict Required Checks
 
@@ -60,6 +61,7 @@ Pattern: main
       - CI Gates / Phase B/C Gate (required)
       - CI Gates / System Call Gate (required)
       - CI Gates / Isolation Gate (Ubuntu 25.10) (required)
+      - CI Gates / Release Candidate Gate (required)
 
 ✓ Require conversation resolution before merging
 
@@ -84,6 +86,7 @@ Each CI gate job uploads evidence to `.sisyphus/evidence/`:
 ├── evidence-phase-bc-gate/
 ├── evidence-gate-syscall/
 ├── evidence-gate-isolation/
+├── evidence-release-candidate-gate/
 └── evidence-all/
 ```
 

@@ -129,6 +129,7 @@ log_info "=== Step 2: Workflow File ==="
 check_file ".github/workflows/gates.yml" "Gates workflow"
 
 if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
+    check_contains ".github/workflows/gates.yml" "permissions:" "Workflow token permission policy"
     # Check for required job names
     check_contains ".github/workflows/gates.yml" "preflight:" "Preflight job"
     check_contains ".github/workflows/gates.yml" "build-gate:" "Build gate job"
@@ -139,6 +140,8 @@ if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
     check_contains ".github/workflows/gates.yml" "gate-syscall:" "Syscall gate job"
     check_contains ".github/workflows/gates.yml" "gate-isolation:" "Isolation gate job"
     check_contains ".github/workflows/gates.yml" "scripts/demo/e2e-demo.sh --dry-run" "Phase D demo smoke step"
+    check_contains ".github/workflows/gates.yml" "release-candidate-gate:" "Release candidate gate job"
+    check_contains ".github/workflows/gates.yml" "scripts/release/rc-gate.sh --local" "Release candidate local gate command"
     
     # Check for evidence upload
     check_contains ".github/workflows/gates.yml" "evidence-" "Evidence artifact upload"
