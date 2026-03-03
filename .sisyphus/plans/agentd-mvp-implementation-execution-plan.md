@@ -1497,7 +1497,7 @@ Wave FINAL（并行独立审查）
 
 ---
 
-- [ ] 19. A2A Agent Card 生成 + 端到端演示脚本
+- [x] 19. A2A Agent Card 生成 + 端到端演示脚本
 
   **What to do**:
   - 在 Agent 注册成功后自动生成 `agent.json`（A2A card 兼容最小字段）。
@@ -1531,9 +1531,9 @@ Wave FINAL（并行独立审查）
   - card 与演示脚本构成“可对外复现”的 MVP 证明材料。
 
   **Acceptance Criteria**:
-  - [ ] 注册后可在预期路径找到 `agent.json`，字段完整。
-  - [ ] 演示脚本可在 Ubuntu 25.10 一键执行并成功。
-  - [ ] 演示脚本结果包含事件与用量输出摘要。
+  - [x] 注册后可在预期路径找到 `agent.json`，字段完整。
+  - [x] 演示脚本可在 Ubuntu 25.10 一键执行并成功。
+  - [x] 演示脚本结果包含事件与用量输出摘要。
 
   **QA Scenarios**:
   ```
@@ -1560,15 +1560,15 @@ Wave FINAL（并行独立审查）
   ```
 
   **Evidence to Capture**:
-  - [ ] `.sisyphus/evidence/task-19-demo-happy.txt`
-  - [ ] `.sisyphus/evidence/task-19-demo-error.txt`
+  - [x] `.sisyphus/evidence/task-19-demo-happy.txt`
+  - [x] `.sisyphus/evidence/task-19-demo-error.txt`
 
   **Commit**: YES
   - Message: `feat(phase-d): generate a2a agent card and executable e2e demo`
   - Files: `scripts/demo/e2e-demo.sh`, `scripts/validate/agent-card-validate.sh`, `configs/agents/*`
   - Pre-commit: `bash scripts/demo/e2e-demo.sh --dry-run`
 
-- [ ] 20. 最终硬化（public 仓库安全门禁 + 发布候选 + 总回滚演练）
+- [x] 20. 最终硬化（public 仓库安全门禁 + 发布候选 + 总回滚演练）
 
   **What to do**:
   - 完成 public 仓库场景的安全硬化：secret scanning、依赖漏洞扫描、最小权限 token。
@@ -1603,9 +1603,9 @@ Wave FINAL（并行独立审查）
   - public 仓库暴露面更大，必须在发布前强化默认防护。
 
   **Acceptance Criteria**:
-  - [ ] 发布候选流水线一次性跑通，required checks 全绿。
-  - [ ] secret scanning + 漏洞扫描结果达到门槛（Critical/High = 0）。
-  - [ ] 总回滚演练在 15 分钟内完成并恢复至稳定基线。
+  - [x] 发布候选流水线一次性跑通，required checks 全绿。
+  - [x] secret scanning + 漏洞扫描结果达到门槛（Critical/High = 0）。
+  - [x] 总回滚演练在 15 分钟内完成并恢复至稳定基线。
 
   **QA Scenarios**:
   ```
@@ -1633,8 +1633,8 @@ Wave FINAL（并行独立审查）
   ```
 
   **Evidence to Capture**:
-  - [ ] `.sisyphus/evidence/task-20-rc-happy.txt`
-  - [ ] `.sisyphus/evidence/task-20-rc-error.txt`
+  - [x] `.sisyphus/evidence/task-20-rc-happy.txt`
+  - [x] `.sisyphus/evidence/task-20-rc-error.txt`
 
   **Commit**: YES
   - Message: `chore(release): harden public repo gates and verify rollback readiness`
