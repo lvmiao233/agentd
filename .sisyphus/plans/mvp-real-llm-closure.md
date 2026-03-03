@@ -153,7 +153,7 @@ Max Concurrent: 5
 
 ## TODOs
 
-- [ ] 1. 真实 One-API 环境准备与预检脚本
+- [x] 1. 真实 One-API 环境准备与预检脚本
 
   **What to do**:
   - 先新增“环境前置检查”脚本（不改现有 mock gate），验证 Docker/One-API/API key/模型可用性。
@@ -342,7 +342,7 @@ Max Concurrent: 5
   - Files: `python/agentd-agent-lite/src/*`, `python/agentd-agent-lite/tests/*`
   - Pre-commit: `pytest -q python/agentd-agent-lite/tests/test_real_single_turn.py`
 
-- [ ] 4. anti-mock 证据模型定义（provider 元数据 + usage 来源）
+- [x] 4. anti-mock 证据模型定义（provider 元数据 + usage 来源）
 
   **What to do**:
   - 定义统一证据字段：`provider_request_id`、`provider_model`、`usage_source(provider|estimated)`、`transport_mode(real|simulated)`。
@@ -404,7 +404,7 @@ Max Concurrent: 5
   - Files: `scripts/gates/*`, `tests/*`
   - Pre-commit: `pytest -q tests/test_anti_mock_schema.py`
 
-- [ ] 5. 真实 gate 脚手架（独立于现有 mock gate）
+- [x] 5. 真实 gate 脚手架（独立于现有 mock gate）
 
   **What to do**:
   - 新增 `task-real-closure-gate.sh`，不修改现有 phase-a/task-18/demo gate 行为。
@@ -465,7 +465,7 @@ Max Concurrent: 5
   - Files: `scripts/gates/task-real-closure-gate.sh`
   - Pre-commit: `bash scripts/gates/task-real-closure-gate.sh --dry-run`
 
-- [ ] 6. tool-calling 循环（LLM→tool→LLM）TDD
+- [x] 6. tool-calling 循环（LLM→tool→LLM）TDD
 
   **What to do**:
   - RED：编写测试，要求模型返回 tool_call 后 agent 正确执行工具并把结果回注给模型，最终得到 final answer。
@@ -528,7 +528,7 @@ Max Concurrent: 5
   - Files: `python/agentd-agent-lite/src/*`, `python/agentd-agent-lite/tests/*`
   - Pre-commit: `pytest -q python/agentd-agent-lite/tests/test_tool_loop.py`
 
-- [ ] 7. 失败治理（超时/重试/熔断）TDD
+- [x] 7. 失败治理（超时/重试/熔断）TDD
 
   **What to do**:
   - RED：为超时、429/5xx、网络抖动写失败测试。
@@ -590,7 +590,7 @@ Max Concurrent: 5
   - Files: `python/agentd-agent-lite/src/*`, `python/agentd-agent-lite/tests/*`
   - Pre-commit: `pytest -q python/agentd-agent-lite/tests/test_retries.py`
 
-- [ ] 8. 记账与审计对账链路（provider usage 对齐）
+- [x] 8. 记账与审计对账链路（provider usage 对齐）
 
   **What to do**:
   - 将 provider 返回 usage 与 daemon `RecordUsage` 写入建立对账关系。
@@ -653,7 +653,7 @@ Max Concurrent: 5
   - Files: `crates/agentd-daemon/src/main.rs`, `crates/agentd-store/src/*`, `python/agentd-agent-lite/src/*`
   - Pre-commit: `cargo test -p agentd-daemon && cargo test -p agentd-store`
 
-- [ ] 9. 真实 gate 正例 + 负例（disabled/invalid key）
+- [x] 9. 真实 gate 正例 + 负例（disabled/invalid key）
 
   **What to do**:
   - 完成真实 gate 主流程：创建 agent → 真实调用 → 对账 → 事件校验。
@@ -716,7 +716,7 @@ Max Concurrent: 5
   - Files: `scripts/gates/task-real-closure-gate.sh`, `scripts/gates/*`
   - Pre-commit: `bash scripts/gates/task-real-closure-gate.sh --dry-run`
 
-- [ ] 10. policy deny 负例（确保无 provider call 尝试）
+- [x] 10. policy deny 负例（确保无 provider call 尝试）
 
   **What to do**:
   - 新增专用负例：对被 deny 的工具调用请求，必须在 `AuthorizeTool` 阶段拦截。
@@ -776,7 +776,7 @@ Max Concurrent: 5
   - Files: `scripts/gates/*`, `python/agentd-agent-lite/tests/*`
   - Pre-commit: `bash scripts/gates/task-real-closure-gate.sh --negative-policy-deny`
 
-- [ ] 11. `agentctl agent inspect` + RPC 单体查询
+- [x] 11. `agentctl agent inspect` + RPC 单体查询
 
   **What to do**:
   - 在 daemon 增加单 Agent 查询 RPC（`GetAgent` 或 `InspectAgent`）。
@@ -808,9 +808,9 @@ Max Concurrent: 5
   - `crates/agentd-store/src/lib.rs` (`get_agent`) - 查询能力已存在。
 
   **Acceptance Criteria**:
-  - [ ] `agentctl agent inspect --agent-id <id> --json` 返回 200 等价成功结果。
-  - [ ] 不存在 agent 时返回明确错误码。
-  - [ ] 输出不包含敏感 access token。
+  - [x] `agentctl agent inspect --agent-id <id> --json` 返回 200 等价成功结果。
+  - [x] 不存在 agent 时返回明确错误码。
+  - [x] 输出不包含敏感 access token。
 
   **QA Scenarios (MANDATORY)**:
   ```
@@ -839,7 +839,7 @@ Max Concurrent: 5
   - Files: `crates/agentctl/src/main.rs`, `crates/agentd-daemon/src/main.rs`, `crates/agentd-protocol/src/*`
   - Pre-commit: `cargo test -p agentd-daemon && cargo test -p agentctl`
 
-- [ ] 12. `agentctl agent delete` + RPC/Store wiring
+- [x] 12. `agentctl agent delete` + RPC/Store wiring
 
   **What to do**:
   - 在 daemon 新增 `DeleteAgent` RPC 并调用 store `delete_agent`。
@@ -871,9 +871,9 @@ Max Concurrent: 5
   - `crates/agentctl/src/main.rs` - 命令树扩展。
 
   **Acceptance Criteria**:
-  - [ ] delete 成功后 `agent list` 不再包含目标 agent。
-  - [ ] delete 不存在 agent 时返回稳定 not found。
-  - [ ] delete 事件进入 audit。
+  - [x] delete 成功后 `agent list` 不再包含目标 agent。
+  - [x] delete 不存在 agent 时返回稳定 not found。
+  - [x] delete 事件进入 audit。
 
   **QA Scenarios (MANDATORY)**:
   ```
@@ -903,7 +903,7 @@ Max Concurrent: 5
   - Files: `crates/agentctl/src/main.rs`, `crates/agentd-daemon/src/main.rs`, `crates/agentd-protocol/src/*`
   - Pre-commit: `cargo test -p agentd-daemon && cargo test -p agentctl`
 
-- [ ] 13. `configs/agents/*.toml` profile 加载与校验
+- [x] 13. `configs/agents/*.toml` profile 加载与校验
 
   **What to do**:
   - 增加目录扫描与 TOML 解析，把 profile 文件映射为 `AgentProfile`（至少覆盖路线图示例字段）。
@@ -935,9 +935,9 @@ Max Concurrent: 5
   - `configs/agentd.toml` - 当前配置风格参考。
 
   **Acceptance Criteria**:
-  - [ ] `configs/agents/example.toml` 可被成功加载并映射为 `AgentProfile`。
-  - [ ] 非法 profile 文件报错可定位。
-  - [ ] 现有启动流程在无 `configs/agents` 时行为不变。
+  - [x] `configs/agents/example.toml` 可被成功加载并映射为 `AgentProfile`。
+  - [x] 非法 profile 文件报错可定位。
+  - [x] 现有启动流程在无 `configs/agents` 时行为不变。
 
   **QA Scenarios (MANDATORY)**:
   ```
