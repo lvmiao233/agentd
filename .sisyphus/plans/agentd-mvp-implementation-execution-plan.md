@@ -1424,7 +1424,7 @@ Wave FINAL（并行独立审查）
   - Files: `crates/agentctl/src/*`, `scripts/gates/phase-bc-gate.sh`, `scripts/faults/*`
   - Pre-commit: `bash scripts/gates/phase-bc-gate.sh --local`
 
-- [ ] 18. Python `agentd-agent-lite`（uv）+ `agentctl agent run`
+- [x] 18. Python `agentd-agent-lite`（uv）+ `agentctl agent run`
 
   **What to do**:
   - 基于 `uv` 建立 `agent-lite` 包与运行入口。

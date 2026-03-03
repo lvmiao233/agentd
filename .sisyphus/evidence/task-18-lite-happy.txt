@@ -1,0 +1,3 @@
+task_18_happy=passed
+total_tokens=2
+events=3
