@@ -656,6 +656,14 @@ if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" usage "$AGENT_ID" --json >"$US
     exit 1
 fi
 
+LLM_TOTAL_TOKENS="$(python3 - "$AGENT_RUN_OUTPUT" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+llm = data.get("llm", {})
+print(llm.get("total_tokens", 0))
+PY
+)"
+
 # Verify usage shows tokens were consumed (proof of real LLM call)
 TOTAL_TOKENS="$(python3 - "$USAGE_OUTPUT" <<'PY'
 import json, sys
@@ -678,6 +686,33 @@ if [[ "$TOTAL_TOKENS" -le 0 ]]; then
     exit 1
 fi
 
+if ! python3 - "$LLM_TOTAL_TOKENS" "$TOTAL_TOKENS" <<'PY'
+import sys
+
+llm_total = int(sys.argv[1])
+usage_total = int(sys.argv[2])
+if llm_total <= 0:
+    raise SystemExit(1)
+delta = abs(usage_total - llm_total)
+ratio = delta / llm_total
+if ratio > 0.02:
+    raise SystemExit(1)
+PY
+then
+    {
+        echo "ASSERT preflight=PASS"
+        echo "ASSERT daemon_start=PASS"
+        echo "ASSERT closure_request=PASS"
+        echo "ASSERT closure_response=PASS"
+        echo "ASSERT closure_verification=FAIL"
+        echo "reason=usage_reconciliation_failed"
+        echo "llm_total_tokens=$LLM_TOTAL_TOKENS"
+        echo "usage_total_tokens=$TOTAL_TOKENS"
+    } >"$ERROR_EVIDENCE"
+    log_error "Usage reconciliation failed (delta > 2%)"
+    exit 1
+fi
+
 # Happy path passed
 {
     echo "ASSERT preflight=PASS"
@@ -688,6 +723,7 @@ fi
     cat "$ANTI_MOCK_ASSERT_OUTPUT"
     echo "mode=happy_path"
     echo "agent_id=$AGENT_ID"
+    echo "llm_total_tokens=$LLM_TOTAL_TOKENS"
     echo "total_tokens=$TOTAL_TOKENS"
 } >"$HAPPY_EVIDENCE"
 

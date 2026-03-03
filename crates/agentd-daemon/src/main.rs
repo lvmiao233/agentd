@@ -446,6 +446,9 @@ mod tests {
         input_tokens: u64,
         output_tokens: u64,
         cost_usd: f64,
+        provider_request_id: Option<&str>,
+        usage_source: Option<&str>,
+        transport_mode: Option<&str>,
     ) -> JsonRpcRequest {
         JsonRpcRequest::new(
             json!(6),
@@ -456,6 +459,9 @@ mod tests {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost_usd": cost_usd,
+                "provider_request_id": provider_request_id,
+                "usage_source": usage_source,
+                "transport_mode": transport_mode,
             }),
         )
     }
@@ -804,7 +810,16 @@ mod tests {
         assert_eq!(initial["total_tokens"], json!(0));
 
         let record_ok = handle_rpc_request(
-            record_usage_request(&created_agent_id, "claude-4-sonnet", 60, 30, 0.15),
+            record_usage_request(
+                &created_agent_id,
+                "claude-4-sonnet",
+                60,
+                30,
+                0.15,
+                Some("req-usage-1"),
+                Some("provider"),
+                Some("real"),
+            ),
             store.clone(),
             state.clone(),
             OneApiConfig::default(),
@@ -815,8 +830,55 @@ mod tests {
             "usage record under budget should succeed: {record_ok:?}"
         );
 
+        let audit_response = handle_rpc_request(
+            list_audit_events_request(&created_agent_id, Some(20)),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            audit_response.error.is_none(),
+            "audit query should succeed: {audit_response:?}"
+        );
+        let audit_events = audit_response
+            .result
+            .expect("audit result should exist")
+            .get("events")
+            .and_then(Value::as_array)
+            .expect("events should be array")
+            .clone();
+        let usage_audit = audit_events
+            .iter()
+            .find(|event| {
+                event["event_type"] == json!("ToolInvoked")
+                    && event["payload"]["message"] == json!("usage recorded")
+            })
+            .expect("usage audit event should exist");
+        assert_eq!(
+            usage_audit["payload"]["metadata"]["provider_request_id"],
+            json!("req-usage-1")
+        );
+        assert_eq!(
+            usage_audit["payload"]["metadata"]["usage_source"],
+            json!("provider")
+        );
+        assert_eq!(
+            usage_audit["payload"]["metadata"]["transport_mode"],
+            json!("real")
+        );
+
         let over_budget = handle_rpc_request(
-            record_usage_request(&created_agent_id, "claude-4-sonnet", 20, 5, 0.05),
+            record_usage_request(
+                &created_agent_id,
+                "claude-4-sonnet",
+                20,
+                5,
+                0.05,
+                Some("req-usage-2"),
+                Some("provider"),
+                Some("real"),
+            ),
             store.clone(),
             state.clone(),
             OneApiConfig::default(),
@@ -884,6 +946,63 @@ mod tests {
         assert!(invalid_window_error
             .message
             .contains("unsupported usage window"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn record_usage_rejects_missing_provider_reconciliation_fields() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let created = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(91),
+                "CreateAgent",
+                json!({
+                    "name": "reconcile-agent",
+                    "model": "claude-4-sonnet",
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(created.error.is_none(), "create should succeed: {created:?}");
+        let agent_id = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent should exist")
+            .get("id")
+            .expect("agent id should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let missing_request_id = handle_rpc_request(
+            record_usage_request(
+                &agent_id,
+                "claude-4-sonnet",
+                10,
+                5,
+                0.03,
+                None,
+                Some("provider"),
+                Some("real"),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        let error = missing_request_id
+            .error
+            .expect("missing provider request id should fail");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("MISSING_PROVIDER_REQUEST_ID"));
 
         cleanup_sqlite_files(&db_path);
     }
@@ -977,7 +1096,16 @@ mod tests {
 
         for cycle in 0..100 {
             let record = handle_rpc_request(
-                record_usage_request(&agent_id, "claude-4-sonnet", 5, 3, 0.01),
+                record_usage_request(
+                    &agent_id,
+                    "claude-4-sonnet",
+                    5,
+                    3,
+                    0.01,
+                    Some("req-collector"),
+                    Some("provider"),
+                    Some("real"),
+                ),
                 store.clone(),
                 state.clone(),
                 OneApiConfig::default(),
@@ -1573,6 +1701,12 @@ struct RecordUsageParams {
     output_tokens: u64,
     #[serde(default)]
     cost_usd: f64,
+    #[serde(default)]
+    provider_request_id: Option<String>,
+    #[serde(default)]
+    usage_source: Option<String>,
+    #[serde(default)]
+    transport_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2481,6 +2615,39 @@ async fn handle_rpc_request(
                 }
             };
 
+            let provider_request_id = match params.provider_request_id.as_deref() {
+                Some(value) if !value.trim().is_empty() => value.trim().to_string(),
+                _ => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        "MISSING_PROVIDER_REQUEST_ID",
+                    )
+                }
+            };
+
+            let usage_source = match params.usage_source.as_deref() {
+                Some("provider") => "provider".to_string(),
+                Some("estimated") => "estimated".to_string(),
+                Some(_) => {
+                    return JsonRpcResponse::error(request.id, -32602, "INVALID_USAGE_SOURCE")
+                }
+                None => {
+                    return JsonRpcResponse::error(request.id, -32602, "MISSING_USAGE_SOURCE")
+                }
+            };
+
+            let transport_mode = match params.transport_mode.as_deref() {
+                Some("real") => "real".to_string(),
+                Some("simulated") => "simulated".to_string(),
+                Some(_) => {
+                    return JsonRpcResponse::error(request.id, -32602, "INVALID_TRANSPORT_MODE")
+                }
+                None => {
+                    return JsonRpcResponse::error(request.id, -32602, "MISSING_TRANSPORT_MODE")
+                }
+            };
+
             let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
                 Ok(agent_id) => agent_id,
                 Err(err) => {
@@ -2598,7 +2765,30 @@ async fn handle_rpc_request(
                 )
                 .await
             {
-                Ok(usage) => JsonRpcResponse::success(request.id, json!(usage)),
+                Ok(usage) => {
+                    record_audit_event(
+                        &store,
+                        &audit_context,
+                        agent_id,
+                        EventType::ToolInvoked,
+                        EventResult::Success,
+                        EventPayload {
+                            tool_name: Some("llm.request".to_string()),
+                            message: Some("usage recorded".to_string()),
+                            metadata: json!({
+                                "model_name": params.model_name,
+                                "input_tokens": delta_input,
+                                "output_tokens": delta_output,
+                                "cost_usd": params.cost_usd,
+                                "provider_request_id": provider_request_id,
+                                "usage_source": usage_source,
+                                "transport_mode": transport_mode,
+                            }),
+                        },
+                    )
+                    .await;
+                    JsonRpcResponse::success(request.id, json!(usage))
+                }
                 Err(err) => JsonRpcResponse::error(
                     request.id,
                     -32012,

@@ -97,6 +97,9 @@ def test_real_single_turn_success_emits_provider_request_id(
         assert method == "RecordUsage"
         assert params["input_tokens"] == 3
         assert params["output_tokens"] == 2
+        assert params["provider_request_id"] == "req-123"
+        assert params["usage_source"] == "provider"
+        assert params["transport_mode"] == "real"
         return {"accepted": True}
 
     monkeypatch.setattr(_CLI_MODULE, "call_rpc", fake_call_rpc)

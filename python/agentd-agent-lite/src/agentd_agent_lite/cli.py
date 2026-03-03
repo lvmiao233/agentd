@@ -742,6 +742,9 @@ def run_once(args: argparse.Namespace) -> int:
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost_usd": cost_usd,
+                "provider_request_id": last_provider_request_id,
+                "usage_source": last_usage_source,
+                "transport_mode": last_transport_mode,
             },
         )
     except RpcError as err:

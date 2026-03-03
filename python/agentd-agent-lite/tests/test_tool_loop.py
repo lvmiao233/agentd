@@ -64,10 +64,13 @@ def test_tool_calling_loop_returns_final_answer(monkeypatch, capsys) -> None:
             "tool_calls": [],
         }
 
-    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+    def fake_call_rpc(_: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "AuthorizeTool":
             return {"decision": "allow"}
         if method == "RecordUsage":
+            assert params["provider_request_id"] == "req-2"
+            assert params["usage_source"] == "provider"
+            assert params["transport_mode"] == "real"
             return {"accepted": True}
         raise AssertionError(f"unexpected method {method}")
 
@@ -107,10 +110,13 @@ def test_max_iterations_reached_returns_stable_error(monkeypatch, capsys) -> Non
             ],
         }
 
-    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+    def fake_call_rpc(_: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "AuthorizeTool":
             return {"decision": "allow"}
         if method == "RecordUsage":
+            assert params["provider_request_id"] == "req-loop"
+            assert params["usage_source"] == "provider"
+            assert params["transport_mode"] == "real"
             return {"accepted": True}
         raise AssertionError(f"unexpected method {method}")
 
@@ -205,10 +211,13 @@ def test_tool_calling_loop_handles_two_consecutive_tool_calls(
             "tool_calls": [],
         }
 
-    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+    def fake_call_rpc(_: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "AuthorizeTool":
             return {"decision": "allow"}
         if method == "RecordUsage":
+            assert params["provider_request_id"] == "req-3"
+            assert params["usage_source"] == "provider"
+            assert params["transport_mode"] == "real"
             return {"accepted": True}
         raise AssertionError(f"unexpected method {method}")
 
@@ -245,10 +254,13 @@ def test_tool_calling_loop_finishes_when_provider_returns_no_tool_call(
             "tool_calls": [],
         }
 
-    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+    def fake_call_rpc(_: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "AuthorizeTool":
             return {"decision": "allow"}
         if method == "RecordUsage":
+            assert params["provider_request_id"] == "req-direct"
+            assert params["usage_source"] == "provider"
+            assert params["transport_mode"] == "real"
             return {"accepted": True}
         raise AssertionError(f"unexpected method {method}")
 
