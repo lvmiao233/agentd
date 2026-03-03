@@ -1,10 +1,30 @@
 import argparse
+import importlib
 import json
 import socket
 import sys
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
+from .config import load_config
+
+OpenAI: Any | None = None
+AuthenticationError: type[Exception] | None = None
+APIConnectionError: type[Exception] | None = None
+APIStatusError: type[Exception] | None = None
+
+
+def _ensure_openai_types() -> None:
+    global OpenAI, AuthenticationError, APIConnectionError, APIStatusError
+    if OpenAI is not None:
+        return
+
+    openai_mod = importlib.import_module("openai")
+    OpenAI = getattr(openai_mod, "OpenAI")
+    AuthenticationError = getattr(openai_mod, "AuthenticationError")
+    APIConnectionError = getattr(openai_mod, "APIConnectionError")
+    APIStatusError = getattr(openai_mod, "APIStatusError")
 
 
 @dataclass(slots=True)
@@ -66,6 +86,85 @@ def run_builtin_tool(tool_name: str, prompt: str) -> str:
     return prompt
 
 
+def _extract_message_text(completion: Any) -> str:
+    choices = getattr(completion, "choices", None)
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content:
+            return content
+    return ""
+
+
+def _extract_provider_request_id(
+    completion: Any, headers: dict[str, str]
+) -> tuple[str, str]:
+    request_id = getattr(completion, "_request_id", None)
+    if isinstance(request_id, str) and request_id:
+        return request_id, "response._request_id"
+
+    header_request_id = headers.get("x-request-id") or headers.get("X-Request-ID")
+    if isinstance(header_request_id, str) and header_request_id:
+        return header_request_id, "header.x-request-id"
+
+    completion_id = getattr(completion, "id", None)
+    if isinstance(completion_id, str) and completion_id:
+        return completion_id, "body.id"
+
+    return "", "unavailable"
+
+
+def _invoke_real_single_turn(
+    *, base_url: str, api_key: str, model: str, timeout: int, prompt: str
+) -> dict[str, Any]:
+    _ensure_openai_types()
+    if OpenAI is None:
+        raise RuntimeError("openai client unavailable")
+
+    client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+    raw_response = client.chat.completions.with_raw_response.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    completion = raw_response.parse()
+    response_text = _extract_message_text(completion)
+    if not response_text:
+        raise RuntimeError("provider returned empty assistant content")
+
+    usage = getattr(completion, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+
+    usage_source = "provider"
+    if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
+        prompt_tokens = estimate_tokens(prompt)
+        completion_tokens = estimate_tokens(response_text)
+        total_tokens = prompt_tokens + completion_tokens
+        usage_source = "estimated"
+    elif not isinstance(total_tokens, int):
+        total_tokens = prompt_tokens + completion_tokens
+
+    raw_headers = dict(raw_response.headers.items()) if raw_response.headers else {}
+    provider_request_id, request_id_source = _extract_provider_request_id(
+        completion, raw_headers
+    )
+
+    provider_model = getattr(completion, "model", None)
+    return {
+        "output": response_text,
+        "input_tokens": prompt_tokens,
+        "output_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "provider_request_id": provider_request_id,
+        "request_id_source": request_id_source,
+        "provider_model": provider_model if isinstance(provider_model, str) else model,
+        "usage_source": usage_source,
+        "transport_mode": "real",
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="agentd-agent-lite")
     parser.add_argument("--socket-path", default="/tmp/agentd.sock")
@@ -73,10 +172,59 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--model", default="claude-4-sonnet")
     parser.add_argument("--tool", default="builtin.lite.echo")
+    parser.add_argument(
+        "--base-url", default=None, help="OpenAI-compatible API base URL"
+    )
+    parser.add_argument("--api-key", default=None, help="OpenAI-compatible API key")
+    parser.add_argument(
+        "--timeout", type=int, default=None, help="Request timeout in seconds"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry run mode - skip LLM call, for config validation only",
+    )
     return parser.parse_args()
 
 
 def run_once(args: argparse.Namespace) -> int:
+    try:
+        llm_config = load_config(
+            base_url=args.base_url,
+            api_key=args.api_key,
+            model=args.model,
+            timeout=args.timeout,
+        )
+    except ValueError as err:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": "config",
+                    "error": "invalid_config",
+                    "message": str(err),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "status": "dry_run",
+                    "config": {
+                        "base_url": llm_config.base_url,
+                        "model": llm_config.model,
+                        "timeout": llm_config.timeout,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
     try:
         authorization = call_rpc(
             args.socket_path,
@@ -132,11 +280,94 @@ def run_once(args: argparse.Namespace) -> int:
         return 2
 
     tool_output = run_builtin_tool(args.tool, args.prompt)
-    response_text = f"lite:{tool_output}"
 
-    input_tokens = estimate_tokens(args.prompt)
-    output_tokens = estimate_tokens(response_text)
-    total_tokens = input_tokens + output_tokens
+    try:
+        llm_result = _invoke_real_single_turn(
+            base_url=llm_config.base_url,
+            api_key=llm_config.api_key,
+            model=llm_config.model,
+            timeout=llm_config.timeout,
+            prompt=args.prompt,
+        )
+    except Exception as err:
+        auth_error = AuthenticationError
+        conn_error = APIConnectionError
+        status_error = APIStatusError
+
+        if auth_error is not None and isinstance(err, auth_error):
+            provider_request_id = getattr(err, "request_id", None)
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "llm",
+                        "error": "provider.auth",
+                        "message": str(err),
+                        "provider_request_id": provider_request_id,
+                        "transport_mode": "real",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+
+        if conn_error is not None and isinstance(err, conn_error):
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "llm",
+                        "error": "provider.network",
+                        "message": str(err),
+                        "provider_request_id": None,
+                        "transport_mode": "real",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+
+        if status_error is not None and isinstance(err, status_error):
+            provider_request_id = getattr(err, "request_id", None)
+            category = (
+                "provider.auth"
+                if getattr(err, "status_code", None) == 401
+                else "provider.http"
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "llm",
+                        "error": category,
+                        "message": str(err),
+                        "provider_request_id": provider_request_id,
+                        "transport_mode": "real",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": "llm",
+                    "error": "provider.unknown",
+                    "message": str(err),
+                    "provider_request_id": getattr(err, "request_id", None),
+                    "transport_mode": "real",
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    response_text = str(llm_result["output"])
+    input_tokens = int(llm_result["input_tokens"])
+    output_tokens = int(llm_result["output_tokens"])
+    total_tokens = int(llm_result["total_tokens"])
     cost_usd = round(total_tokens * 0.000001, 8)
 
     try:
@@ -145,7 +376,7 @@ def run_once(args: argparse.Namespace) -> int:
             "RecordUsage",
             {
                 "agent_id": args.agent_id,
-                "model_name": args.model,
+                "model_name": llm_config.model,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost_usd": cost_usd,
@@ -171,7 +402,7 @@ def run_once(args: argparse.Namespace) -> int:
                 "status": "completed",
                 "agent_id": args.agent_id,
                 "prompt": args.prompt,
-                "model": args.model,
+                "model": llm_config.model,
                 "tool": {
                     "name": args.tool,
                     "decision": decision,
@@ -183,6 +414,11 @@ def run_once(args: argparse.Namespace) -> int:
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
                     "estimated_cost_usd": cost_usd,
+                    "provider_request_id": llm_result["provider_request_id"],
+                    "request_id_source": llm_result["request_id_source"],
+                    "provider_model": llm_result["provider_model"],
+                    "usage_source": llm_result["usage_source"],
+                    "transport_mode": llm_result["transport_mode"],
                 },
                 "usage": usage,
             },

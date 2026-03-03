@@ -3,7 +3,9 @@ name = "agentd-agent-lite"
 version = "0.1.0"
 description = "Builtin lite agent runtime for agentd"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai>=1.0.0",
+]
 
 [project.scripts]
 agentd-agent-lite = "agentd_agent_lite.cli:main"
