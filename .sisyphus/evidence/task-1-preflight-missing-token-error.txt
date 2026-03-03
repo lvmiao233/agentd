@@ -1,0 +1,11 @@
+$ bash scripts/gates/preflight-real-oneapi.sh --base-url http://127.0.0.1:45721
+EXIT_CODE=1
+STDOUT:
+HEALTH=true
+MODELS_CHECKED=false
+ENV_READY=false
+REASON_CODE=ONE_API_TOKEN_MISSING
+HEALTH_ENDPOINT=/health
+
+STDERR:
+

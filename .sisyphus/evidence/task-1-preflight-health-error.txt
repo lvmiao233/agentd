@@ -1,0 +1,10 @@
+$ bash scripts/gates/preflight-real-oneapi.sh --base-url http://127.0.0.1:1 --token test-token --timeout 1
+EXIT_CODE=1
+STDOUT:
+HEALTH=false
+MODELS_CHECKED=false
+ENV_READY=false
+REASON_CODE=ONE_API_HEALTH_UNREACHABLE
+
+STDERR:
+
