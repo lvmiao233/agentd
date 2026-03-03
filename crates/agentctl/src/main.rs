@@ -32,7 +32,7 @@ enum Commands {
     },
     Agent {
         #[command(subcommand)]
-        command: AgentCommands,
+        command: Box<AgentCommands>,
     },
 }
 
@@ -235,17 +235,21 @@ async fn follow_events(
 
 async fn run_builtin_lite(
     socket_path: &str,
-    name: &str,
-    model: &str,
-    tool: &str,
-    prompt: &str,
-    restart_max_attempts: Option<u32>,
-    restart_backoff_secs: Option<u64>,
-    cpu_weight: Option<u64>,
-    memory_high: Option<String>,
-    memory_max: Option<String>,
+    request: BuiltinLiteRequest<'_>,
     as_json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let BuiltinLiteRequest {
+        name,
+        model,
+        tool,
+        prompt,
+        restart_max_attempts,
+        restart_backoff_secs,
+        cpu_weight,
+        memory_high,
+        memory_max,
+    } = request;
+
     let created = call_rpc(
         socket_path,
         "CreateAgent",
@@ -313,6 +317,18 @@ async fn run_builtin_lite(
     Ok(())
 }
 
+struct BuiltinLiteRequest<'a> {
+    name: &'a str,
+    model: &'a str,
+    tool: &'a str,
+    prompt: &'a str,
+    restart_max_attempts: Option<u32>,
+    restart_backoff_secs: Option<u64>,
+    cpu_weight: Option<u64>,
+    memory_high: Option<String>,
+    memory_max: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -345,7 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
             print_response(response, json)?;
         }
-        Commands::Agent { command } => match command {
+        Commands::Agent { command } => match *command {
             AgentCommands::List { json } => {
                 info!(socket_path = %cli.socket_path, "Calling ListAgents over UDS JSON-RPC");
                 let response = call_rpc(&cli.socket_path, "ListAgents", json!({})).await?;
@@ -414,15 +430,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!(socket_path = %cli.socket_path, runtime_name, "Creating agent and starting builtin lite runtime");
                     run_builtin_lite(
                         &cli.socket_path,
-                        runtime_name,
-                        &model,
-                        &tool,
-                        runtime_prompt,
-                        restart_max_attempts,
-                        restart_backoff_secs,
-                        cpu_weight,
-                        memory_high,
-                        memory_max,
+                        BuiltinLiteRequest {
+                            name: runtime_name,
+                            model: &model,
+                            tool: &tool,
+                            prompt: runtime_prompt,
+                            restart_max_attempts,
+                            restart_backoff_secs,
+                            cpu_weight,
+                            memory_high,
+                            memory_max,
+                        },
                         json,
                     )
                     .await?;
