@@ -12,7 +12,7 @@ if [[ -f "$FAULT_MARKER" ]]; then
     existing_faults="$(grep '^faults=' "$FAULT_MARKER" | cut -d= -f2- || true)"
 fi
 
-combined="${existing_faults},oom,policy_conflict"
+combined="${existing_faults},db_lock_conflict"
 combined="${combined#,}"
 combined="$(printf '%s' "$combined" | tr ',' '\n' | awk 'NF' | sort -u | paste -sd, -)"
 
@@ -27,4 +27,4 @@ marker=$FAULT_MARKER
 faults=$combined
 EOF
 
-echo "Injected Phase B/C fault marker: $FAULT_MARKER"
+echo "Injected DB-lock conflict marker: $FAULT_MARKER"

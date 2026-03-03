@@ -161,6 +161,8 @@ check_file "scripts/gates/phase-a-gate.sh" "Phase A gate script"
 check_file "scripts/gates/phase-bc-gate.sh" "Phase B/C gate script"
 check_file "scripts/rollback/phase-a-rollback.sh" "Phase A rollback script"
 check_file "scripts/faults/inject-oom-and-policy-conflict.sh" "Phase B/C fault injection script"
+check_file "scripts/faults/inject-oneapi-timeout.sh" "One-API timeout injection script"
+check_file "scripts/faults/inject-db-lock-conflict.sh" "DB lock conflict injection script"
 
 if [ -f "$REPO_ROOT/scripts/gate-check.sh" ]; then
     check_contains "scripts/gate-check.sh" "set -euo pipefail" "Strict shell mode"
@@ -226,6 +228,20 @@ if bash -n "$REPO_ROOT/scripts/faults/inject-oom-and-policy-conflict.sh" 2>/dev/
     log_info "✓ inject-oom-and-policy-conflict.sh syntax valid"
 else
     log_error "✗ inject-oom-and-policy-conflict.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/faults/inject-oneapi-timeout.sh" 2>/dev/null; then
+    log_info "✓ inject-oneapi-timeout.sh syntax valid"
+else
+    log_error "✗ inject-oneapi-timeout.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/faults/inject-db-lock-conflict.sh" 2>/dev/null; then
+    log_info "✓ inject-db-lock-conflict.sh syntax valid"
+else
+    log_error "✗ inject-db-lock-conflict.sh has syntax errors"
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 

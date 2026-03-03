@@ -63,10 +63,14 @@ cd "$REPO_ROOT"
 log_info "Running Phase B/C gate checks"
 
 if [[ -f "$FAULT_MARKER" ]]; then
+    injected_faults="$(grep '^faults=' "$FAULT_MARKER" | cut -d= -f2- || true)"
+    if [[ -z "$injected_faults" ]]; then
+        injected_faults="unknown"
+    fi
     {
         echo "phase_bc_gate=failed"
         echo "reason=fault marker detected"
-        echo "failed_items=oom,policy"
+        echo "failed_items=$injected_faults"
         echo "marker=$FAULT_MARKER"
         echo "local_mode=$LOCAL_MODE"
     } >"$ERROR_EVIDENCE"
@@ -83,10 +87,11 @@ fi
 cargo test -p agentd-daemon subscribe_events_returns_next_cursor_after_lifecycle_event >/dev/null
 cargo test -p agentd-daemon managed_agent_lifecycle_emits_restart_and_oom_events >/dev/null
 cargo test -p agentd-daemon authorize_tool_returns_stable_policy_deny_error_code >/dev/null
+cargo test -p agentd-daemon usage_query_and_quota_enforcement_work >/dev/null
 
 {
     echo "phase_bc_gate=passed"
-    echo "checks=subscribe_events,restart_and_oom,policy_deny"
+    echo "checks=subscribe_events,restart_and_oom,policy_deny,usage_window_consistency"
     echo "fault_marker_present=false"
     echo "local_mode=$LOCAL_MODE"
 } >"$HAPPY_EVIDENCE"
