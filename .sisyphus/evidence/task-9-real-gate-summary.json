@@ -1,0 +1,8 @@
+{
+  "one_api_log": "/tmp/one-api-real-tests.log",
+  "model_used": "gpt-5.3-codex",
+  "preflight_happy_exit": 0,
+  "preflight_missing_token_exit": 1,
+  "real_gate_happy_exit": 0,
+  "real_gate_invalid_cred_exit": 0
+}

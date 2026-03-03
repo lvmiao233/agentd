@@ -1,10 +1,6 @@
-task=T3
-scenario=invalid_credentials
-provider_base_url=http://127.0.0.1:3000/v1
-model=gpt-5.3-codex
-exit_code=1
-error=provider.auth
-assertion_pass=true
-raw_output_begin
-{"status": "failed", "stage": "llm", "error": "provider.auth", "message": "Error code: 401 - {'error': {'message': '无效的令牌 (request id: 202603031810322051026948005638)', 'type': 'one_api_error'}}", "provider_request_id": null, "transport_mode": "real"}
-raw_output_end
+$ uv run --project python/agentd-agent-lite agentd-agent-lite ... --api-key invalid-token
+EXIT_CODE=1
+STDOUT:
+{"status": "failed", "stage": "llm", "error": "provider.auth", "error_category": "AUTH", "message": "Error code: 401 - {'error': {'message': '无效的令牌 (request id: 2026030400183333699531412047035)', 'type': 'one_api_error'}}", "provider_request_id": null, "transport_mode": "real", "provider_call_attempted": true, "attempts": 1, "max_retries": 0}
+
+STDERR:

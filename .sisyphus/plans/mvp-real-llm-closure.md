@@ -185,9 +185,9 @@ Max Concurrent: 5
   - One-API 官方 README（deployment/usage/env vars）- 真机部署与 API Base/token 使用规范。
 
   **Acceptance Criteria**:
-  - [ ] 新增预检测试先失败（无 key/health 不通）。
-  - [ ] 预检脚本在环境完整时输出 `ENV_READY=true`。
-  - [ ] 预检脚本在环境缺失时输出稳定错误码与说明。
+  - [x] 新增预检测试先失败（无 key/health 不通）。
+  - [x] 预检脚本在环境完整时输出 `ENV_READY=true`。
+  - [x] 预检脚本在环境缺失时输出稳定错误码与说明。
 
   **QA Scenarios (MANDATORY)**:
   ```
@@ -684,9 +684,9 @@ Max Concurrent: 5
   - `scripts/demo/e2e-demo.sh` - 全链路 demo 编排。
 
   **Acceptance Criteria**:
-  - [ ] happy case：退出码 0 + provider 证据完整。
-  - [ ] disabled case：退出码非 0 + `EXPECTED_FAILURE one_api_disabled`。
-  - [ ] invalid key case：退出码非 0 + provider auth/network 错误标记。
+  - [x] happy case：退出码 0 + provider 证据完整。
+  - [x] disabled case：退出码非 0 + `EXPECTED_FAILURE one_api_disabled`。
+  - [x] invalid key case：退出码非 0 + provider auth/network 错误标记。
 
   **QA Scenarios (MANDATORY)**:
   ```

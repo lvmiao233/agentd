@@ -1,0 +1,7 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=PASS
+ASSERT closure_request=PASS
+ASSERT closure_response=FAIL
+EXPECTED_FAILURE one_api_disabled
+reason=closure_failed_with_one_api_disabled
+agent_id=2eecc45c-5e53-4b8d-a9af-3115f219dd51

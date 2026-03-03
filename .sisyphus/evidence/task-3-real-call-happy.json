@@ -4,24 +4,26 @@
   "provider": {
     "base_url": "http://127.0.0.1:3000/v1",
     "model": "gpt-5.3-codex",
-    "runtime": "one-api (non-docker binary)"
+    "runtime": "one-api local binary"
   },
-  "agent_id": "13d749d5-c675-47e4-b6da-364834e5aebb",
+  "agent_id": "92663e85-7f51-4257-a110-1999937f9376",
   "llm": {
     "output": "hi from t3 👋",
-    "provider_request_id": "resp_0751d7570c5e94c60169a6b395b144819a95300d92f953a230",
+    "input_tokens": 53,
+    "output_tokens": 89,
+    "total_tokens": 142,
+    "estimated_cost_usd": 0.000142,
+    "provider_request_id": "resp_0bf0a2c89139e9620169a709d4d500819aab8fd69d3786dd0b",
     "request_id_source": "body.id",
+    "provider_model": "gpt-5.3-codex",
     "usage_source": "provider",
-    "transport_mode": "real",
-    "input_tokens": 11,
-    "output_tokens": 43,
-    "total_tokens": 54
+    "transport_mode": "real"
   },
   "usage_query": {
-    "total_tokens": 54,
-    "input_tokens": 11,
-    "output_tokens": 43,
-    "total_cost_usd": 0.000054
+    "total_tokens": 142,
+    "input_tokens": 53,
+    "output_tokens": 89,
+    "total_cost_usd": 0.000142
   },
   "checks": {
     "llm_output_non_empty": true,

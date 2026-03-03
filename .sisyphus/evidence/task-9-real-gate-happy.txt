@@ -1,0 +1,10 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=PASS
+ASSERT closure_request=PASS
+ASSERT closure_response=PASS
+ASSERT closure_verification=PASS
+ASSERT anti_mock_schema=PASS
+mode=happy_path
+agent_id=24835319-5a10-4893-9e17-03c59e71c002
+llm_total_tokens=81
+total_tokens=81

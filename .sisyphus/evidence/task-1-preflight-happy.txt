@@ -1,4 +1,4 @@
-$ bash scripts/gates/preflight-real-oneapi.sh --base-url http://127.0.0.1:45721 --token test-token
+$ bash scripts/gates/preflight-real-oneapi.sh --base-url http://127.0.0.1:3000 --token <redacted>
 EXIT_CODE=0
 STDOUT:
 HEALTH=true
@@ -6,7 +6,6 @@ MODELS_CHECKED=true
 ENV_READY=true
 REASON_CODE=READY
 HEALTH_ENDPOINT=/health
-MODELS_VISIBLE_COUNT=1
+MODELS_VISIBLE_COUNT=2
 
 STDERR:
-

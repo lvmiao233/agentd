@@ -165,6 +165,7 @@ cargo build -p agentd-daemon -p agentctl >/dev/null 2>&1
 AGENTD_BIN="$REPO_ROOT/target/debug/agentd"
 AGENTCTL_BIN="$REPO_ROOT/target/debug/agentctl"
 ANTI_MOCK_ASSERT_SCRIPT="$REPO_ROOT/scripts/gates/assert-anti-mock-evidence.py"
+REAL_MODEL="${ONE_API_MODEL:-gpt-5.3-codex}"
 
 # ============================================================
 # DRY RUN MODE
@@ -303,7 +304,7 @@ EOF
     CREATE_RESULT=0
     "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
         --name test-negative-one-api-disabled \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --token-budget 1000 \
         --json >"$AGENT_CREATE_OUTPUT" 2>&1 || CREATE_RESULT=$?
 
@@ -324,7 +325,11 @@ EOF
     if [[ -s "$AGENT_CREATE_OUTPUT" ]]; then
         AGENT_ID="$(python3 - "$AGENT_CREATE_OUTPUT" 2>/dev/null <<'PY' || echo "unknown"
 import json, sys
-data = json.load(open(sys.argv[1]))
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit(1)
+data = json.loads(text[idx:])
 print(data["agent"]["id"])
 PY
 )"
@@ -336,7 +341,7 @@ PY
     "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent run \
         --builtin lite \
         --name test-negative-run \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --tool builtin.lite.upper \
         --restart-max-attempts 0 \
         --json "test" >"$AGENT_RUN_OUTPUT" 2>&1 || RUN_RESULT=$?
@@ -455,7 +460,7 @@ EOF
     CREATE_RESULT=0
     "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
         --name test-negative-invalid-creds \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --token-budget 1000 \
         --json >"$AGENT_CREATE_OUTPUT" 2>&1 || CREATE_RESULT=$?
 
@@ -476,7 +481,11 @@ EOF
     if [[ -s "$AGENT_CREATE_OUTPUT" ]]; then
         AGENT_ID="$(python3 - "$AGENT_CREATE_OUTPUT" 2>/dev/null <<'PY' || echo "unknown"
 import json, sys
-data = json.load(open(sys.argv[1]))
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit(1)
+data = json.loads(text[idx:])
 print(data["agent"]["id"])
 PY
 )"
@@ -488,7 +497,7 @@ PY
     "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent run \
         --builtin lite \
         --name test-negative-run \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --tool builtin.lite.upper \
         --restart-max-attempts 0 \
         --json "test" >"$AGENT_RUN_OUTPUT" 2>&1 || RUN_RESULT=$?
@@ -598,7 +607,7 @@ EOF
     AGENT_CREATE_OUTPUT="$TMP_DIR/agent-create.json"
     if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
         --name test-negative-policy-deny \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --permission-policy ask \
         --deny-tool builtin.lite.echo \
         --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
@@ -635,7 +644,7 @@ PY
         --socket-path "$SOCKET_PATH" \
         --agent-id "$AGENT_ID" \
         --prompt "trigger policy deny check" \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --tool builtin.lite.echo \
         --timeout 3 \
         --max-retries 0 \
@@ -877,7 +886,7 @@ EOF
     AGENT_CREATE_OUTPUT="$TMP_DIR/agent-create.json"
     if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
         --name test-negative-policy-deny-bypass \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --permission-policy ask \
         --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
         {
@@ -910,7 +919,7 @@ PY
         --socket-path "$SOCKET_PATH" \
         --agent-id "$AGENT_ID" \
         --prompt "trigger policy deny bypass check" \
-        --model claude-4-sonnet \
+        --model "$REAL_MODEL" \
         --tool builtin.lite.echo \
         --timeout 3 \
         --max-retries 0 \
@@ -965,6 +974,22 @@ fi
 # DEFAULT: HAPPY PATH (requires real one_api enabled)
 # ============================================================
 log_info "Running happy path (requires real one_api)..."
+
+REAL_BASE_URL="${ONE_API_BASE_URL:-http://127.0.0.1:3000/v1}"
+REAL_API_KEY="${ONE_API_TOKEN:-}"
+REAL_TOOL_NAME="${ONE_API_TOOL_NAME:-builtin_lite_upper}"
+
+if [[ -z "$REAL_API_KEY" ]]; then
+    {
+        echo "ASSERT preflight=FAIL"
+        echo "ASSERT daemon_start=SKIP"
+        echo "ASSERT closure_request=SKIP"
+        echo "ASSERT closure_response=SKIP"
+        echo "reason=missing_one_api_token"
+    } >"$ERROR_EVIDENCE"
+    log_error "ONE_API_TOKEN is required for happy path"
+    exit 1
+fi
 
 TMP_DIR="$(mktemp -d)"
 SOCKET_PATH="$TMP_DIR/agentd.sock"
@@ -1043,7 +1068,7 @@ fi
 AGENT_CREATE_OUTPUT="$TMP_DIR/agent-create.json"
 if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
     --name test-real-closure \
-    --model claude-4-sonnet \
+    --model "$REAL_MODEL" \
     --token-budget 1000 \
     --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
     {
@@ -1059,20 +1084,26 @@ fi
 
 AGENT_ID="$(python3 - "$AGENT_CREATE_OUTPUT" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[1]))
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('agent create output missing JSON payload')
+data = json.loads(text[idx:])
 print(data["agent"]["id"])
 PY
 )"
 
-# Run agent with real closure
 AGENT_RUN_OUTPUT="$TMP_DIR/agent-run.json"
-if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent run \
-    --builtin lite \
-    --name test-real-closure-run \
-    --model claude-4-sonnet \
-    --tool builtin.lite.upper \
-    --restart-max-attempts 0 \
-    --json "test" >"$AGENT_RUN_OUTPUT" 2>&1; then
+if ! uv run --project "$REPO_ROOT/python/agentd-agent-lite" agentd-agent-lite \
+    --socket-path "$SOCKET_PATH" \
+    --agent-id "$AGENT_ID" \
+    --prompt "test" \
+    --model "$REAL_MODEL" \
+    --tool "$REAL_TOOL_NAME" \
+    --base-url "$REAL_BASE_URL" \
+    --api-key "$REAL_API_KEY" \
+    --timeout 20 \
+    --max-retries 0 >"$AGENT_RUN_OUTPUT" 2>&1; then
     {
         echo "ASSERT preflight=PASS"
         echo "ASSERT daemon_start=PASS"
@@ -1091,7 +1122,11 @@ import sys
 
 run_output_path = sys.argv[1]
 evidence_path = sys.argv[2]
-data = json.load(open(run_output_path, encoding="utf-8"))
+text = open(run_output_path, encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('agent run output missing JSON payload')
+data = json.loads(text[idx:])
 llm = data.get("llm")
 if not isinstance(llm, dict):
     raise SystemExit("missing llm payload in agent run output")
@@ -1135,7 +1170,11 @@ fi
 
 LLM_TOTAL_TOKENS="$(python3 - "$AGENT_RUN_OUTPUT" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('agent run output missing JSON payload')
+data = json.loads(text[idx:])
 llm = data.get("llm", {})
 print(llm.get("total_tokens", 0))
 PY
@@ -1144,7 +1183,11 @@ PY
 # Verify usage shows tokens were consumed (proof of real LLM call)
 TOTAL_TOKENS="$(python3 - "$USAGE_OUTPUT" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[1]))
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('usage output missing JSON payload')
+data = json.loads(text[idx:])
 print(data.get('total_tokens', 0))
 PY
 )"
