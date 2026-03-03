@@ -56,6 +56,12 @@ enum AgentCommands {
         #[arg(long)]
         temperature: Option<f32>,
         #[arg(long)]
+        permission_policy: Option<String>,
+        #[arg(long = "allow-tool")]
+        allow_tools: Vec<String>,
+        #[arg(long = "deny-tool")]
+        deny_tools: Vec<String>,
+        #[arg(long)]
         json: bool,
     },
     Run {
@@ -65,6 +71,8 @@ enum AgentCommands {
         name: Option<String>,
         #[arg(long, default_value = "claude-4-sonnet")]
         model: String,
+        #[arg(long, default_value = "builtin.lite.echo")]
+        tool: String,
         #[arg(long)]
         agent_id: Option<String>,
         #[arg(long)]
@@ -229,6 +237,7 @@ async fn run_builtin_lite(
     socket_path: &str,
     name: &str,
     model: &str,
+    tool: &str,
     prompt: &str,
     restart_max_attempts: Option<u32>,
     restart_backoff_secs: Option<u64>,
@@ -268,6 +277,8 @@ async fn run_builtin_lite(
         prompt.to_string(),
         "--model".to_string(),
         model.to_string(),
+        "--tool".to_string(),
+        tool.to_string(),
     ];
 
     let started = call_rpc(
@@ -308,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stderr)
         .init();
 
     match cli.command {
@@ -346,6 +358,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 token_budget,
                 max_tokens,
                 temperature,
+                permission_policy,
+                allow_tools,
+                deny_tools,
                 json,
             } => {
                 info!(socket_path = %cli.socket_path, "Calling CreateAgent over UDS JSON-RPC");
@@ -359,6 +374,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "token_budget": token_budget,
                         "max_tokens": max_tokens,
                         "temperature": temperature,
+                        "permission_policy": permission_policy,
+                        "allowed_tools": allow_tools,
+                        "denied_tools": deny_tools,
                     }),
                 )
                 .await?;
@@ -368,6 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builtin,
                 name,
                 model,
+                tool,
                 agent_id,
                 command,
                 args,
@@ -397,6 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cli.socket_path,
                         runtime_name,
                         &model,
+                        &tool,
                         runtime_prompt,
                         restart_max_attempts,
                         restart_backoff_secs,
