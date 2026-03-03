@@ -404,6 +404,23 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    #[derive(Clone, Copy)]
+    struct UsageEvidence<'a> {
+        provider_request_id: Option<&'a str>,
+        usage_source: Option<&'a str>,
+        transport_mode: Option<&'a str>,
+    }
+
+    impl<'a> UsageEvidence<'a> {
+        fn provider_real(provider_request_id: &'a str) -> Self {
+            Self {
+                provider_request_id: Some(provider_request_id),
+                usage_source: Some("provider"),
+                transport_mode: Some("real"),
+            }
+        }
+    }
+
     fn test_db_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("agentd-daemon-test-{}.sqlite", Uuid::new_v4()))
     }
@@ -446,9 +463,7 @@ mod tests {
         input_tokens: u64,
         output_tokens: u64,
         cost_usd: f64,
-        provider_request_id: Option<&str>,
-        usage_source: Option<&str>,
-        transport_mode: Option<&str>,
+        evidence: UsageEvidence<'_>,
     ) -> JsonRpcRequest {
         JsonRpcRequest::new(
             json!(6),
@@ -459,9 +474,9 @@ mod tests {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost_usd": cost_usd,
-                "provider_request_id": provider_request_id,
-                "usage_source": usage_source,
-                "transport_mode": transport_mode,
+                "provider_request_id": evidence.provider_request_id,
+                "usage_source": evidence.usage_source,
+                "transport_mode": evidence.transport_mode,
             }),
         )
     }
@@ -816,9 +831,7 @@ mod tests {
                 60,
                 30,
                 0.15,
-                Some("req-usage-1"),
-                Some("provider"),
-                Some("real"),
+                UsageEvidence::provider_real("req-usage-1"),
             ),
             store.clone(),
             state.clone(),
@@ -875,9 +888,7 @@ mod tests {
                 20,
                 5,
                 0.05,
-                Some("req-usage-2"),
-                Some("provider"),
-                Some("real"),
+                UsageEvidence::provider_real("req-usage-2"),
             ),
             store.clone(),
             state.clone(),
@@ -970,7 +981,10 @@ mod tests {
             OneApiConfig::default(),
         )
         .await;
-        assert!(created.error.is_none(), "create should succeed: {created:?}");
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
         let agent_id = created
             .result
             .expect("create result should exist")
@@ -989,9 +1003,11 @@ mod tests {
                 10,
                 5,
                 0.03,
-                None,
-                Some("provider"),
-                Some("real"),
+                UsageEvidence {
+                    provider_request_id: None,
+                    usage_source: Some("provider"),
+                    transport_mode: Some("real"),
+                },
             ),
             store,
             state,
@@ -1102,9 +1118,7 @@ mod tests {
                     5,
                     3,
                     0.01,
-                    Some("req-collector"),
-                    Some("provider"),
-                    Some("real"),
+                    UsageEvidence::provider_real("req-collector"),
                 ),
                 store.clone(),
                 state.clone(),
@@ -2632,9 +2646,7 @@ async fn handle_rpc_request(
                 Some(_) => {
                     return JsonRpcResponse::error(request.id, -32602, "INVALID_USAGE_SOURCE")
                 }
-                None => {
-                    return JsonRpcResponse::error(request.id, -32602, "MISSING_USAGE_SOURCE")
-                }
+                None => return JsonRpcResponse::error(request.id, -32602, "MISSING_USAGE_SOURCE"),
             };
 
             let transport_mode = match params.transport_mode.as_deref() {
