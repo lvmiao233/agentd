@@ -60,9 +60,15 @@ enum AgentCommands {
     },
     Run {
         #[arg(long)]
-        agent_id: String,
+        builtin: Option<String>,
         #[arg(long)]
-        command: String,
+        name: Option<String>,
+        #[arg(long, default_value = "claude-4-sonnet")]
+        model: String,
+        #[arg(long)]
+        agent_id: Option<String>,
+        #[arg(long)]
+        command: Option<String>,
         #[arg(long, value_delimiter = ' ')]
         args: Vec<String>,
         #[arg(long)]
@@ -75,6 +81,8 @@ enum AgentCommands {
         memory_high: Option<String>,
         #[arg(long)]
         memory_max: Option<String>,
+        #[arg(value_name = "PROMPT")]
+        prompt: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -127,6 +135,13 @@ async fn call_rpc(
     let response: JsonRpcResponse = serde_json::from_slice(&response_payload)?;
 
     Ok(response)
+}
+
+fn rpc_result_or_error(response: JsonRpcResponse) -> Result<Value, Box<dyn std::error::Error>> {
+    if let Some(error) = response.error {
+        return Err(format!("RPC error {}: {}", error.code, error.message).into());
+    }
+    Ok(response.result.unwrap_or(json!(null)))
 }
 
 fn print_response(
@@ -210,6 +225,83 @@ async fn follow_events(
     }
 }
 
+async fn run_builtin_lite(
+    socket_path: &str,
+    name: &str,
+    model: &str,
+    prompt: &str,
+    restart_max_attempts: Option<u32>,
+    restart_backoff_secs: Option<u64>,
+    cpu_weight: Option<u64>,
+    memory_high: Option<String>,
+    memory_max: Option<String>,
+    as_json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let created = call_rpc(
+        socket_path,
+        "CreateAgent",
+        json!({
+            "name": name,
+            "model": model,
+        }),
+    )
+    .await?;
+    let created_result = rpc_result_or_error(created)?;
+    let agent_id = created_result
+        .get("agent")
+        .and_then(|agent| agent.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("CreateAgent result missing agent.id")?
+        .to_string();
+
+    let command = "uv";
+    let args = vec![
+        "run".to_string(),
+        "--project".to_string(),
+        "python/agentd-agent-lite".to_string(),
+        "agentd-agent-lite".to_string(),
+        "--socket-path".to_string(),
+        socket_path.to_string(),
+        "--agent-id".to_string(),
+        agent_id.clone(),
+        "--prompt".to_string(),
+        prompt.to_string(),
+        "--model".to_string(),
+        model.to_string(),
+    ];
+
+    let started = call_rpc(
+        socket_path,
+        "StartManagedAgent",
+        json!({
+            "agent_id": agent_id,
+            "command": command,
+            "args": args,
+            "restart_max_attempts": restart_max_attempts,
+            "restart_backoff_secs": restart_backoff_secs,
+            "cpu_weight": cpu_weight,
+            "memory_high": memory_high,
+            "memory_max": memory_max,
+        }),
+    )
+    .await?;
+    let started_result = rpc_result_or_error(started)?;
+
+    let output = json!({
+        "builtin": "lite",
+        "prompt": prompt,
+        "agent": created_result.get("agent").cloned().unwrap_or(json!(null)),
+        "managed": started_result,
+    });
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("{}", output);
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -273,6 +365,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print_response(response, json)?;
             }
             AgentCommands::Run {
+                builtin,
+                name,
+                model,
                 agent_id,
                 command,
                 args,
@@ -281,25 +376,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cpu_weight,
                 memory_high,
                 memory_max,
+                prompt,
                 json,
             } => {
-                info!(socket_path = %cli.socket_path, %agent_id, "Calling StartManagedAgent over UDS JSON-RPC");
-                let response = call_rpc(
-                    &cli.socket_path,
-                    "StartManagedAgent",
-                    json!({
-                        "agent_id": agent_id,
-                        "command": command,
-                        "args": args,
-                        "restart_max_attempts": restart_max_attempts,
-                        "restart_backoff_secs": restart_backoff_secs,
-                        "cpu_weight": cpu_weight,
-                        "memory_high": memory_high,
-                        "memory_max": memory_max,
-                    }),
-                )
-                .await?;
-                print_response(response, json)?;
+                if let Some(builtin_name) = builtin {
+                    if builtin_name != "lite" {
+                        return Err(format!(
+                            "unsupported builtin runtime: {builtin_name} (expected: lite)"
+                        )
+                        .into());
+                    }
+                    let runtime_name = name
+                        .as_deref()
+                        .ok_or("--name is required when using --builtin lite")?;
+                    let runtime_prompt = prompt
+                        .as_deref()
+                        .ok_or("prompt positional argument is required for --builtin lite")?;
+                    info!(socket_path = %cli.socket_path, runtime_name, "Creating agent and starting builtin lite runtime");
+                    run_builtin_lite(
+                        &cli.socket_path,
+                        runtime_name,
+                        &model,
+                        runtime_prompt,
+                        restart_max_attempts,
+                        restart_backoff_secs,
+                        cpu_weight,
+                        memory_high,
+                        memory_max,
+                        json,
+                    )
+                    .await?;
+                } else {
+                    let agent_id = agent_id
+                        .as_deref()
+                        .ok_or("--agent-id is required when --builtin is not set")?;
+                    let command = command
+                        .as_deref()
+                        .ok_or("--command is required when --builtin is not set")?;
+                    info!(socket_path = %cli.socket_path, %agent_id, "Calling StartManagedAgent over UDS JSON-RPC");
+                    let response = call_rpc(
+                        &cli.socket_path,
+                        "StartManagedAgent",
+                        json!({
+                            "agent_id": agent_id,
+                            "command": command,
+                            "args": args,
+                            "restart_max_attempts": restart_max_attempts,
+                            "restart_backoff_secs": restart_backoff_secs,
+                            "cpu_weight": cpu_weight,
+                            "memory_high": memory_high,
+                            "memory_max": memory_max,
+                        }),
+                    )
+                    .await?;
+                    print_response(response, json)?;
+                }
             }
             AgentCommands::Stop { agent_id, json } => {
                 info!(socket_path = %cli.socket_path, %agent_id, "Calling StopManagedAgent over UDS JSON-RPC");
