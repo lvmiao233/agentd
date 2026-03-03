@@ -20,6 +20,7 @@ Options:
   --prompt <text>           Prompt for builtin lite run
   --tool <name>             Builtin tool name (default: builtin.lite.upper)
   --model <model>           Model name (default: claude-4-sonnet)
+  --tamper-card-field <f>   Remove one top-level field from generated card before validation
   --happy-evidence <path>   Output path for happy-path evidence
   --error-evidence <path>   Output path for failure evidence
   -h, --help                Show help
@@ -38,6 +39,7 @@ DRY_RUN=false
 PROMPT="分析当前目录结构"
 TOOL="builtin.lite.upper"
 MODEL="claude-4-sonnet"
+TAMPER_CARD_FIELD=""
 HAPPY_EVIDENCE="$HAPPY_EVIDENCE_DEFAULT"
 ERROR_EVIDENCE="$ERROR_EVIDENCE_DEFAULT"
 
@@ -67,6 +69,14 @@ while [[ $# -gt 0 ]]; do
             MODEL="${2:-}"
             if [[ -z "$MODEL" ]]; then
                 echo "--model requires a value" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --tamper-card-field)
+            TAMPER_CARD_FIELD="${2:-}"
+            if [[ -z "$TAMPER_CARD_FIELD" ]]; then
+                echo "--tamper-card-field requires a value" >&2
                 exit 1
             fi
             shift 2
@@ -115,6 +125,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
     echo "would_build=agentd-daemon,agentctl"
     echo "would_run=CreateAgent+StartManagedAgent+builtin-lite"
     echo "would_validate_card=scripts/validate/agent-card-validate.sh"
+    if [[ -n "$TAMPER_CARD_FIELD" ]]; then
+        echo "would_tamper_card_field=$TAMPER_CARD_FIELD"
+    fi
     echo "would_collect=audit,events,usage"
     exit 0
 fi
@@ -129,6 +142,7 @@ CONFIG_PATH="$TMP_DIR/agentd.toml"
 DAEMON_LOG="$TMP_DIR/daemon.log"
 RUN_JSON="$TMP_DIR/run.json"
 CARD_VALIDATE_JSON="$TMP_DIR/card-validate.json"
+CARD_VALIDATE_ERR="$TMP_DIR/card-validate.err"
 AUDIT_JSON="$TMP_DIR/audit.json"
 EVENTS_JSON="$TMP_DIR/events.json"
 USAGE_JSON="$TMP_DIR/usage.json"
@@ -154,6 +168,14 @@ fail() {
         if [[ -f "$DAEMON_LOG" ]]; then
             echo "--- daemon_log_tail ---"
             tail -n 60 "$DAEMON_LOG" || true
+        fi
+        if [[ -f "$CARD_VALIDATE_ERR" ]]; then
+            echo "--- card_validate_error ---"
+            cat "$CARD_VALIDATE_ERR" || true
+        fi
+        if [[ -f "$CARD_VALIDATE_JSON" ]]; then
+            echo "--- card_validate_output ---"
+            cat "$CARD_VALIDATE_JSON" || true
         fi
     } >"$ERROR_EVIDENCE"
     echo "$message" >&2
@@ -212,7 +234,21 @@ if [[ ! -f "$CARD_PATH" ]]; then
     fail "agent card not found at expected path: $CARD_PATH"
 fi
 
-"$REPO_ROOT/scripts/validate/agent-card-validate.sh" --card-path "$CARD_PATH" --json >"$CARD_VALIDATE_JSON" || fail "agent card validation failed"
+if [[ -n "$TAMPER_CARD_FIELD" ]]; then
+    python3 - "$CARD_PATH" "$TAMPER_CARD_FIELD" <<'PY'
+import json
+import sys
+
+card_path, field_name = sys.argv[1:3]
+with open(card_path, 'r', encoding='utf-8') as f:
+    payload = json.load(f)
+payload.pop(field_name, None)
+with open(card_path, 'w', encoding='utf-8') as f:
+    json.dump(payload, f)
+PY
+fi
+
+"$REPO_ROOT/scripts/validate/agent-card-validate.sh" --card-path "$CARD_PATH" --json >"$CARD_VALIDATE_JSON" 2>"$CARD_VALIDATE_ERR" || fail "agent card validation failed"
 
 sleep 1
 
