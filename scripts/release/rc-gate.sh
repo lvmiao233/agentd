@@ -17,6 +17,7 @@ Run release-candidate hardening checks.
 Options:
   --local               Run without GitHub PR checks (recommended for pre-commit)
   --pr-number <number>  PR number for required check validation via gh pr checks
+  --simulate-secret-leak  Force a secret-scan failure (for rollback rehearsal)
   -h, --help            Show help
 EOF
 }
@@ -31,6 +32,7 @@ require_cmd() {
 
 LOCAL_MODE=false
 PR_NUMBER=""
+SIMULATE_SECRET_LEAK=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,6 +47,10 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             shift 2
+            ;;
+        --simulate-secret-leak)
+            SIMULATE_SECRET_LEAK=true
+            shift
             ;;
         -h|--help)
             usage
@@ -92,6 +98,11 @@ fail() {
 trap cleanup EXIT
 
 cd "$REPO_ROOT"
+
+if [[ "$SIMULATE_SECRET_LEAK" == "true" ]]; then
+    echo "simulated-secret-leak: injected for rollback rehearsal" >"$SECRET_REPORT_TMP"
+    fail "simulated secret leakage detected"
+fi
 
 bash scripts/gate-check.sh --local || fail "gate-check failed"
 bash scripts/gates/phase-a-gate.sh || fail "phase-a gate failed"
