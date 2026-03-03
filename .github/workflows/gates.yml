@@ -225,9 +225,16 @@ jobs:
           shared-key: ci-gates-rust-${{ runner.os }}
           add-job-id-key: false
 
+      - name: Setup uv runtime
+        uses: astral-sh/setup-uv@v5
+
       - name: Run Phase B/C gate
         run: |
           bash scripts/gates/phase-bc-gate.sh
+
+      - name: Run Phase D demo smoke (dry run)
+        run: |
+          bash scripts/demo/e2e-demo.sh --dry-run
 
       - name: Upload evidence
         if: always()

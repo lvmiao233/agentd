@@ -138,6 +138,7 @@ if [ -f "$REPO_ROOT/.github/workflows/gates.yml" ]; then
     check_contains ".github/workflows/gates.yml" "phase-bc-gate:" "Phase B/C gate job"
     check_contains ".github/workflows/gates.yml" "gate-syscall:" "Syscall gate job"
     check_contains ".github/workflows/gates.yml" "gate-isolation:" "Isolation gate job"
+    check_contains ".github/workflows/gates.yml" "scripts/demo/e2e-demo.sh --dry-run" "Phase D demo smoke step"
     
     # Check for evidence upload
     check_contains ".github/workflows/gates.yml" "evidence-" "Evidence artifact upload"
@@ -159,6 +160,7 @@ log_info "=== Step 4: Local Gate Check Script ==="
 check_file "scripts/gate-check.sh" "Gate check script"
 check_file "scripts/gates/phase-a-gate.sh" "Phase A gate script"
 check_file "scripts/gates/phase-bc-gate.sh" "Phase B/C gate script"
+check_file "scripts/demo/e2e-demo.sh" "Phase D e2e demo script"
 check_file "scripts/validate/agent-card-validate.sh" "Agent card validation script"
 check_file "scripts/rollback/phase-a-rollback.sh" "Phase A rollback script"
 check_file "scripts/faults/inject-oom-and-policy-conflict.sh" "Phase B/C fault injection script"
@@ -222,6 +224,13 @@ if bash -n "$REPO_ROOT/scripts/gates/phase-bc-gate.sh" 2>/dev/null; then
     log_info "✓ phase-bc-gate.sh syntax valid"
 else
     log_error "✗ phase-bc-gate.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/demo/e2e-demo.sh" 2>/dev/null; then
+    log_info "✓ e2e-demo.sh syntax valid"
+else
+    log_error "✗ e2e-demo.sh has syntax errors"
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 
