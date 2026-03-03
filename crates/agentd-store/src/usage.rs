@@ -12,7 +12,7 @@ pub enum UsageWindow {
 }
 
 impl UsageWindow {
-    pub fn from_str(value: &str) -> Result<Self, AgentError> {
+    pub fn parse(value: &str) -> Result<Self, AgentError> {
         match value {
             "1h" => Ok(Self::OneHour),
             "24h" => Ok(Self::TwentyFourHours),

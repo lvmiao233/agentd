@@ -2113,7 +2113,7 @@ async fn handle_rpc_request(
             };
 
             let usage_result = if let Some(window) = params.window.as_deref() {
-                match UsageWindow::from_str(window) {
+                match UsageWindow::parse(window) {
                     Ok(window) => store.get_usage_in_window(agent_id, window).await,
                     Err(err) => {
                         return JsonRpcResponse::error(
