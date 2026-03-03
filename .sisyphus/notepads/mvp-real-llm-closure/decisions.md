@@ -21,3 +21,4 @@
 - 2026-03-03 (T4): real-path gate 在主流程内强制执行 anti-mock schema 断言；若断言失败，gate 以 `reason=anti_mock_schema_failed` 退出，避免未校验证据进入后续对账步骤。
 - 2026-03-03 (T1): 预检 `--dry-run` 退出码固定为 0，`REASON_CODE=DRY_RUN` 且不触发网络访问，用于本地/CI 快速校验脚本连线。
 - 2026-03-03: Rewrote the most recent local commits so the messages and bodies comply with the repository requirements without forbidden trailers or collaboration lines.
+- 2026-03-03: Deleted backup/rewrite-main-20260303-1 because it still contained the forbidden “Ultraworked with”/“Co-authored-by” SHAs and therefore could not stay referenced by any active local branch.
