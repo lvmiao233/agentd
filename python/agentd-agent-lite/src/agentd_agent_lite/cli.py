@@ -3,6 +3,7 @@ import importlib
 import json
 import socket
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -97,6 +98,58 @@ def _extract_message_text(completion: Any) -> str:
     return ""
 
 
+def _extract_tool_calls(completion: Any) -> list[dict[str, str]]:
+    choices = getattr(completion, "choices", None)
+    if not isinstance(choices, list) or not choices:
+        return []
+
+    first_choice = choices[0]
+    message = getattr(first_choice, "message", None)
+    raw_tool_calls = getattr(message, "tool_calls", None)
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    normalized_calls: list[dict[str, str]] = []
+    for item in raw_tool_calls:
+        if item is None:
+            continue
+
+        item_id = getattr(item, "id", None)
+        function = getattr(item, "function", None)
+        name = getattr(function, "name", None)
+        arguments = getattr(function, "arguments", None)
+
+        if isinstance(item, dict):
+            item_id = item.get("id", item_id)
+            function_dict = item.get("function")
+            if isinstance(function_dict, dict):
+                name = function_dict.get("name", name)
+                arguments = function_dict.get("arguments", arguments)
+            else:
+                name = item.get("name", name)
+                arguments = item.get("arguments", arguments)
+
+        if not isinstance(item_id, str) or not item_id:
+            continue
+        if not isinstance(name, str) or not name:
+            continue
+
+        if isinstance(arguments, str):
+            arg_text = arguments
+        else:
+            arg_text = "{}"
+
+        normalized_calls.append(
+            {
+                "id": item_id,
+                "name": name,
+                "arguments": arg_text,
+            }
+        )
+
+    return normalized_calls
+
+
 def _extract_provider_request_id(
     completion: Any, headers: dict[str, str]
 ) -> tuple[str, str]:
@@ -118,6 +171,47 @@ def _extract_provider_request_id(
 def _invoke_real_single_turn(
     *, base_url: str, api_key: str, model: str, timeout: int, prompt: str
 ) -> dict[str, Any]:
+    return _invoke_real_chat_once(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+        messages=[{"role": "user", "content": prompt}],
+        tool_name="builtin.lite.echo",
+    )
+
+
+def _build_tool_schema(tool_name: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": "Execute builtin lite tool.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Tool input text.",
+                        }
+                    },
+                    "required": ["prompt"],
+                },
+            },
+        }
+    ]
+
+
+def _invoke_real_chat_once(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: int,
+    messages: list[dict[str, Any]],
+    tool_name: str,
+) -> dict[str, Any]:
     _ensure_openai_types()
     if OpenAI is None:
         raise RuntimeError("openai client unavailable")
@@ -125,12 +219,21 @@ def _invoke_real_single_turn(
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
     raw_response = client.chat.completions.with_raw_response.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
+        tools=_build_tool_schema(tool_name),
     )
     completion = raw_response.parse()
     response_text = _extract_message_text(completion)
-    if not response_text:
+    tool_calls = _extract_tool_calls(completion)
+    if not response_text and not tool_calls:
         raise RuntimeError("provider returned empty assistant content")
+
+    prompt_text_parts: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            prompt_text_parts.append(content)
+    prompt_text = "\n".join(prompt_text_parts)
 
     usage = getattr(completion, "usage", None)
     prompt_tokens = getattr(usage, "prompt_tokens", None)
@@ -139,7 +242,7 @@ def _invoke_real_single_turn(
 
     usage_source = "provider"
     if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
-        prompt_tokens = estimate_tokens(prompt)
+        prompt_tokens = estimate_tokens(prompt_text)
         completion_tokens = estimate_tokens(response_text)
         total_tokens = prompt_tokens + completion_tokens
         usage_source = "estimated"
@@ -162,7 +265,53 @@ def _invoke_real_single_turn(
         "provider_model": provider_model if isinstance(provider_model, str) else model,
         "usage_source": usage_source,
         "transport_mode": "real",
+        "tool_calls": tool_calls,
     }
+
+
+def _is_retryable_error(err: Exception) -> bool:
+    if APIConnectionError is not None and isinstance(err, APIConnectionError):
+        return True
+
+    if APIStatusError is not None and isinstance(err, APIStatusError):
+        status_code = getattr(err, "status_code", None)
+        if isinstance(status_code, int) and (status_code == 429 or status_code >= 500):
+            return True
+
+    return False
+
+
+def _invoke_real_with_retry(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: int,
+    messages: list[dict[str, Any]],
+    tool_name: str,
+    max_retries: int,
+) -> dict[str, Any]:
+    attempt = 0
+    while True:
+        try:
+            return _invoke_real_chat_once(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                timeout=timeout,
+                messages=messages,
+                tool_name=tool_name,
+            )
+        except Exception as err:
+            if not _is_retryable_error(err):
+                raise
+
+            if attempt >= max_retries:
+                raise
+
+            delay = 0.2 * (2**attempt)
+            time.sleep(delay)
+            attempt += 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,10 +333,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Dry run mode - skip LLM call, for config validation only",
     )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=5,
+        help="Maximum tool-calling iterations",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=1,
+        help="Maximum retries for retryable provider errors",
+    )
     return parser.parse_args()
 
 
 def run_once(args: argparse.Namespace) -> int:
+    max_iterations = max(1, int(getattr(args, "max_iterations", 5)))
+    max_retries = max(0, int(getattr(args, "max_retries", 1)))
+
     try:
         llm_config = load_config(
             base_url=args.base_url,
@@ -254,6 +418,7 @@ def run_once(args: argparse.Namespace) -> int:
                         "error": "policy.deny",
                         "code": err.code,
                         "message": err.message,
+                        "provider_call_attempted": False,
                     },
                     ensure_ascii=False,
                 )
@@ -282,22 +447,175 @@ def run_once(args: argparse.Namespace) -> int:
                     "tool": args.tool,
                     "error": "policy.deny",
                     "message": "tool denied by policy engine",
+                    "provider_call_attempted": False,
                 },
                 ensure_ascii=False,
             )
         )
         return 2
 
-    tool_output = run_builtin_tool(args.tool, args.prompt)
+    legacy_tool_output = run_builtin_tool(args.tool, args.prompt)
+    messages: list[dict[str, Any]] = [{"role": "user", "content": args.prompt}]
+    tool_call_records: list[dict[str, Any]] = []
+
+    accumulated_input_tokens = 0
+    accumulated_output_tokens = 0
+    accumulated_total_tokens = 0
+    last_provider_request_id = ""
+    last_request_id_source = "unavailable"
+    last_provider_model = llm_config.model
+    last_usage_source = "estimated"
+    last_transport_mode = "real"
+
+    response_text = ""
+    provider_call_attempted = False
 
     try:
-        llm_result = _invoke_real_single_turn(
-            base_url=llm_config.base_url,
-            api_key=llm_config.api_key,
-            model=llm_config.model,
-            timeout=llm_config.timeout,
-            prompt=args.prompt,
-        )
+        for _ in range(max_iterations):
+            provider_call_attempted = True
+            llm_result = _invoke_real_with_retry(
+                base_url=llm_config.base_url,
+                api_key=llm_config.api_key,
+                model=llm_config.model,
+                timeout=llm_config.timeout,
+                messages=messages,
+                tool_name=args.tool,
+                max_retries=max_retries,
+            )
+
+            accumulated_input_tokens += int(llm_result["input_tokens"])
+            accumulated_output_tokens += int(llm_result["output_tokens"])
+            accumulated_total_tokens += int(llm_result["total_tokens"])
+
+            provider_request_id = llm_result.get("provider_request_id")
+            if isinstance(provider_request_id, str):
+                last_provider_request_id = provider_request_id
+            request_id_source = llm_result.get("request_id_source")
+            if isinstance(request_id_source, str):
+                last_request_id_source = request_id_source
+            provider_model = llm_result.get("provider_model")
+            if isinstance(provider_model, str):
+                last_provider_model = provider_model
+            usage_source = llm_result.get("usage_source")
+            if isinstance(usage_source, str):
+                last_usage_source = usage_source
+            transport_mode = llm_result.get("transport_mode")
+            if isinstance(transport_mode, str):
+                last_transport_mode = transport_mode
+
+            response_text = str(llm_result.get("output", ""))
+            tool_calls = llm_result.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                break
+
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": response_text,
+                "tool_calls": [],
+            }
+            tool_response_messages: list[dict[str, Any]] = []
+
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                call_id = tool_call.get("id")
+                tool_name = tool_call.get("name")
+                arguments_text = tool_call.get("arguments")
+
+                if (
+                    not isinstance(call_id, str)
+                    or not call_id
+                    or not isinstance(tool_name, str)
+                    or not tool_name
+                ):
+                    continue
+
+                parsed_prompt = args.prompt
+                if isinstance(arguments_text, str) and arguments_text:
+                    try:
+                        parsed_arguments = json.loads(arguments_text)
+                        prompt_from_args = parsed_arguments.get("prompt")
+                        if isinstance(prompt_from_args, str) and prompt_from_args:
+                            parsed_prompt = prompt_from_args
+                    except json.JSONDecodeError:
+                        parsed_prompt = args.prompt
+
+                tool_authorization = call_rpc(
+                    args.socket_path,
+                    "AuthorizeTool",
+                    {
+                        "tool": tool_name,
+                        "agent_id": args.agent_id,
+                    },
+                )
+                tool_decision = str(tool_authorization.get("decision", "ask"))
+                if tool_decision == "deny":
+                    print(
+                        json.dumps(
+                            {
+                                "status": "blocked",
+                                "agent_id": args.agent_id,
+                                "tool": tool_name,
+                                "error": "policy.deny",
+                                "message": "tool denied by policy engine",
+                                "provider_call_attempted": provider_call_attempted,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+
+                tool_output = run_builtin_tool(tool_name, parsed_prompt)
+                tool_call_records.append(
+                    {
+                        "id": call_id,
+                        "name": tool_name,
+                        "arguments": arguments_text
+                        if isinstance(arguments_text, str)
+                        else "{}",
+                        "decision": tool_decision,
+                        "input": parsed_prompt,
+                        "output": tool_output,
+                    }
+                )
+
+                assistant_message["tool_calls"].append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": arguments_text
+                            if isinstance(arguments_text, str)
+                            else "{}",
+                        },
+                    }
+                )
+                tool_response_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": tool_output,
+                    }
+                )
+
+            messages.append(assistant_message)
+            messages.extend(tool_response_messages)
+        else:
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "llm",
+                        "error": "MAX_ITERATIONS_REACHED",
+                        "message": "tool-calling loop exceeded max_iterations",
+                        "max_iterations": max_iterations,
+                        "provider_call_attempted": provider_call_attempted,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
     except Exception as err:
         auth_error = AuthenticationError
         conn_error = APIConnectionError
@@ -314,6 +632,7 @@ def run_once(args: argparse.Namespace) -> int:
                         "message": str(err),
                         "provider_request_id": provider_request_id,
                         "transport_mode": "real",
+                        "provider_call_attempted": provider_call_attempted,
                     },
                     ensure_ascii=False,
                 )
@@ -330,6 +649,7 @@ def run_once(args: argparse.Namespace) -> int:
                         "message": str(err),
                         "provider_request_id": None,
                         "transport_mode": "real",
+                        "provider_call_attempted": provider_call_attempted,
                     },
                     ensure_ascii=False,
                 )
@@ -352,6 +672,7 @@ def run_once(args: argparse.Namespace) -> int:
                         "message": str(err),
                         "provider_request_id": provider_request_id,
                         "transport_mode": "real",
+                        "provider_call_attempted": provider_call_attempted,
                     },
                     ensure_ascii=False,
                 )
@@ -367,16 +688,16 @@ def run_once(args: argparse.Namespace) -> int:
                     "message": str(err),
                     "provider_request_id": getattr(err, "request_id", None),
                     "transport_mode": "real",
+                    "provider_call_attempted": provider_call_attempted,
                 },
                 ensure_ascii=False,
             )
         )
         return 1
 
-    response_text = str(llm_result["output"])
-    input_tokens = int(llm_result["input_tokens"])
-    output_tokens = int(llm_result["output_tokens"])
-    total_tokens = int(llm_result["total_tokens"])
+    input_tokens = accumulated_input_tokens
+    output_tokens = accumulated_output_tokens
+    total_tokens = accumulated_total_tokens
     cost_usd = round(total_tokens * 0.000001, 8)
 
     try:
@@ -415,7 +736,8 @@ def run_once(args: argparse.Namespace) -> int:
                 "tool": {
                     "name": args.tool,
                     "decision": decision,
-                    "output": tool_output,
+                    "output": legacy_tool_output,
+                    "calls": tool_call_records,
                 },
                 "llm": {
                     "output": response_text,
@@ -423,11 +745,11 @@ def run_once(args: argparse.Namespace) -> int:
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
                     "estimated_cost_usd": cost_usd,
-                    "provider_request_id": llm_result["provider_request_id"],
-                    "request_id_source": llm_result["request_id_source"],
-                    "provider_model": llm_result["provider_model"],
-                    "usage_source": llm_result["usage_source"],
-                    "transport_mode": llm_result["transport_mode"],
+                    "provider_request_id": last_provider_request_id,
+                    "request_id_source": last_request_id_source,
+                    "provider_model": last_provider_model,
+                    "usage_source": last_usage_source,
+                    "transport_mode": last_transport_mode,
                 },
                 "usage": usage,
             },
