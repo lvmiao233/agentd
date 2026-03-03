@@ -637,9 +637,9 @@ mod tests {
 
         let events = manager.list_events(None).await;
         assert!(events.iter().any(|e| e.event_type == "agent.exited"));
-        assert!(events
-            .iter()
-            .any(|e| e.event_type == "agent.stopped" && e.payload["reason"] == "exited_successfully"));
+        assert!(events.iter().any(
+            |e| e.event_type == "agent.stopped" && e.payload["reason"] == "exited_successfully"
+        ));
         assert!(!events.iter().any(|e| e.event_type == "agent.restarting"));
 
         let _ = manager.stop_agent(agent_id).await;
