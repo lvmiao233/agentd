@@ -14,10 +14,16 @@ OpenAI: Any | None = None
 AuthenticationError: type[Exception] | None = None
 APIConnectionError: type[Exception] | None = None
 APIStatusError: type[Exception] | None = None
+APITimeoutError: type[Exception] | None = None
 
 
 def _ensure_openai_types() -> None:
-    global OpenAI, AuthenticationError, APIConnectionError, APIStatusError
+    global \
+        OpenAI, \
+        AuthenticationError, \
+        APIConnectionError, \
+        APIStatusError, \
+        APITimeoutError
     if OpenAI is not None:
         return
 
@@ -26,6 +32,7 @@ def _ensure_openai_types() -> None:
     AuthenticationError = getattr(openai_mod, "AuthenticationError")
     APIConnectionError = getattr(openai_mod, "APIConnectionError")
     APIStatusError = getattr(openai_mod, "APIStatusError")
+    APITimeoutError = getattr(openai_mod, "APITimeoutError", None)
 
 
 @dataclass(slots=True)
@@ -35,6 +42,17 @@ class RpcError(Exception):
 
     def __str__(self) -> str:
         return f"RPC error {self.code}: {self.message}"
+
+
+@dataclass(slots=True)
+class RetryExhaustedError(Exception):
+    attempts: int
+    last_error: Exception
+
+    def __str__(self) -> str:
+        return (
+            f"retry budget exhausted after {self.attempts} attempts: {self.last_error}"
+        )
 
 
 def call_rpc(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -307,11 +325,42 @@ def _invoke_real_with_retry(
                 raise
 
             if attempt >= max_retries:
-                raise
+                raise RetryExhaustedError(attempts=attempt + 1, last_error=err) from err
 
             delay = 0.2 * (2**attempt)
             time.sleep(delay)
             attempt += 1
+
+
+def _classify_llm_error(err: Exception) -> tuple[str, str]:
+    auth_error = AuthenticationError
+    timeout_error = APITimeoutError
+    conn_error = APIConnectionError
+    status_error = APIStatusError
+
+    if auth_error is not None and isinstance(err, auth_error):
+        return "provider.auth", "AUTH"
+
+    if timeout_error is not None and isinstance(err, timeout_error):
+        return "provider.timeout", "TIMEOUT"
+
+    if conn_error is not None and isinstance(err, conn_error):
+        message = str(err).lower()
+        if "timeout" in message or "timed out" in message:
+            return "provider.timeout", "TIMEOUT"
+        return "provider.network", "NETWORK"
+
+    if status_error is not None and isinstance(err, status_error):
+        status_code = getattr(err, "status_code", None)
+        if status_code == 401:
+            return "provider.auth", "AUTH"
+        if status_code == 429:
+            return "provider.rate_limit", "RATE_LIMIT"
+        if isinstance(status_code, int) and status_code >= 500:
+            return "provider.network", "NETWORK"
+        return "provider.http", "UNKNOWN"
+
+    return "provider.unknown", "UNKNOWN"
 
 
 def parse_args() -> argparse.Namespace:
@@ -650,78 +699,28 @@ def run_once(args: argparse.Namespace) -> int:
             )
             return 1
     except Exception as err:
-        auth_error = AuthenticationError
-        conn_error = APIConnectionError
-        status_error = APIStatusError
+        attempts = 1
+        classified_error = err
+        if isinstance(err, RetryExhaustedError):
+            attempts = err.attempts
+            classified_error = err.last_error
 
-        if auth_error is not None and isinstance(err, auth_error):
-            provider_request_id = getattr(err, "request_id", None)
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "llm",
-                        "error": "provider.auth",
-                        "message": str(err),
-                        "provider_request_id": provider_request_id,
-                        "transport_mode": "real",
-                        "provider_call_attempted": provider_call_attempted,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-
-        if conn_error is not None and isinstance(err, conn_error):
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "llm",
-                        "error": "provider.network",
-                        "message": str(err),
-                        "provider_request_id": None,
-                        "transport_mode": "real",
-                        "provider_call_attempted": provider_call_attempted,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-
-        if status_error is not None and isinstance(err, status_error):
-            provider_request_id = getattr(err, "request_id", None)
-            category = (
-                "provider.auth"
-                if getattr(err, "status_code", None) == 401
-                else "provider.http"
-            )
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "llm",
-                        "error": category,
-                        "message": str(err),
-                        "provider_request_id": provider_request_id,
-                        "transport_mode": "real",
-                        "provider_call_attempted": provider_call_attempted,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-
+        error_code, error_category = _classify_llm_error(classified_error)
         print(
             json.dumps(
                 {
                     "status": "failed",
                     "stage": "llm",
-                    "error": "provider.unknown",
-                    "message": str(err),
-                    "provider_request_id": getattr(err, "request_id", None),
+                    "error": error_code,
+                    "error_category": error_category,
+                    "message": str(classified_error),
+                    "provider_request_id": getattr(
+                        classified_error, "request_id", None
+                    ),
                     "transport_mode": "real",
                     "provider_call_attempted": provider_call_attempted,
+                    "attempts": attempts,
+                    "max_retries": max_retries,
                 },
                 ensure_ascii=False,
             )
