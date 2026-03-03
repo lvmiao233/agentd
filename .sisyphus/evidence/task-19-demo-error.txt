@@ -1,0 +1,14 @@
+task_19_demo=failed
+reason=agent card validation failed
+daemon_log=/tmp/tmp.MI3OcnvUkg/daemon.log
+--- daemon_log_tail ---
+[2m2026-03-03T02:05:48.893523Z[0m [32m INFO[0m [2magentd[0m[2m:[0m Starting agentd daemon
+[2m2026-03-03T02:05:48.893560Z[0m [32m INFO[0m [2magentd[0m[2m:[0m Loaded daemon config [3mconfig_path[0m[2m=[0m/tmp/tmp.MI3OcnvUkg/agentd.toml
+[2m2026-03-03T02:05:48.897052Z[0m [32m INFO[0m [2magentd[0m[2m:[0m One-API supervisor disabled by configuration
+[2m2026-03-03T02:05:48.897081Z[0m [32m INFO[0m [2magentd[0m[2m:[0m Systemd READY=1 notification sent
+[2m2026-03-03T02:05:48.897105Z[0m [32m INFO[0m [2magentd[0m[2m:[0m Health endpoint listening [3mbind_addr[0m[2m=[0m127.0.0.1:17167
+[2m2026-03-03T02:05:48.897226Z[0m [32m INFO[0m [2magentd[0m[2m:[0m UDS JSON-RPC endpoint listening [3msocket_path[0m[2m=[0m/tmp/tmp.MI3OcnvUkg/agentd.sock
+{"status": "completed", "agent_id": "6f2124c4-91ed-4e36-9867-53e0510717fa", "prompt": "分析当前目录结构", "model": "claude-4-sonnet", "tool": {"name": "builtin.lite.upper", "decision": "ask", "output": "分析当前目录结构"}, "llm": {"output": "lite:分析当前目录结构", "input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "estimated_cost_usd": 2e-06}, "usage": {"agent_id": "6f2124c4-91ed-4e36-9867-53e0510717fa", "input_tokens": 1, "model_cost_breakdown": [{"cost_usd": 2e-06, "input_tokens": 1, "model_name": "claude-4-sonnet", "output_tokens": 1, "total_tokens": 2}], "output_tokens": 1, "total_cost_usd": 2e-06, "total_tokens": 2}}
+--- card_validate_error ---
+--- card_validate_output ---
+{"status": "invalid", "card_path": "/tmp/tmp.MI3OcnvUkg/agent-cards/6f2124c4-91ed-4e36-9867-53e0510717fa/agent.json", "missing_or_invalid_fields": ["name"]}

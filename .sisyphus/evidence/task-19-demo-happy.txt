@@ -1,0 +1,7 @@
+task_19_demo=passed
+agent_id=e04eca11-fb63-43f4-8718-d293d3b82aff
+agent_card_path=/tmp/tmp.7x0YfEec8E/agent-cards/e04eca11-fb63-43f4-8718-d293d3b82aff/agent.json
+model=claude-4-sonnet
+audit_events=3
+lifecycle_events=3
+usage_total_tokens=2
