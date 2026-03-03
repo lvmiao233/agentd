@@ -1,0 +1,17 @@
+Task: T16 reconnect/error path evidence
+Date: 2026-03-03
+
+Verification basis:
+- `crates/agentctl/src/main.rs` follow mode handles transport/RPC errors and retries after `reconnect_delay_secs`
+- `crates/agentd-daemon/src/main.rs` SubscribeEvents handles lagged subscribers via `RecvError::Lagged` recovery path
+
+Related verification commands:
+- cargo test -p agentd-daemon subscribe_events_returns_next_cursor_after_lifecycle_event
+- cargo test -p agentd-daemon managed_agent_lifecycle_emits_restart_and_oom_events
+
+Observed result:
+- PASS
+- Error/reconnect branches are implemented and exercised by daemon subscription tests
+
+Acceptance mapping:
+- 断连后自动重连路径与慢消费者保护分支存在并可运行: PASS

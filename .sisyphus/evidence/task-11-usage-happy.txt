@@ -1,0 +1,15 @@
+Task: T11 usage aggregation and query happy path
+Date: 2026-03-03
+
+Verification commands:
+- cargo test -p agentd-daemon usage_query_and_quota_enforcement_work
+- cargo test -p agentd-daemon usage_recording_succeeds_for_hundred_collection_cycles
+
+Observed result:
+- PASS
+- Usage query returns input/output/total and model_cost_breakdown fields
+- 100-cycle usage recording loop succeeded with 100/100 success (100%)
+
+Acceptance mapping:
+- 采集执行成功率 >= 99%（100 cycles）: PASS (100%)
+- usage 查询字段完整: PASS

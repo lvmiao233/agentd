@@ -1,0 +1,15 @@
+Task: T13 policy engine happy path evidence
+Date: 2026-03-03
+
+Verification commands:
+- cargo test -p agentd-core policy::tests::wildcard_matching_works
+- cargo test -p agentd-core policy::tests::layer_priority_prefers_session_when_decision_ties
+- cargo test -p agentd-daemon authorize_tool_returns_explanation_for_non_deny_decision
+
+Observed result:
+- PASS
+- allow/ask decisions are resolved with wildcard + layer precedence
+- response includes explanation fields: matched_rule, decision, source_layer
+
+Acceptance mapping:
+- 规则匹配与多层合并解释字段完整: PASS

@@ -1,0 +1,15 @@
+Task: T13 policy engine deny/error path evidence
+Date: 2026-03-03
+
+Verification commands:
+- cargo test -p agentd-core policy::tests::deny_takes_precedence_over_allow
+- cargo test -p agentd-daemon authorize_tool_returns_stable_policy_deny_error_code
+
+Observed result:
+- PASS
+- deny precedence over allow is enforced
+- denied call returns stable error code -32016
+- deny error includes matched_rule and source_layer explanation
+
+Acceptance mapping:
+- deny 优先 + 稳定拒绝错误码: PASS

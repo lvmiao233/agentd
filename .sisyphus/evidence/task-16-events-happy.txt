@@ -1,0 +1,14 @@
+Task: T16 event subscription stream happy path evidence
+Date: 2026-03-03
+
+Verification commands:
+- cargo test -p agentd-daemon subscribe_events_returns_next_cursor_after_lifecycle_event
+- cargo test -p agentd-daemon managed_agent_lifecycle_emits_restart_and_oom_events
+
+Observed result:
+- PASS
+- SubscribeEvents returns event list and next_cursor
+- ListLifecycleEvents contains lifecycle and cgroup.oom events after managed runtime activity
+
+Acceptance mapping:
+- events --follow backend flow has stream data + cursor progression: PASS

@@ -1,0 +1,13 @@
+Task: T10 agent create/list end-to-end happy path
+Date: 2026-03-03
+
+Verification command:
+- cargo test -p agentd-daemon create_agent_is_idempotent_and_list_returns_ready_state
+
+Observed result:
+- PASS
+- `agent create` succeeded and returned status=ready
+- `agent list` returned the created agent with status=ready
+
+Acceptance mapping:
+- create 后 list 可见且 ready: PASS

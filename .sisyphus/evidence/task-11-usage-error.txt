@@ -1,0 +1,14 @@
+Task: T11 quota exceeded blocking evidence
+Date: 2026-03-03
+
+Verification command:
+- cargo test -p agentd-daemon usage_query_and_quota_enforcement_work
+
+Observed result:
+- PASS
+- Over-budget request returns error code -32015
+- Error message includes `llm.quota_exceeded`
+- Budget exceeded path is audited by daemon
+
+Acceptance mapping:
+- 超预算后新请求被阻断并返回稳定 quota 错误: PASS

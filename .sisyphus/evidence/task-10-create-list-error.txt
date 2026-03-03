@@ -1,0 +1,16 @@
+Task: T10 idempotency/error path evidence
+Date: 2026-03-03
+
+Verification commands:
+- cargo test -p agentd-daemon create_agent_is_idempotent_over_ten_retries
+- cargo test -p agentd-daemon create_agent_records_failed_state_when_one_api_provisioning_fails
+
+Observed result:
+- PASS
+- Repeated 10 create requests for same name+model produced only one entity in list
+- One-API provisioning failure path returns stable error code -32014
+- Failed agent persisted with status=failed and failure_reason
+
+Acceptance mapping:
+- 同一 name+model 重复提交仅 1 个实体: PASS
+- 失败路径返回稳定错误码并记录失败原因: PASS
