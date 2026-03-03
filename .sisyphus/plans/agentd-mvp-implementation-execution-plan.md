@@ -1645,25 +1645,29 @@ Wave FINAL（并行独立审查）
 
 ## Final Verification Wave (MANDATORY — after ALL implementation tasks)
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   - 对照本计划逐项核验 Must Have / Must NOT Have
   - 验证每个任务证据文件存在且可追溯
   - 输出：`Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT`
+  - Evidence: `.sisyphus/evidence/final-wave-f1-plan-compliance.txt`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   - 运行 `cargo check --workspace`、`cargo clippy --workspace -- -D warnings`、`uv run pytest`
   - 检查不允许项（`as any`、空 catch、未使用代码、临时代码）
   - 输出：`Build/Lint/Test 状态 + 文件级问题列表 + VERDICT`
+  - Evidence: `.sisyphus/evidence/final-wave-f2-code-quality.txt`
 
-- [ ] F3. **Real QA Replay** — `unspecified-high`
+- [x] F3. **Real QA Replay** — `unspecified-high`
   - 复跑所有任务的 QA Scenarios，验证证据闭环
   - 覆盖 happy-path + error-path + 跨任务集成
   - 输出：`Scenarios [N/N] | Integration [N/N] | Edge Cases [N] | VERDICT`
+  - Evidence: `.sisyphus/evidence/final-wave-f3-qa-replay.txt`
 
-- [ ] F4. **Scope Fidelity Check** — `deep`
+- [x] F4. **Scope Fidelity Check** — `deep`
   - 对照任务说明与实际变更，确认零范围漂移
   - 检查是否误引入 Go、多机、MVP 外扩功能
   - 输出：`Tasks compliant [N/N] | Scope creep [0/N] | VERDICT`
+  - Evidence: `.sisyphus/evidence/final-wave-f4-scope-fidelity.txt`
 
 ---
 
@@ -1689,8 +1693,8 @@ gh pr checks <PR_NUMBER> --required           # all required checks pass
 ```
 
 ### Final Checklist
-- [ ] 所有 Must Have 均有证据
-- [ ] 所有 Must NOT Have 均未出现
-- [ ] 阶段门禁全部通过
-- [ ] 回滚演练通过且可重复
-- [ ] Final Wave（F1-F4）全部 APPROVE
+- [x] 所有 Must Have 均有证据
+- [x] 所有 Must NOT Have 均未出现
+- [x] 阶段门禁全部通过
+- [x] 回滚演练通过且可重复
+- [x] Final Wave（F1-F4）全部 APPROVE
