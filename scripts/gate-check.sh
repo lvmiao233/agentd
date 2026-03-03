@@ -159,6 +159,7 @@ log_info "=== Step 4: Local Gate Check Script ==="
 check_file "scripts/gate-check.sh" "Gate check script"
 check_file "scripts/gates/phase-a-gate.sh" "Phase A gate script"
 check_file "scripts/gates/phase-bc-gate.sh" "Phase B/C gate script"
+check_file "scripts/validate/agent-card-validate.sh" "Agent card validation script"
 check_file "scripts/rollback/phase-a-rollback.sh" "Phase A rollback script"
 check_file "scripts/faults/inject-oom-and-policy-conflict.sh" "Phase B/C fault injection script"
 check_file "scripts/faults/inject-oneapi-timeout.sh" "One-API timeout injection script"
@@ -221,6 +222,13 @@ if bash -n "$REPO_ROOT/scripts/gates/phase-bc-gate.sh" 2>/dev/null; then
     log_info "✓ phase-bc-gate.sh syntax valid"
 else
     log_error "✗ phase-bc-gate.sh has syntax errors"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+if bash -n "$REPO_ROOT/scripts/validate/agent-card-validate.sh" 2>/dev/null; then
+    log_info "✓ agent-card-validate.sh syntax valid"
+else
+    log_error "✗ agent-card-validate.sh has syntax errors"
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 
