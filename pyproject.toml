@@ -5,11 +5,22 @@ description = "System-level AI Agent runtime"
 requires-python = ">=3.12"
 dependencies = []
 
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+]
+
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
 members = ["python/agentd-agent-lite"]
+
+[tool.pytest.ini_options]
+pythonpath = ["python/agentd-agent-lite/src"]
+
+[tool.basedpyright]
+extraPaths = ["python/agentd-agent-lite/src"]
 
 [build-system]
 requires = ["hatchling"]
