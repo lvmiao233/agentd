@@ -1,0 +1,11 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=PASS
+ASSERT closure_request=PASS
+ASSERT closure_response=FAIL
+EXPECTED_FAILURE policy_deny
+reason=POLICY_DENY_BYPASSED
+run_exit_code=1
+status=failed
+error=provider.timeout
+provider_call_attempted=true
+agent_id=b8814eff-fd07-4ed9-ba3f-32ecb4025a30

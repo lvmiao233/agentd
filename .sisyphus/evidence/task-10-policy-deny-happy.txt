@@ -1,0 +1,10 @@
+ASSERT preflight=PASS
+ASSERT daemon_start=PASS
+ASSERT closure_request=PASS
+ASSERT closure_response=PASS
+EXPECTED_FAILURE policy_deny
+provider_call_attempted=false
+total_tokens_before=0
+total_tokens_after=0
+tool_denied_present=true
+agent_id=3efd91f0-1fc2-45a8-8097-b76ecdfcbb7c

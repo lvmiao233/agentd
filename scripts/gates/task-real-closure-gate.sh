@@ -38,6 +38,8 @@ Options:
   --dry-run                      Validate prerequisites without running daemon
   --negative-one-api-disabled    Test behavior when one_api.enabled=false
   --negative-invalid-credentials Test behavior with invalid API credentials
+  --negative-policy-deny         Verify deny blocks provider call and usage stays unchanged
+  --negative-policy-deny-bypass  Simulate deny bypass and fail with POLICY_DENY_BYPASSED
   --happy-evidence <path>        Output path for happy evidence
   --error-evidence <path>        Output path for error evidence
   -h, --help                     Show help
@@ -64,6 +66,8 @@ require_cmd() {
 DRY_RUN=false
 NEGATIVE_ONE_API_DISABLED=false
 NEGATIVE_INVALID_CREDENTIALS=false
+NEGATIVE_POLICY_DENY=false
+NEGATIVE_POLICY_DENY_BYPASS=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -77,6 +81,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --negative-invalid-credentials)
             NEGATIVE_INVALID_CREDENTIALS=true
+            shift
+            ;;
+        --negative-policy-deny)
+            NEGATIVE_POLICY_DENY=true
+            shift
+            ;;
+        --negative-policy-deny-bypass)
+            NEGATIVE_POLICY_DENY_BYPASS=true
             shift
             ;;
         --happy-evidence)
@@ -112,6 +124,31 @@ mkdir -p "$EVIDENCE_DIR"
 # Validate mutually exclusive options
 if [[ "$NEGATIVE_ONE_API_DISABLED" == "true" && "$NEGATIVE_INVALID_CREDENTIALS" == "true" ]]; then
     log_error "Cannot specify both --negative-one-api-disabled and --negative-invalid-credentials"
+    exit 1
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY" == "true" && "$NEGATIVE_POLICY_DENY_BYPASS" == "true" ]]; then
+    log_error "Cannot specify both --negative-policy-deny and --negative-policy-deny-bypass"
+    exit 1
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY" == "true" && "$NEGATIVE_ONE_API_DISABLED" == "true" ]]; then
+    log_error "Cannot combine --negative-policy-deny with --negative-one-api-disabled"
+    exit 1
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY" == "true" && "$NEGATIVE_INVALID_CREDENTIALS" == "true" ]]; then
+    log_error "Cannot combine --negative-policy-deny with --negative-invalid-credentials"
+    exit 1
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY_BYPASS" == "true" && "$NEGATIVE_ONE_API_DISABLED" == "true" ]]; then
+    log_error "Cannot combine --negative-policy-deny-bypass with --negative-one-api-disabled"
+    exit 1
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY_BYPASS" == "true" && "$NEGATIVE_INVALID_CREDENTIALS" == "true" ]]; then
+    log_error "Cannot combine --negative-policy-deny-bypass with --negative-invalid-credentials"
     exit 1
 fi
 
@@ -482,6 +519,446 @@ PY
         log_info "Negative mode invalid_credentials: closure failed as expected"
     fi
     exit 0
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY" == "true" ]]; then
+    log_info "Running negative mode: policy_deny (expected block before provider call)..."
+
+    TMP_DIR="$(mktemp -d)"
+    SOCKET_PATH="$TMP_DIR/agentd.sock"
+    DB_PATH="$TMP_DIR/agentd.sqlite"
+    HEALTH_PORT="$((20000 + (RANDOM % 10000)))"
+    CONFIG_PATH="$TMP_DIR/agentd.toml"
+    DAEMON_LOG="$TMP_DIR/daemon.log"
+
+    AGENTD_BIN="$REPO_ROOT/target/debug/agentd"
+    AGENTCTL_BIN="$REPO_ROOT/target/debug/agentctl"
+    DAEMON_PID=""
+
+    cleanup() {
+        if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" >/dev/null 2>&1; then
+            kill "$DAEMON_PID" >/dev/null 2>&1 || true
+            wait "$DAEMON_PID" >/dev/null 2>&1 || true
+        fi
+        rm -rf "$TMP_DIR"
+    }
+    trap cleanup EXIT
+
+    cat >"$CONFIG_PATH" <<EOF
+[daemon]
+health_host = "127.0.0.1"
+health_port = ${HEALTH_PORT}
+shutdown_timeout_secs = 5
+socket_path = "${SOCKET_PATH}"
+db_path = "${DB_PATH}"
+
+[one_api]
+enabled = false
+command = "one-api"
+args = []
+health_url = "http://127.0.0.1:3000/health"
+startup_timeout_secs = 30
+restart_max_attempts = 3
+restart_backoff_secs = 2
+management_enabled = false
+management_base_url = "http://127.0.0.1:3000"
+management_timeout_secs = 5
+management_retries = 3
+management_retry_backoff_secs = 1
+create_token_path = "/api/token/"
+create_channel_path = "/api/channel/"
+provision_channel = false
+EOF
+
+    "$AGENTD_BIN" --config "$CONFIG_PATH" >"$DAEMON_LOG" 2>&1 &
+    DAEMON_PID=$!
+
+    health_ready=false
+    for _ in $(seq 1 80); do
+        if curl --noproxy '*' -fsS "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null 2>&1; then
+            health_ready=true
+            break
+        fi
+        sleep 0.25
+    done
+
+    if [[ "$health_ready" != "true" ]]; then
+        {
+            echo "ASSERT preflight=PASS"
+            echo "ASSERT daemon_start=FAIL"
+            echo "ASSERT closure_request=FAIL"
+            echo "ASSERT closure_response=FAIL"
+            echo "EXPECTED_FAILURE policy_deny"
+            echo "reason=daemon_health_not_ready"
+        } >"$ERROR_EVIDENCE"
+        log_error "Daemon health endpoint did not become ready"
+        exit 1
+    fi
+
+    AGENT_CREATE_OUTPUT="$TMP_DIR/agent-create.json"
+    if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
+        --name test-negative-policy-deny \
+        --model claude-4-sonnet \
+        --permission-policy ask \
+        --deny-tool builtin.lite.echo \
+        --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
+        {
+            echo "ASSERT preflight=PASS"
+            echo "ASSERT daemon_start=PASS"
+            echo "ASSERT closure_request=FAIL"
+            echo "ASSERT closure_response=FAIL"
+            echo "EXPECTED_FAILURE policy_deny"
+            echo "reason=agent_creation_failed"
+        } >"$ERROR_EVIDENCE"
+        log_error "Agent creation failed"
+        exit 1
+    fi
+
+    AGENT_ID="$(python3 - "$AGENT_CREATE_OUTPUT" <<'PY'
+import json, sys
+
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('agent create output missing JSON payload')
+data = json.loads(text[idx:])
+print(data['agent']['id'])
+PY
+)"
+
+    USAGE_BEFORE_JSON="$TMP_DIR/usage-before.json"
+    "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" usage "$AGENT_ID" --json >"$USAGE_BEFORE_JSON" 2>&1
+
+    DENY_RUN_OUTPUT="$TMP_DIR/deny-run.json"
+    RUN_RESULT=0
+    uv run --project "$REPO_ROOT/python/agentd-agent-lite" agentd-agent-lite \
+        --socket-path "$SOCKET_PATH" \
+        --agent-id "$AGENT_ID" \
+        --prompt "trigger policy deny check" \
+        --model claude-4-sonnet \
+        --tool builtin.lite.echo \
+        --timeout 3 \
+        --max-retries 0 \
+        --base-url "http://127.0.0.1:3000/v1" \
+        --api-key "deny-test-token" >"$DENY_RUN_OUTPUT" 2>&1 || RUN_RESULT=$?
+
+    USAGE_AFTER_JSON="$TMP_DIR/usage-after.json"
+    "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" usage "$AGENT_ID" --json >"$USAGE_AFTER_JSON" 2>&1
+
+    AUDIT_JSON="$TMP_DIR/audit.json"
+    "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent audit --agent-id "$AGENT_ID" --json >"$AUDIT_JSON" 2>&1
+
+    python3 - "$RUN_RESULT" "$DENY_RUN_OUTPUT" "$USAGE_BEFORE_JSON" "$USAGE_AFTER_JSON" "$AUDIT_JSON" "$HAPPY_EVIDENCE" "$ERROR_EVIDENCE" "$AGENT_ID" <<'PY'
+import json
+import sys
+
+(
+    run_code,
+    run_out_path,
+    usage_before_path,
+    usage_after_path,
+    audit_path,
+    happy_path,
+    error_path,
+    agent_id,
+) = sys.argv[1:9]
+
+run_code_int = int(run_code)
+
+def write_error(lines: list[str]) -> int:
+    with open(error_path, 'w', encoding='utf-8') as fh:
+        fh.write("\n".join(lines) + "\n")
+    return 1
+
+def load_prefixed_json(path: str) -> dict:
+    text = open(path, 'r', encoding='utf-8', errors='ignore').read()
+    idx = text.find('{')
+    if idx < 0:
+        raise ValueError(f"no json object in {path}")
+    return json.loads(text[idx:])
+
+try:
+    run_payload = load_prefixed_json(run_out_path)
+    usage_before = load_prefixed_json(usage_before_path)
+    usage_after = load_prefixed_json(usage_after_path)
+    audit_payload = load_prefixed_json(audit_path)
+except Exception as exc:
+    raise SystemExit(
+        write_error(
+            [
+                'ASSERT preflight=PASS',
+                'ASSERT daemon_start=PASS',
+                'ASSERT closure_request=FAIL',
+                'ASSERT closure_response=FAIL',
+                'EXPECTED_FAILURE policy_deny',
+                f'reason=policy_deny_output_parse_failed:{exc}',
+                f'agent_id={agent_id}',
+            ]
+        )
+    )
+
+provider_call_attempted = bool(run_payload.get('provider_call_attempted'))
+status = run_payload.get('status')
+error = run_payload.get('error')
+
+before_tokens = int(usage_before.get('total_tokens', 0))
+after_tokens = int(usage_after.get('total_tokens', 0))
+
+events = audit_payload.get('events', [])
+tool_denied_present = False
+if isinstance(events, list):
+    for event in events:
+        if isinstance(event, dict) and event.get('event_type') == 'ToolDenied':
+            tool_denied_present = True
+            break
+
+if run_code_int != 2 or status != 'blocked' or error != 'policy.deny':
+    raise SystemExit(
+        write_error(
+            [
+                'ASSERT preflight=PASS',
+                'ASSERT daemon_start=PASS',
+                'ASSERT closure_request=PASS',
+                'ASSERT closure_response=FAIL',
+                'EXPECTED_FAILURE policy_deny',
+                'reason=unexpected_policy_deny_exit_or_payload',
+                f'run_exit_code={run_code_int}',
+                f'status={status}',
+                f'error={error}',
+                f'provider_call_attempted={str(provider_call_attempted).lower()}',
+                f'agent_id={agent_id}',
+            ]
+        )
+    )
+
+if provider_call_attempted:
+    raise SystemExit(
+        write_error(
+            [
+                'ASSERT preflight=PASS',
+                'ASSERT daemon_start=PASS',
+                'ASSERT closure_request=PASS',
+                'ASSERT closure_response=FAIL',
+                'EXPECTED_FAILURE policy_deny',
+                'reason=provider_call_attempted_true',
+                'provider_call_attempted=true',
+                f'agent_id={agent_id}',
+            ]
+        )
+    )
+
+if after_tokens != before_tokens:
+    raise SystemExit(
+        write_error(
+            [
+                'ASSERT preflight=PASS',
+                'ASSERT daemon_start=PASS',
+                'ASSERT closure_request=PASS',
+                'ASSERT closure_response=FAIL',
+                'EXPECTED_FAILURE policy_deny',
+                'reason=usage_increased_under_policy_deny',
+                f'total_tokens_before={before_tokens}',
+                f'total_tokens_after={after_tokens}',
+                f'agent_id={agent_id}',
+            ]
+        )
+    )
+
+if not tool_denied_present:
+    raise SystemExit(
+        write_error(
+            [
+                'ASSERT preflight=PASS',
+                'ASSERT daemon_start=PASS',
+                'ASSERT closure_request=PASS',
+                'ASSERT closure_response=FAIL',
+                'EXPECTED_FAILURE policy_deny',
+                'reason=tool_denied_event_missing',
+                f'total_tokens_before={before_tokens}',
+                f'total_tokens_after={after_tokens}',
+                f'agent_id={agent_id}',
+            ]
+        )
+    )
+
+with open(happy_path, 'w', encoding='utf-8') as fh:
+    fh.write('ASSERT preflight=PASS\n')
+    fh.write('ASSERT daemon_start=PASS\n')
+    fh.write('ASSERT closure_request=PASS\n')
+    fh.write('ASSERT closure_response=PASS\n')
+    fh.write('EXPECTED_FAILURE policy_deny\n')
+    fh.write(f'provider_call_attempted={str(provider_call_attempted).lower()}\n')
+    fh.write(f'total_tokens_before={before_tokens}\n')
+    fh.write(f'total_tokens_after={after_tokens}\n')
+    fh.write(f'tool_denied_present={str(tool_denied_present).lower()}\n')
+    fh.write(f'agent_id={agent_id}\n')
+
+print('policy deny negative gate passed')
+PY
+
+    log_info "Policy deny negative gate passed. Evidence: $HAPPY_EVIDENCE"
+    exit 0
+fi
+
+if [[ "$NEGATIVE_POLICY_DENY_BYPASS" == "true" ]]; then
+    log_info "Running negative mode: policy_deny_bypass (expected gate failure)..."
+
+    TMP_DIR="$(mktemp -d)"
+    SOCKET_PATH="$TMP_DIR/agentd.sock"
+    DB_PATH="$TMP_DIR/agentd.sqlite"
+    HEALTH_PORT="$((20000 + (RANDOM % 10000)))"
+    CONFIG_PATH="$TMP_DIR/agentd.toml"
+    DAEMON_LOG="$TMP_DIR/daemon.log"
+
+    AGENTD_BIN="$REPO_ROOT/target/debug/agentd"
+    AGENTCTL_BIN="$REPO_ROOT/target/debug/agentctl"
+    DAEMON_PID=""
+
+    cleanup() {
+        if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" >/dev/null 2>&1; then
+            kill "$DAEMON_PID" >/dev/null 2>&1 || true
+            wait "$DAEMON_PID" >/dev/null 2>&1 || true
+        fi
+        rm -rf "$TMP_DIR"
+    }
+    trap cleanup EXIT
+
+    cat >"$CONFIG_PATH" <<EOF
+[daemon]
+health_host = "127.0.0.1"
+health_port = ${HEALTH_PORT}
+shutdown_timeout_secs = 5
+socket_path = "${SOCKET_PATH}"
+db_path = "${DB_PATH}"
+
+[one_api]
+enabled = false
+command = "one-api"
+args = []
+health_url = "http://127.0.0.1:3000/health"
+startup_timeout_secs = 30
+restart_max_attempts = 3
+restart_backoff_secs = 2
+management_enabled = false
+management_base_url = "http://127.0.0.1:3000"
+management_timeout_secs = 5
+management_retries = 3
+management_retry_backoff_secs = 1
+create_token_path = "/api/token/"
+create_channel_path = "/api/channel/"
+provision_channel = false
+EOF
+
+    "$AGENTD_BIN" --config "$CONFIG_PATH" >"$DAEMON_LOG" 2>&1 &
+    DAEMON_PID=$!
+
+    health_ready=false
+    for _ in $(seq 1 80); do
+        if curl --noproxy '*' -fsS "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null 2>&1; then
+            health_ready=true
+            break
+        fi
+        sleep 0.25
+    done
+
+    if [[ "$health_ready" != "true" ]]; then
+        {
+            echo "ASSERT preflight=PASS"
+            echo "ASSERT daemon_start=FAIL"
+            echo "ASSERT closure_request=FAIL"
+            echo "ASSERT closure_response=FAIL"
+            echo "EXPECTED_FAILURE policy_deny"
+            echo "reason=daemon_health_not_ready"
+        } >"$ERROR_EVIDENCE"
+        log_error "Daemon health endpoint did not become ready"
+        exit 1
+    fi
+
+    AGENT_CREATE_OUTPUT="$TMP_DIR/agent-create.json"
+    if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
+        --name test-negative-policy-deny-bypass \
+        --model claude-4-sonnet \
+        --permission-policy ask \
+        --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
+        {
+            echo "ASSERT preflight=PASS"
+            echo "ASSERT daemon_start=PASS"
+            echo "ASSERT closure_request=FAIL"
+            echo "ASSERT closure_response=FAIL"
+            echo "EXPECTED_FAILURE policy_deny"
+            echo "reason=agent_creation_failed"
+        } >"$ERROR_EVIDENCE"
+        log_error "Agent creation failed"
+        exit 1
+    fi
+
+    AGENT_ID="$(python3 - "$AGENT_CREATE_OUTPUT" <<'PY'
+import json, sys
+
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+if idx < 0:
+    raise SystemExit('agent create output missing JSON payload')
+data = json.loads(text[idx:])
+print(data['agent']['id'])
+PY
+)"
+
+    DENY_RUN_OUTPUT="$TMP_DIR/deny-run.json"
+    RUN_RESULT=0
+    uv run --project "$REPO_ROOT/python/agentd-agent-lite" agentd-agent-lite \
+        --socket-path "$SOCKET_PATH" \
+        --agent-id "$AGENT_ID" \
+        --prompt "trigger policy deny bypass check" \
+        --model claude-4-sonnet \
+        --tool builtin.lite.echo \
+        --timeout 3 \
+        --max-retries 0 \
+        --base-url "http://127.0.0.1:3000/v1" \
+        --api-key "deny-test-token" >"$DENY_RUN_OUTPUT" 2>&1 || RUN_RESULT=$?
+
+    python3 - "$RUN_RESULT" "$DENY_RUN_OUTPUT" "$ERROR_EVIDENCE" "$AGENT_ID" <<'PY'
+import json
+import sys
+
+run_code, run_out_path, error_path, agent_id = sys.argv[1:5]
+run_code_int = int(run_code)
+
+text = open(run_out_path, 'r', encoding='utf-8', errors='ignore').read()
+idx = text.find('{')
+payload = None
+if idx >= 0:
+    try:
+        payload = json.loads(text[idx:])
+    except Exception:
+        payload = None
+
+provider_call_attempted = None
+status = None
+error = None
+if isinstance(payload, dict):
+    provider_call_attempted = payload.get('provider_call_attempted')
+    status = payload.get('status')
+    error = payload.get('error')
+
+with open(error_path, 'w', encoding='utf-8') as fh:
+    fh.write('ASSERT preflight=PASS\n')
+    fh.write('ASSERT daemon_start=PASS\n')
+    fh.write('ASSERT closure_request=PASS\n')
+    fh.write('ASSERT closure_response=FAIL\n')
+    fh.write('EXPECTED_FAILURE policy_deny\n')
+    fh.write('reason=POLICY_DENY_BYPASSED\n')
+    fh.write(f'run_exit_code={run_code_int}\n')
+    fh.write(f'status={status}\n')
+    fh.write(f'error={error}\n')
+    fh.write(f'provider_call_attempted={str(provider_call_attempted).lower()}\n')
+    fh.write(f'agent_id={agent_id}\n')
+
+print('POLICY_DENY_BYPASSED')
+PY
+
+    log_error "Policy deny bypass detected. Evidence: $ERROR_EVIDENCE"
+    exit 1
 fi
 
 # ============================================================
