@@ -540,14 +540,47 @@ def run_once(args: argparse.Namespace) -> int:
                     except json.JSONDecodeError:
                         parsed_prompt = args.prompt
 
-                tool_authorization = call_rpc(
-                    args.socket_path,
-                    "AuthorizeTool",
-                    {
-                        "tool": tool_name,
-                        "agent_id": args.agent_id,
-                    },
-                )
+                try:
+                    tool_authorization = call_rpc(
+                        args.socket_path,
+                        "AuthorizeTool",
+                        {
+                            "tool": tool_name,
+                            "agent_id": args.agent_id,
+                        },
+                    )
+                except RpcError as err:
+                    if err.code == -32016:
+                        print(
+                            json.dumps(
+                                {
+                                    "status": "blocked",
+                                    "agent_id": args.agent_id,
+                                    "tool": tool_name,
+                                    "error": "policy.deny",
+                                    "code": err.code,
+                                    "message": err.message,
+                                    "provider_call_attempted": provider_call_attempted,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        return 2
+
+                    print(
+                        json.dumps(
+                            {
+                                "status": "failed",
+                                "stage": "authorize",
+                                "tool": tool_name,
+                                "code": err.code,
+                                "message": err.message,
+                                "provider_call_attempted": provider_call_attempted,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 1
                 tool_decision = str(tool_authorization.get("decision", "ask"))
                 if tool_decision == "deny":
                     print(
