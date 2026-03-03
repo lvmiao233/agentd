@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import os
 
 DEFAULT_TIMEOUT = 60
+DEFAULT_MODEL = "claude-4-sonnet"
 
 
 @dataclass(slots=True)
@@ -84,7 +85,12 @@ def load_config(
 
     final_base_url = base_url if base_url is not None else env_base_url
     final_api_key = api_key if api_key is not None else env_api_key
-    final_model = model if model is not None else env_model
+    if model is not None and model.strip() != "":
+        final_model = model
+    elif env_model.strip() != "":
+        final_model = env_model
+    else:
+        final_model = DEFAULT_MODEL
 
     if timeout is not None:
         final_timeout = timeout

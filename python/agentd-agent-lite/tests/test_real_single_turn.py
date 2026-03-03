@@ -171,3 +171,16 @@ def test_dry_run_does_not_instantiate_openai_client(monkeypatch, capsys) -> None
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "dry_run"
     assert payload["config"]["base_url"] == "http://localhost:3000/v1"
+
+
+def test_invalid_base_url_returns_stable_reason_code(capsys) -> None:
+    args = _make_args(dry_run=True)
+    args.base_url = "not-a-url"
+
+    exit_code = _CLI_MODULE.run_once(args)
+    assert exit_code == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["stage"] == "config"
+    assert payload["reason_code"] == "INVALID_BASE_URL"

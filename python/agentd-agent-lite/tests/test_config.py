@@ -6,7 +6,6 @@ TDD approach:
 """
 
 import os
-import pytest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import patch
@@ -24,28 +23,34 @@ validate_config = _CONFIG_MODULE.validate_config
 LlmConfig = _CONFIG_MODULE.LlmConfig
 
 
+def assert_raises_value_error(callable_obj, expected_substring: str) -> None:
+    try:
+        callable_obj()
+    except ValueError as exc:
+        assert expected_substring in str(exc)
+        return
+    raise AssertionError("expected ValueError was not raised")
+
+
 class TestMissingConfig:
     """Tests for missing required configuration - should fail initially."""
 
     def test_missing_base_url_fails(self) -> None:
         """Missing base_url should raise validation error."""
-        with pytest.raises(ValueError, match="base_url"):
-            config = LlmConfig(api_key="test-key", model="gpt-4")
-            validate_config(config)
+        config = LlmConfig(api_key="test-key", model="gpt-4")
+        assert_raises_value_error(lambda: validate_config(config), "base_url")
 
     def test_missing_api_key_fails(self) -> None:
         """Missing api_key should raise validation error."""
-        with pytest.raises(ValueError, match="api_key"):
-            config = LlmConfig(base_url="http://localhost:3000/v1", model="gpt-4")
-            validate_config(config)
+        config = LlmConfig(base_url="http://localhost:3000/v1", model="gpt-4")
+        assert_raises_value_error(lambda: validate_config(config), "api_key")
 
     def test_empty_api_key_fails(self) -> None:
         """Empty api_key should raise validation error."""
-        with pytest.raises(ValueError, match="api_key"):
-            config = LlmConfig(
-                base_url="http://localhost:3000/v1", api_key="", model="gpt-4"
-            )
-            validate_config(config)
+        config = LlmConfig(
+            base_url="http://localhost:3000/v1", api_key="", model="gpt-4"
+        )
+        assert_raises_value_error(lambda: validate_config(config), "api_key")
 
 
 class TestInvalidConfig:
@@ -53,9 +58,8 @@ class TestInvalidConfig:
 
     def test_invalid_base_url_not_url_fails(self) -> None:
         """Invalid base_url (not a URL) should fail validation."""
-        with pytest.raises(ValueError, match="base_url"):
-            config = LlmConfig(base_url="not-a-url", api_key="test-key", model="gpt-4")
-            validate_config(config)
+        config = LlmConfig(base_url="not-a-url", api_key="test-key", model="gpt-4")
+        assert_raises_value_error(lambda: validate_config(config), "base_url")
 
     def test_invalid_base_url_no_path_fails(self) -> None:
         """base_url without /v1 path should warn but not fail (OpenAI-compatible allows flexibility)."""
@@ -90,6 +94,14 @@ class TestValidConfig:
         )
         validated = validate_config(config)
         assert validated.timeout == 60
+
+    def test_default_model_fallback(self) -> None:
+        """Model should fallback to default when not provided by CLI/env."""
+        with patch.dict(os.environ, {}, clear=True):
+            config = load_config(
+                base_url="http://localhost:3000/v1", api_key="test-key"
+            )
+            assert config.model == "claude-4-sonnet"
 
 
 class TestEnvVarInjection:

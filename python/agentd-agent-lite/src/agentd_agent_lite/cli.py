@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--socket-path", default="/tmp/agentd.sock")
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--model", default="claude-4-sonnet")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--tool", default="builtin.lite.echo")
     parser.add_argument(
         "--base-url", default=None, help="OpenAI-compatible API base URL"
@@ -196,12 +196,21 @@ def run_once(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except ValueError as err:
+        err_text = str(err)
+        reason_code = "INVALID_CONFIG"
+        if "base_url" in err_text:
+            reason_code = "INVALID_BASE_URL"
+        elif "api_key" in err_text:
+            reason_code = "MISSING_API_KEY"
+        elif "timeout" in err_text:
+            reason_code = "INVALID_TIMEOUT"
         print(
             json.dumps(
                 {
                     "status": "failed",
                     "stage": "config",
                     "error": "invalid_config",
+                    "reason_code": reason_code,
                     "message": str(err),
                 },
                 ensure_ascii=False,
