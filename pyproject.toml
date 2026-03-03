@@ -9,7 +9,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = []
+members = ["python/agentd-agent-lite"]
 
 [build-system]
 requires = ["hatchling"]
