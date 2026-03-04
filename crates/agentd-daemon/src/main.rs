@@ -10,8 +10,9 @@ use agentd_core::policy::{
 };
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
-    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, LayeredPolicyEngine, PolicyDecision,
-    PolicyEngine, PolicyGatewayDecision, PolicyInputContext, PolicyLayer, PolicyRule,
+    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyEngine,
+    PolicyEngineLayers, PolicyEvaluation, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
+    PolicyRule, RegorusPolicyEngine,
     SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
@@ -2508,6 +2509,173 @@ fn profile_to_policy_layer(profile: &AgentProfile) -> PolicyLayer {
     }
 }
 
+fn evaluate_policy_with_rego_dir(
+    policy_dir: &Path,
+    global_layer: PolicyLayer,
+    profile_layer: PolicyLayer,
+    session_layer: PolicyLayer,
+    policy_input: &PolicyInputContext,
+) -> Result<PolicyEvaluation, AgentError> {
+    let engine = RegorusPolicyEngine::from_policy_dir(
+        PolicyEngineLayers::new(global_layer, profile_layer, session_layer),
+        policy_dir.to_path_buf(),
+    )?;
+    Ok(engine.evaluate(policy_input))
+}
+
+#[cfg(test)]
+fn temp_rego_policy_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("agentd-rego-policy-test-{}", uuid::Uuid::new_v4()))
+}
+
+#[cfg(test)]
+fn ask_only_layer(name: &str) -> PolicyLayer {
+    PolicyLayer {
+        name: name.to_string(),
+        rules: vec![PolicyRule {
+            pattern: "*".to_string(),
+            decision: PolicyDecision::Ask,
+        }],
+    }
+}
+
+#[cfg(test)]
+fn test_policy_input(tool: &str) -> PolicyInputContext {
+    PolicyInputContext {
+        agent: PolicyAgentContext {
+            id: Some("agent-rego-test".to_string()),
+            trust_level: Some("ask".to_string()),
+        },
+        tool: PolicyToolContext {
+            name: tool.to_string(),
+        },
+        resource: PolicyResourceContext { uri: None },
+        time: PolicyTimeContext {
+            timestamp_rfc3339: Some("2026-03-04T17:00:00Z".to_string()),
+        },
+        request_meta: BTreeMap::new(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn rego_policy_loaded_and_evaluated() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("allow.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+allow if {
+  input.tool.name == "mcp.fs.read_file"
+}
+"#,
+    )
+    .expect("write allow policy");
+
+    let evaluation = evaluate_policy_with_rego_dir(
+        &dir,
+        ask_only_layer("global"),
+        ask_only_layer("agent_profile"),
+        ask_only_layer("session_override"),
+        &test_policy_input("mcp.fs.read_file"),
+    )
+    .expect("rego policy should evaluate");
+
+    assert_eq!(evaluation.decision, PolicyDecision::Allow);
+    assert_eq!(
+        evaluation.source_layer.as_deref(),
+        Some("rego:data.agentd.policy")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn rego_deny_returns_explanation_path() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("deny.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+deny if {
+  startswith(input.tool.name, "mcp.fs.")
+}
+
+explain := "data.agentd.policy.deny[mcp.fs]" if {
+  deny
+}
+"#,
+    )
+    .expect("write deny policy");
+
+    let evaluation = evaluate_policy_with_rego_dir(
+        &dir,
+        ask_only_layer("global"),
+        ask_only_layer("agent_profile"),
+        ask_only_layer("session_override"),
+        &test_policy_input("mcp.fs.read_file"),
+    )
+    .expect("rego policy should evaluate");
+
+    assert_eq!(evaluation.decision, PolicyDecision::Deny);
+    assert_eq!(
+        evaluation.matched_rule.as_deref(),
+        Some("data.agentd.policy.deny[mcp.fs]")
+    );
+
+    let gateway = evaluation.to_gateway_decision("trace-rego-deny");
+    assert!(gateway.reason.contains("data.agentd.policy.deny[mcp.fs]"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn rego_invalid_policy_compile_error() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("broken.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+allow if {
+  input.tool.name ==
+}
+"#,
+    )
+    .expect("write broken policy");
+
+    let err = evaluate_policy_with_rego_dir(
+        &dir,
+        ask_only_layer("global"),
+        ask_only_layer("agent_profile"),
+        ask_only_layer("session_override"),
+        &test_policy_input("mcp.fs.read_file"),
+    )
+    .expect_err("invalid rego should fail on compile");
+
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("broken.rego"));
+    assert!(err_msg.contains("compile rego policy"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "allow" => Ok(PermissionPolicy::Allow),
@@ -2901,8 +3069,13 @@ where
         request_meta,
     };
     policy_input.validate()?;
-    let engine = LayeredPolicyEngine::new(global_layer, profile_layer, session_layer);
-    let evaluation = engine.evaluate(&policy_input);
+    let evaluation = evaluate_policy_with_rego_dir(
+        Path::new("policies"),
+        global_layer,
+        profile_layer,
+        session_layer,
+        &policy_input,
+    )?;
     let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
 
     let mut metadata = json!({
@@ -3258,8 +3431,22 @@ async fn handle_rpc_request(
                 return JsonRpcResponse::error(request.id, -32602, err.to_string());
             }
 
-            let engine = LayeredPolicyEngine::new(global_layer, profile_layer, session_layer);
-            let evaluation = engine.evaluate(&policy_input);
+            let evaluation = match evaluate_policy_with_rego_dir(
+                Path::new("policies"),
+                global_layer,
+                profile_layer,
+                session_layer,
+                &policy_input,
+            ) {
+                Ok(evaluation) => evaluation,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32021,
+                        format!("evaluate policy with rego failed: {err}"),
+                    )
+                }
+            };
             let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
 
             if evaluation.decision == PolicyDecision::Deny {

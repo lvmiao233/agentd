@@ -1,4 +1,9 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +164,113 @@ pub trait PolicyEngine {
     fn explain(&self, input: &PolicyInputContext) -> String;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegorusQueryPaths {
+    pub allow: String,
+    pub deny: String,
+    pub explain: String,
+}
+
+impl Default for RegorusQueryPaths {
+    fn default() -> Self {
+        Self {
+            allow: "data.agentd.policy.allow".to_string(),
+            deny: "data.agentd.policy.deny".to_string(),
+            explain: "data.agentd.policy.explain".to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RegorusPolicyEngine {
+    layered: LayeredPolicyEngine,
+    policy_dir: PathBuf,
+    policy_files: Vec<PathBuf>,
+    query_paths: RegorusQueryPaths,
+    rego_engine: Option<Mutex<regorus::Engine>>,
+}
+
+impl RegorusPolicyEngine {
+    pub fn from_policy_dir(
+        layers: PolicyEngineLayers,
+        policy_dir: impl Into<PathBuf>,
+    ) -> Result<Self, AgentError> {
+        let policy_dir = policy_dir.into();
+        let layered = LayeredPolicyEngine::new(
+            layers.global.clone(),
+            layers.agent_profile.clone(),
+            layers.session_override.clone(),
+        );
+        let policy_files = discover_rego_files(&policy_dir)?;
+        let rego_engine = if policy_files.is_empty() {
+            None
+        } else {
+            Some(Mutex::new(build_regorus_engine(&policy_files)?))
+        };
+
+        Ok(Self {
+            layered,
+            policy_dir,
+            policy_files,
+            query_paths: RegorusQueryPaths::default(),
+            rego_engine,
+        })
+    }
+
+    fn evaluate_with_regorus(
+        &self,
+        input: &PolicyInputContext,
+    ) -> Result<PolicyEvaluation, AgentError> {
+        let Some(rego_engine) = &self.rego_engine else {
+            return Ok(self.layered.evaluate(input));
+        };
+
+        let input_json = serde_json::to_string(input)
+            .map_err(|err| AgentError::Runtime(format!("serialize policy input failed: {err}")))?;
+
+        let mut engine = rego_engine
+            .lock()
+            .map_err(|_| AgentError::Runtime("regorus engine lock poisoned".to_string()))?;
+
+        engine
+            .set_input_json(&input_json)
+            .map_err(|err| AgentError::Runtime(format!("set rego input failed: {err}")))?;
+
+        let deny = engine
+            .eval_bool_query(self.query_paths.deny.clone(), false)
+            .map_err(|err| AgentError::Runtime(format!("evaluate deny query failed: {err}")))?;
+        let allow = engine
+            .eval_bool_query(self.query_paths.allow.clone(), false)
+            .map_err(|err| AgentError::Runtime(format!("evaluate allow query failed: {err}")))?;
+
+        let explanation = match engine.eval_rule(self.query_paths.explain.clone()) {
+            Ok(value) if value != regorus::Value::Undefined => {
+                if let Ok(explain) = value.as_string() {
+                    Some(explain.as_ref().to_string())
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            _ => None,
+        };
+
+        let (decision, matched_rule) = if deny {
+            (PolicyDecision::Deny, explanation)
+        } else if allow {
+            (PolicyDecision::Allow, explanation)
+        } else {
+            (PolicyDecision::Ask, explanation)
+        };
+
+        Ok(PolicyEvaluation {
+            tool: input.tool.name.clone(),
+            decision,
+            matched_rule,
+            source_layer: Some("rego:data.agentd.policy".to_string()),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LayeredPolicyEngine {
     global: PolicyLayer,
@@ -211,6 +323,90 @@ impl PolicyEngine for LayeredPolicyEngine {
             evaluation.source_layer.as_deref().unwrap_or("<none>")
         )
     }
+}
+
+impl PolicyEngine for RegorusPolicyEngine {
+    fn evaluate(&self, input: &PolicyInputContext) -> PolicyEvaluation {
+        match self.evaluate_with_regorus(input) {
+            Ok(evaluation) => evaluation,
+            Err(err) => PolicyEvaluation {
+                tool: input.tool.name.clone(),
+                decision: PolicyDecision::Ask,
+                matched_rule: Some(format!("regorus.error: {err}")),
+                source_layer: Some("rego:data.agentd.policy".to_string()),
+            },
+        }
+    }
+
+    fn load(&mut self, layers: PolicyEngineLayers) -> Result<(), AgentError> {
+        self.layered =
+            LayeredPolicyEngine::new(layers.global, layers.agent_profile, layers.session_override);
+        Ok(())
+    }
+
+    fn reload(&mut self) -> Result<(), AgentError> {
+        self.policy_files = discover_rego_files(&self.policy_dir)?;
+        self.rego_engine = if self.policy_files.is_empty() {
+            None
+        } else {
+            Some(Mutex::new(build_regorus_engine(&self.policy_files)?))
+        };
+        Ok(())
+    }
+
+    fn explain(&self, input: &PolicyInputContext) -> String {
+        let evaluation = self.evaluate(input);
+        format!(
+            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={}",
+            evaluation.tool,
+            evaluation.decision,
+            evaluation.matched_rule.as_deref().unwrap_or("<none>"),
+            evaluation.source_layer.as_deref().unwrap_or("<none>")
+        )
+    }
+}
+
+fn discover_rego_files(policy_dir: &Path) -> Result<Vec<PathBuf>, AgentError> {
+    if !policy_dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !policy_dir.is_dir() {
+        return Err(AgentError::InvalidInput(format!(
+            "policy dir is not a directory: {}",
+            policy_dir.display()
+        )));
+    }
+
+    let mut paths = fs::read_dir(policy_dir)
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read policy directory {} failed: {err}",
+                policy_dir.display()
+            ))
+        })?
+        .filter_map(|entry| entry.ok().map(|value| value.path()))
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("rego"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+fn build_regorus_engine(policy_files: &[PathBuf]) -> Result<regorus::Engine, AgentError> {
+    let mut engine = regorus::Engine::new();
+    for path in policy_files {
+        engine.add_policy_from_file(path).map_err(|err| {
+            AgentError::Config(format!(
+                "compile rego policy {} failed: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(engine)
 }
 
 impl PolicyEvaluation {
