@@ -14,13 +14,25 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["python/agentd-agent-lite"]
+members = [
+    "python/agentd-agent-lite",
+    "python/agentd-mcp-fs",
+    "python/agentd-mcp-shell",
+]
 
 [tool.pytest.ini_options]
-pythonpath = ["python/agentd-agent-lite/src"]
+pythonpath = [
+    "python/agentd-agent-lite/src",
+    "python/agentd-mcp-fs/src",
+    "python/agentd-mcp-shell/src",
+]
 
 [tool.basedpyright]
-extraPaths = ["python/agentd-agent-lite/src"]
+extraPaths = [
+    "python/agentd-agent-lite/src",
+    "python/agentd-mcp-fs/src",
+    "python/agentd-mcp-shell/src",
+]
 
 [build-system]
 requires = ["hatchling"]
