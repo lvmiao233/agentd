@@ -57,16 +57,37 @@ pub enum TrustLevel {
 }
 
 impl TrustLevel {
-    pub fn parse(raw: &str) -> Result<Self, AgentError> {
-        match raw {
-            "builtin" => Ok(Self::Builtin),
-            "verified" => Ok(Self::Verified),
-            "community" => Ok(Self::Community),
-            "untrusted" => Ok(Self::Untrusted),
-            _ => Err(AgentError::InvalidInput(format!(
-                "invalid trust_level `{raw}` (expected: builtin|verified|community|untrusted)"
-            ))),
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Verified => "verified",
+            Self::Community => "community",
+            Self::Untrusted => "untrusted",
         }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, AgentError> {
+        let normalized = raw.trim();
+
+        if normalized.eq_ignore_ascii_case("builtin") {
+            return Ok(Self::Builtin);
+        }
+
+        if normalized.eq_ignore_ascii_case("verified") {
+            return Ok(Self::Verified);
+        }
+
+        if normalized.eq_ignore_ascii_case("community") {
+            return Ok(Self::Community);
+        }
+
+        if normalized.eq_ignore_ascii_case("untrusted") {
+            return Ok(Self::Untrusted);
+        }
+
+        Err(AgentError::InvalidInput(format!(
+            "invalid trust_level `{normalized}` (expected: builtin|verified|community|untrusted)"
+        )))
     }
 }
 
@@ -99,5 +120,56 @@ impl AgentProfile {
             created_at: now,
             updated_at: now,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrustLevel;
+
+    #[test]
+    fn trust_level_parse_accepts_canonical_values() {
+        assert_eq!(
+            TrustLevel::parse("builtin").expect("builtin"),
+            TrustLevel::Builtin
+        );
+        assert_eq!(
+            TrustLevel::parse("verified").expect("verified"),
+            TrustLevel::Verified
+        );
+        assert_eq!(
+            TrustLevel::parse("community").expect("community"),
+            TrustLevel::Community
+        );
+        assert_eq!(
+            TrustLevel::parse("untrusted").expect("untrusted"),
+            TrustLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn trust_level_parse_accepts_mixed_case_with_whitespace() {
+        assert_eq!(
+            TrustLevel::parse("  VerIfied  ").expect("mixed-case verified"),
+            TrustLevel::Verified
+        );
+        assert_eq!(
+            TrustLevel::parse("\tunTRUSTED\n").expect("mixed-case untrusted"),
+            TrustLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn trust_level_parse_rejects_unknown_value() {
+        let err = TrustLevel::parse("partner").expect_err("invalid trust level should fail");
+        assert!(err.to_string().contains("invalid trust_level `partner`"));
+    }
+
+    #[test]
+    fn trust_level_as_str_matches_serialized_names() {
+        assert_eq!(TrustLevel::Builtin.as_str(), "builtin");
+        assert_eq!(TrustLevel::Verified.as_str(), "verified");
+        assert_eq!(TrustLevel::Community.as_str(), "community");
+        assert_eq!(TrustLevel::Untrusted.as_str(), "untrusted");
     }
 }
