@@ -1,9 +1,15 @@
 {
   "include": [
     "python/agentd-agent-lite/src",
-    "python/agentd-agent-lite/tests"
+    "python/agentd-agent-lite/tests",
+    "python/agentd-mcp-fs/src",
+    "python/agentd-mcp-fs/tests",
+    "python/agentd-mcp-shell/src",
+    "python/agentd-mcp-shell/tests"
   ],
   "extraPaths": [
-    "python/agentd-agent-lite/src"
+    "python/agentd-agent-lite/src",
+    "python/agentd-mcp-fs/src",
+    "python/agentd-mcp-shell/src"
   ]
 }

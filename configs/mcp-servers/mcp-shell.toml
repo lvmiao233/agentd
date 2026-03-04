@@ -3,7 +3,7 @@ name = "mcp-shell"
 command = "python"
 args = ["-m", "agentd_mcp_shell"]
 transport = "stdio"
-trust_level = "verified"
+trust_level = "builtin"
 
 [policy]
 allowed_commands = ["ls", "cat", "grep", "python", "git"]
