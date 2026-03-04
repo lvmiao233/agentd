@@ -1,11 +1,13 @@
 mod cgroup;
 mod lifecycle;
 
-use agentd_core::audit::{AuditContext, EventPayload, EventResult, EventSeverity, EventType};
+use agentd_core::audit::{
+    AuditContext, EventPayload, EventResult, EventSeverity, EventType, PolicyReplayReference,
+};
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
-    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyLayer,
-    PolicyRule, SessionPolicyOverrides,
+    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision,
+    PolicyGatewayDecision, PolicyLayer, PolicyRule, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -13,7 +15,7 @@ use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
 use lifecycle::{LifecycleManager, ManagedAgentSpec};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -409,6 +411,7 @@ async fn health_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
     #[derive(Clone, Copy)]
@@ -1493,6 +1496,207 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authorize_mcp_tool_allow_forwards() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(983),
+                "CreateAgent",
+                json!({
+                    "name": "mcp-allow-gateway",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "allow",
+                }),
+            ),
+            store.clone(),
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let agent_id = Uuid::parse_str(
+            create
+                .result
+                .expect("create result should exist")
+                .get("agent")
+                .expect("agent should exist")
+                .get("id")
+                .expect("id should exist")
+                .as_str()
+                .expect("id should be string"),
+        )
+        .expect("agent id should be valid uuid");
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_forward = call_count.clone();
+        let audit_context = build_audit_context(&json!(983));
+        let outcome = authorize_mcp_tool_before_forward(
+            &store,
+            &audit_context,
+            agent_id,
+            "mcp.fs.read_file",
+            json!({"path": "README.md"}),
+            move |payload| {
+                call_count_forward.fetch_add(1, Ordering::SeqCst);
+                json!({"forwarded": true, "payload": payload})
+            },
+        )
+        .await
+        .expect("allow should succeed");
+
+        assert!(outcome.forwarded);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(outcome.decision.decision, PolicyDecision::Allow);
+        assert!(outcome.decision.reason.contains("policy.allow"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn authorize_mcp_tool_deny_blocks_forward() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(984),
+                "CreateAgent",
+                json!({
+                    "name": "mcp-deny-gateway",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "ask",
+                    "denied_tools": ["mcp.fs.read_file"],
+                }),
+            ),
+            store.clone(),
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let agent_id = Uuid::parse_str(
+            create
+                .result
+                .expect("create result should exist")
+                .get("agent")
+                .expect("agent should exist")
+                .get("id")
+                .expect("id should exist")
+                .as_str()
+                .expect("id should be string"),
+        )
+        .expect("agent id should be valid uuid");
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_forward = call_count.clone();
+        let audit_context = build_audit_context(&json!(984));
+        let outcome = authorize_mcp_tool_before_forward(
+            &store,
+            &audit_context,
+            agent_id,
+            "mcp.fs.read_file",
+            json!({"path": ".env"}),
+            move |_| {
+                call_count_forward.fetch_add(1, Ordering::SeqCst);
+                json!({"forwarded": true})
+            },
+        )
+        .await
+        .expect("deny should still return decision payload");
+
+        assert!(!outcome.forwarded);
+        assert_eq!(outcome.downstream, None);
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.decision.decision, PolicyDecision::Deny);
+        assert!(outcome.decision.reason.contains("policy.deny"));
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn authorize_mcp_tool_writes_audit_event() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(985),
+                "CreateAgent",
+                json!({
+                    "name": "mcp-audit-gateway",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "ask",
+                    "denied_tools": ["mcp.fs.read_file"],
+                }),
+            ),
+            store.clone(),
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let agent_id = Uuid::parse_str(
+            create
+                .result
+                .expect("create result should exist")
+                .get("agent")
+                .expect("agent should exist")
+                .get("id")
+                .expect("id should exist")
+                .as_str()
+                .expect("id should be string"),
+        )
+        .expect("agent id should be valid uuid");
+
+        let audit_context = build_audit_context(&json!(985));
+        let outcome = authorize_mcp_tool_before_forward(
+            &store,
+            &audit_context,
+            agent_id,
+            "mcp.fs.read_file",
+            json!({"path": ".env", "encoding": "utf-8"}),
+            |_| json!({"forwarded": true}),
+        )
+        .await
+        .expect("deny should produce auditable decision");
+
+        let events = store
+            .get_audit_events(agent_id)
+            .await
+            .expect("audit query should succeed");
+        let deny_event = events
+            .iter()
+            .find(|event| event.event_type == EventType::ToolDenied)
+            .expect("tool denied event should exist");
+
+        assert_eq!(deny_event.payload.message.as_deref(), Some("policy.deny"));
+        assert_eq!(deny_event.payload.tool_name.as_deref(), Some("mcp.fs.read_file"));
+        assert_eq!(
+            deny_event.payload.metadata["trace_id"],
+            json!(outcome.decision.trace_id)
+        );
+        assert!(deny_event.payload.metadata["reason"]
+            .as_str()
+            .expect("reason should exist")
+            .contains("policy.deny"));
+        assert_eq!(
+            deny_event.payload.metadata["replay"]["tool"],
+            json!("mcp.fs.read_file")
+        );
+        assert_eq!(
+            deny_event.payload.metadata["replay"]["input"]["path"],
+            json!(".env")
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn managed_agent_lifecycle_rpc_start_list_stop() {
         let db_path = test_db_path();
         let cgroup_root =
@@ -1933,6 +2137,15 @@ struct PolicyRuleInput {
     decision: PolicyDecision,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct McpGatewayForwardResult {
+    decision: PolicyGatewayDecision,
+    forwarded: bool,
+    downstream: Option<Value>,
+    matched_rule: Option<String>,
+    source_layer: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthorizeToolParams {
     tool: String,
@@ -1944,6 +2157,14 @@ struct AuthorizeToolParams {
     session_overrides: Option<SessionPolicyOverrides>,
     #[serde(default)]
     agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizeMcpToolParams {
+    agent_id: String,
+    tool: String,
+    #[serde(default)]
+    payload: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2422,6 +2643,107 @@ async fn record_audit_event(
     }
 }
 
+async fn authorize_mcp_tool_before_forward<F>(
+    store: &Arc<SqliteStore>,
+    audit_context: &AuditContext,
+    agent_id: uuid::Uuid,
+    tool: &str,
+    forward_payload: Value,
+    forward: F,
+) -> Result<McpGatewayForwardResult, AgentError>
+where
+    F: FnOnce(&Value) -> Value,
+{
+    if tool.trim().is_empty() {
+        return Err(AgentError::InvalidInput("tool must be non-empty".to_string()));
+    }
+
+    let profile = store.get_agent(agent_id).await?;
+    let global_layer = PolicyLayer {
+        name: "global".to_string(),
+        rules: vec![],
+    };
+    let profile_layer = profile_to_policy_layer(&profile);
+    let session_layer = SessionPolicyOverrides {
+        allow_tools: vec![],
+        ask_tools: vec![],
+        deny_tools: vec![],
+    }
+    .into_layer();
+
+    let evaluation = PolicyLayer::evaluate_tool(&global_layer, &profile_layer, &session_layer, tool);
+    let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
+
+    let mut metadata = json!({
+        "matched_rule": evaluation.matched_rule.clone(),
+        "source_layer": evaluation.source_layer.clone(),
+        "reason": gateway_decision.reason.clone(),
+        "trace_id": gateway_decision.trace_id.clone(),
+    });
+
+    let (event_type, result, message, forwarded, downstream) = match gateway_decision.decision {
+        PolicyDecision::Allow => {
+            let downstream = forward(&forward_payload);
+            (
+                EventType::ToolApproved,
+                EventResult::Success,
+                "policy.allow",
+                true,
+                Some(downstream),
+            )
+        }
+        PolicyDecision::Ask => (
+            EventType::ToolInvoked,
+            EventResult::Pending,
+            "policy.ask",
+            false,
+            None,
+        ),
+        PolicyDecision::Deny => {
+            let replay = serde_json::to_value(PolicyReplayReference::new(
+                tool,
+                forward_payload,
+                gateway_decision.reason.clone(),
+                gateway_decision.trace_id.clone(),
+            ))
+            .map_err(|err| {
+                AgentError::Runtime(format!("serialize policy replay reference failed: {err}"))
+            })?;
+            metadata["replay"] = replay;
+
+            (
+                EventType::ToolDenied,
+                EventResult::Failure,
+                "policy.deny",
+                false,
+                None,
+            )
+        }
+    };
+
+    record_audit_event(
+        store,
+        audit_context,
+        agent_id,
+        event_type,
+        result,
+        EventPayload {
+            tool_name: Some(tool.to_string()),
+            message: Some(message.to_string()),
+            metadata,
+        },
+    )
+    .await;
+
+    Ok(McpGatewayForwardResult {
+        decision: gateway_decision,
+        forwarded,
+        downstream,
+        matched_rule: evaluation.matched_rule,
+        source_layer: evaluation.source_layer,
+    })
+}
+
 #[derive(Debug, Clone)]
 struct OneApiProvisioned {
     token_id: String,
@@ -2688,9 +3010,28 @@ async fn handle_rpc_request(
                 &session_layer,
                 &params.tool,
             );
+            let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
 
             if evaluation.decision == PolicyDecision::Deny {
                 if let Some(agent_id) = evaluated_agent_id {
+                    let replay = match serde_json::to_value(PolicyReplayReference::new(
+                        params.tool.clone(),
+                        json!({
+                            "agent_id": params.agent_id.clone(),
+                            "mode": "authorize_tool",
+                        }),
+                        gateway_decision.reason.clone(),
+                        gateway_decision.trace_id.clone(),
+                    )) {
+                        Ok(replay) => replay,
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32021,
+                                format!("serialize policy replay reference failed: {err}"),
+                            )
+                        }
+                    };
                     record_audit_event(
                         &store,
                         &audit_context,
@@ -2703,6 +3044,9 @@ async fn handle_rpc_request(
                             metadata: json!({
                                 "matched_rule": evaluation.matched_rule.clone(),
                                 "source_layer": evaluation.source_layer.clone(),
+                                "reason": gateway_decision.reason.clone(),
+                                "trace_id": gateway_decision.trace_id.clone(),
+                                "replay": replay,
                             }),
                         },
                     )
@@ -2711,18 +3055,7 @@ async fn handle_rpc_request(
                 return JsonRpcResponse::error(
                     request.id,
                     -32016,
-                    format!(
-                        "policy.deny: tool={} matched_rule={} source_layer={}",
-                        evaluation.tool,
-                        evaluation
-                            .matched_rule
-                            .clone()
-                            .unwrap_or_else(|| "<none>".to_string()),
-                        evaluation
-                            .source_layer
-                            .clone()
-                            .unwrap_or_else(|| "<none>".to_string())
-                    ),
+                    gateway_decision.reason.clone(),
                 );
             }
 
@@ -2752,13 +3085,88 @@ async fn handle_rpc_request(
                         metadata: json!({
                             "matched_rule": evaluation.matched_rule.clone(),
                             "source_layer": evaluation.source_layer.clone(),
+                            "reason": gateway_decision.reason.clone(),
+                            "trace_id": gateway_decision.trace_id.clone(),
                         }),
                     },
                 )
                 .await;
             }
 
-            JsonRpcResponse::success(request.id, json!(evaluation))
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "tool": evaluation.tool,
+                    "decision": evaluation.decision,
+                    "matched_rule": evaluation.matched_rule,
+                    "source_layer": evaluation.source_layer,
+                    "reason": gateway_decision.reason,
+                    "trace_id": gateway_decision.trace_id,
+                }),
+            )
+        }
+        "AuthorizeMcpTool" | "management.AuthorizeMcpTool" => {
+            let params = match serde_json::from_value::<AuthorizeMcpToolParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid authorize mcp tool params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let payload = params.payload;
+            let tool_name = params.tool;
+            let outcome = match authorize_mcp_tool_before_forward(
+                &store,
+                &audit_context,
+                agent_id,
+                &tool_name,
+                payload,
+                |forward_payload| {
+                    json!({
+                        "status": "forwarded",
+                        "transport": "mcp-gateway",
+                        "request": forward_payload,
+                    })
+                },
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(AgentError::NotFound(message)) => {
+                    return JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!("authorize mcp tool failed: {err}"),
+                    )
+                }
+            };
+
+            if outcome.decision.decision == PolicyDecision::Deny {
+                return JsonRpcResponse::error(request.id, -32016, outcome.decision.reason);
+            }
+
+            JsonRpcResponse::success(request.id, json!(outcome))
         }
         "StartManagedAgent" | "management.StartManagedAgent" => {
             let params = match serde_json::from_value::<StartManagedAgentParams>(request.params) {

@@ -67,6 +67,40 @@ pub struct PolicyEvaluation {
     pub source_layer: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyGatewayDecision {
+    pub decision: PolicyDecision,
+    pub reason: String,
+    pub trace_id: String,
+}
+
+impl PolicyEvaluation {
+    pub fn to_gateway_decision(&self, trace_id: impl Into<String>) -> PolicyGatewayDecision {
+        let matched_rule = self.matched_rule.as_deref().unwrap_or("<none>").to_string();
+        let source_layer = self.source_layer.as_deref().unwrap_or("<none>").to_string();
+        let reason = match self.decision {
+            PolicyDecision::Allow => format!(
+                "policy.allow: tool={} matched_rule={} source_layer={}",
+                self.tool, matched_rule, source_layer
+            ),
+            PolicyDecision::Ask => format!(
+                "policy.ask: tool={} matched_rule={} source_layer={}",
+                self.tool, matched_rule, source_layer
+            ),
+            PolicyDecision::Deny => format!(
+                "policy.deny: tool={} matched_rule={} source_layer={}",
+                self.tool, matched_rule, source_layer
+            ),
+        };
+
+        PolicyGatewayDecision {
+            decision: self.decision,
+            reason,
+            trace_id: trace_id.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuleMatch {
     decision: PolicyDecision,
@@ -245,5 +279,22 @@ mod tests {
         let evaluation = PolicyLayer::evaluate_tool(&global, &profile, &session, "bash:rm");
         assert_eq!(evaluation.decision, PolicyDecision::Ask);
         assert_eq!(evaluation.source_layer.as_deref(), Some("session_override"));
+    }
+
+    #[test]
+    fn gateway_decision_contains_reason_and_trace_id() {
+        let evaluation = PolicyEvaluation {
+            tool: "mcp.fs.read_file".to_string(),
+            decision: PolicyDecision::Deny,
+            matched_rule: Some("mcp.fs.*".to_string()),
+            source_layer: Some("agent_profile".to_string()),
+        };
+
+        let gateway = evaluation.to_gateway_decision("trace-rpc-8");
+        assert_eq!(gateway.decision, PolicyDecision::Deny);
+        assert_eq!(gateway.trace_id, "trace-rpc-8");
+        assert!(gateway.reason.contains("policy.deny"));
+        assert!(gateway.reason.contains("matched_rule=mcp.fs.*"));
+        assert!(gateway.reason.contains("source_layer=agent_profile"));
     }
 }

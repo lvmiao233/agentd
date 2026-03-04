@@ -1,0 +1,4 @@
+command: cargo test -p agentd-daemon tests::authorize_mcp_tool_allow_forwards -- --exact
+test name: tests::authorize_mcp_tool_allow_forwards
+test result: ok
+summary: forward authorization path passed
