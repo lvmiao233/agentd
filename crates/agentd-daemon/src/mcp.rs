@@ -1,8 +1,13 @@
 use agentd_core::profile::TrustLevel;
 use agentd_core::AgentError;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::time::{timeout, Duration};
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +54,7 @@ impl McpRegistry {
         self.entries.insert(entry.server_id.clone(), entry)
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, server_id: &str) -> Option<&McpRegistryEntry> {
         self.entries.get(server_id)
     }
@@ -57,17 +63,420 @@ impl McpRegistry {
         self.entries.remove(server_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn list(&self) -> Vec<&McpRegistryEntry> {
         self.entries.values().collect()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpHostAuditEvent {
+    pub(crate) server_id: String,
+    pub(crate) action: String,
+    pub(crate) success: bool,
+    pub(crate) message: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpServerHandle {
+    pub(crate) process: Child,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) transport: McpTransport,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) trust_level: McpTrustLevel,
+    pub(crate) health: McpServerHealth,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) initialize_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct McpHostHealthSnapshot {
+    pub(crate) total: usize,
+    pub(crate) healthy: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpHost {
+    servers: BTreeMap<String, McpServerHandle>,
+    registry: McpRegistry,
+    audit_events: Vec<McpHostAuditEvent>,
+    initialize_timeout: Duration,
+    stop_timeout: Duration,
+}
+
+impl Default for McpHost {
+    fn default() -> Self {
+        Self {
+            servers: BTreeMap::new(),
+            registry: McpRegistry::new(),
+            audit_events: Vec::new(),
+            initialize_timeout: Duration::from_secs(3),
+            stop_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
+impl McpHost {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) async fn start_declared_servers(
+        &mut self,
+        configs: &[McpServerConfig],
+    ) -> Result<(), AgentError> {
+        let mut started_server_ids = Vec::new();
+
+        for config in configs {
+            match self.start_single_server(config).await {
+                Ok(()) => {
+                    started_server_ids.push(config.name.clone());
+                    self.record_audit(
+                        &config.name,
+                        "startup",
+                        true,
+                        "mcp server started and initialized",
+                    );
+                }
+                Err(err) => {
+                    self.record_audit(
+                        &config.name,
+                        "startup",
+                        false,
+                        &format!("mcp server start failed: {err}"),
+                    );
+
+                    let rollback_err = self.rollback_started_servers(&started_server_ids).await;
+                    if let Err(rollback_err) = rollback_err {
+                        self.record_audit(
+                            &config.name,
+                            "rollback",
+                            false,
+                            &format!("rollback failed: {rollback_err}"),
+                        );
+                    } else {
+                        self.record_audit(
+                            &config.name,
+                            "rollback",
+                            true,
+                            "rollback completed after startup failure",
+                        );
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn stop_all(&mut self) -> Result<(), AgentError> {
+        let server_ids = self.servers.keys().cloned().collect::<Vec<_>>();
+        let mut first_error: Option<AgentError> = None;
+
+        for server_id in server_ids {
+            if let Some(mut handle) = self.servers.remove(&server_id) {
+                if let Err(err) = self.terminate_server(&server_id, &mut handle).await {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                    self.record_audit(&server_id, "shutdown", false, "mcp server stop failed");
+                } else {
+                    self.record_audit(&server_id, "shutdown", true, "mcp server stopped");
+                }
+                self.registry.remove(&server_id);
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn refresh_health(&mut self) -> Result<McpHostHealthSnapshot, AgentError> {
+        let server_ids = self.servers.keys().cloned().collect::<Vec<_>>();
+        let mut healthy = 0usize;
+
+        for server_id in server_ids {
+            if let Some(handle) = self.servers.get_mut(&server_id) {
+                let is_running = match handle.process.try_wait() {
+                    Ok(None) => true,
+                    Ok(Some(_)) => false,
+                    Err(err) => {
+                        return Err(AgentError::Runtime(format!(
+                            "check mcp server health failed for {server_id}: {err}"
+                        )));
+                    }
+                };
+
+                handle.health = if is_running {
+                    McpServerHealth::Healthy
+                } else {
+                    McpServerHealth::Unknown
+                };
+
+                if let Some(entry) = self.registry.entries.get_mut(&server_id) {
+                    entry.health = handle.health;
+                }
+
+                if is_running {
+                    healthy = healthy.saturating_add(1);
+                }
+            }
+        }
+
+        Ok(McpHostHealthSnapshot {
+            total: self.servers.len(),
+            healthy,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry(&self) -> &McpRegistry {
+        &self.registry
+    }
+
+    #[cfg(test)]
+    pub(crate) fn server_count(&self) -> usize {
+        self.servers.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn server_handle(&self, server_id: &str) -> Option<&McpServerHandle> {
+        self.servers.get(server_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audit_events(&self) -> &[McpHostAuditEvent] {
+        &self.audit_events
+    }
+
+    async fn start_single_server(&mut self, config: &McpServerConfig) -> Result<(), AgentError> {
+        let mut command = Command::new(&config.command);
+        command
+            .args(&config.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+
+        let mut child = command.spawn().map_err(|err| {
+            AgentError::Runtime(format!("spawn mcp server {} failed: {err}", config.name))
+        })?;
+
+        let initialize_capabilities = match self.perform_initialize(&mut child, config).await {
+            Ok(capabilities) => capabilities,
+            Err(err) => {
+                let _ = terminate_child_process(&mut child, self.stop_timeout).await;
+                return Err(err);
+            }
+        };
+
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(AgentError::Runtime(format!(
+                "mcp server {} exited after initialize handshake: {status}",
+                config.name
+            )));
+        }
+
+        let entry = McpRegistryEntry {
+            server_id: config.name.clone(),
+            capabilities: initialize_capabilities.clone(),
+            trust_level: config.trust_level,
+            health: McpServerHealth::Healthy,
+        };
+        self.registry.upsert(entry);
+
+        self.servers.insert(
+            config.name.clone(),
+            McpServerHandle {
+                process: child,
+                transport: config.transport,
+                trust_level: config.trust_level,
+                health: McpServerHealth::Healthy,
+                initialize_capabilities,
+            },
+        );
+
+        Ok(())
+    }
+
+    async fn perform_initialize(
+        &self,
+        child: &mut Child,
+        config: &McpServerConfig,
+    ) -> Result<Vec<String>, AgentError> {
+        let init_request = serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {
+                    "name": "agentd",
+                    "version": "0.1.0"
+                }
+            }
+        }))
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "serialize initialize request for {} failed: {err}",
+                config.name
+            ))
+        })?;
+
+        let stdin = child.stdin.as_mut().ok_or_else(|| {
+            AgentError::Runtime(format!("mcp server {} missing stdin pipe", config.name))
+        })?;
+        stdin
+            .write_all(init_request.as_bytes())
+            .await
+            .map_err(|err| {
+                AgentError::Runtime(format!(
+                    "write initialize request to {} failed: {err}",
+                    config.name
+                ))
+            })?;
+        stdin.write_all(b"\n").await.map_err(|err| {
+            AgentError::Runtime(format!(
+                "write initialize delimiter to {} failed: {err}",
+                config.name
+            ))
+        })?;
+        stdin.flush().await.map_err(|err| {
+            AgentError::Runtime(format!("flush initialize request to {} failed: {err}", config.name))
+        })?;
+
+        let stdout = child.stdout.as_mut().ok_or_else(|| {
+            AgentError::Runtime(format!("mcp server {} missing stdout pipe", config.name))
+        })?;
+        let mut reader = BufReader::new(stdout);
+        let mut response_line = String::new();
+        let bytes = timeout(self.initialize_timeout, reader.read_line(&mut response_line))
+            .await
+            .map_err(|_| {
+                AgentError::Runtime(format!(
+                    "initialize handshake timed out for {}",
+                    config.name
+                ))
+            })?
+            .map_err(|err| {
+                AgentError::Runtime(format!(
+                    "read initialize response from {} failed: {err}",
+                    config.name
+                ))
+            })?;
+        if bytes == 0 {
+            return Err(AgentError::Runtime(format!(
+                "initialize handshake returned empty response for {}",
+                config.name
+            )));
+        }
+
+        let response_json: Value = serde_json::from_str(response_line.trim()).map_err(|err| {
+            AgentError::Runtime(format!(
+                "parse initialize response for {} failed: {err}",
+                config.name
+            ))
+        })?;
+
+        parse_initialize_capabilities(&response_json)
+    }
+
+    async fn rollback_started_servers(&mut self, server_ids: &[String]) -> Result<(), AgentError> {
+        for server_id in server_ids.iter().rev() {
+            if let Some(mut handle) = self.servers.remove(server_id) {
+                self.terminate_server(server_id, &mut handle).await?;
+                self.registry.remove(server_id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn terminate_server(
+        &self,
+        server_id: &str,
+        handle: &mut McpServerHandle,
+    ) -> Result<(), AgentError> {
+        terminate_child_process(&mut handle.process, self.stop_timeout)
+            .await
+            .map_err(|err| {
+                AgentError::Runtime(format!("stop mcp server {server_id} failed: {err}"))
+            })
+    }
+
+    fn record_audit(&mut self, server_id: &str, action: &str, success: bool, message: &str) {
+        self.audit_events.push(McpHostAuditEvent {
+            server_id: server_id.to_string(),
+            action: action.to_string(),
+            success,
+            message: message.to_string(),
+        });
+    }
+}
+
+async fn terminate_child_process(
+    child: &mut Child,
+    stop_timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return Ok(());
+    }
+
+    child.start_kill()?;
+    let wait_result = timeout(stop_timeout, child.wait()).await;
+    match wait_result {
+        Ok(status) => {
+            let _ = status?;
+            Ok(())
+        }
+        Err(_) => Err("timed out waiting mcp process stop".into()),
+    }
+}
+
+fn parse_initialize_capabilities(response_json: &Value) -> Result<Vec<String>, AgentError> {
+    let capabilities = response_json
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .ok_or_else(|| {
+            AgentError::Runtime("initialize response missing result.capabilities".to_string())
+        })?;
+
+    let mut parsed = Vec::new();
+
+    if let Some(tools) = capabilities.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            if let Some(name) = tool.as_str() {
+                parsed.push(name.to_string());
+            } else if let Some(name) = tool.get("name").and_then(Value::as_str) {
+                parsed.push(name.to_string());
+            }
+        }
+    }
+
+    if parsed.is_empty() {
+        if let Some(array) = capabilities.as_array() {
+            for item in array {
+                if let Some(name) = item.as_str() {
+                    parsed.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(parsed)
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,6 +618,34 @@ pub(crate) fn load_mcp_server_configs(
 mod tests {
     use super::*;
 
+    fn valid_stdio_server(name: &str, capability: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 30"
+                ),
+            ],
+            transport: McpTransport::Stdio,
+            trust_level: McpTrustLevel::Builtin,
+        }
+    }
+
+    fn invalid_initialize_stdio_server(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "read _line; printf '%s\\n' 'not-json'; sleep 30".to_string(),
+            ],
+            transport: McpTransport::Stdio,
+            trust_level: McpTrustLevel::Builtin,
+        }
+    }
+
     #[test]
     fn mcp_registry_roundtrip_entry() {
         let mut registry = McpRegistry::new();
@@ -263,5 +700,76 @@ mod tests {
         let err = parse_trust_level("unknown").expect_err("unknown trust level should fail");
         let message = err.to_string();
         assert!(message.contains("invalid trust_level"));
+    }
+
+    #[tokio::test]
+    async fn mcp_host_starts_declared_servers() {
+        let mut host = McpHost::new();
+        let configs = vec![
+            valid_stdio_server("mcp-fs", "fs.read_file"),
+            valid_stdio_server("mcp-shell", "shell.execute"),
+        ];
+
+        host.start_declared_servers(&configs)
+            .await
+            .expect("mcp host should start configured servers");
+
+        let health = host
+            .refresh_health()
+            .expect("mcp health refresh should succeed");
+        assert_eq!(health.total, configs.len());
+        assert_eq!(health.healthy, configs.len());
+        assert_eq!(host.registry().len(), configs.len());
+
+        let fs_handle = host
+            .server_handle("mcp-fs")
+            .expect("mcp-fs handle should be cached");
+        assert_eq!(fs_handle.initialize_capabilities, vec!["fs.read_file"]);
+        assert_eq!(fs_handle.health, McpServerHealth::Healthy);
+        assert_eq!(fs_handle.transport, McpTransport::Stdio);
+        assert_eq!(fs_handle.trust_level, McpTrustLevel::Builtin);
+
+        host.stop_all()
+            .await
+            .expect("mcp host stop should succeed");
+        assert_eq!(host.server_count(), 0);
+        assert!(host.registry().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_host_rolls_back_on_init_failure() {
+        let mut host = McpHost::new();
+        let configs = vec![
+            valid_stdio_server("mcp-fs", "fs.read_file"),
+            invalid_initialize_stdio_server("mcp-bad"),
+        ];
+
+        let err = host
+            .start_declared_servers(&configs)
+            .await
+            .expect_err("initialize failure should rollback host startup");
+        let error_text = err.to_string();
+        assert!(
+            error_text.contains("initialize") || error_text.contains("parse"),
+            "unexpected error text: {error_text}"
+        );
+
+        assert_eq!(host.server_count(), 0, "started servers must be rolled back");
+        assert!(
+            host.registry().is_empty(),
+            "registry entries must be rolled back"
+        );
+
+        let startup_failure = host
+            .audit_events()
+            .iter()
+            .any(|event| event.action == "startup" && !event.success && event.server_id == "mcp-bad");
+        assert!(startup_failure, "startup failure must be audited");
+
+        let rollback_event = host
+            .audit_events()
+            .iter()
+            .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
+        assert!(rollback_event, "rollback completion must be audited");
     }
 }

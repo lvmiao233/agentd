@@ -20,7 +20,7 @@ use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
 use lifecycle::{LifecycleManager, ManagedAgentSpec};
-use mcp::load_mcp_server_configs;
+use mcp::{load_mcp_server_configs, McpHost};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -446,6 +446,101 @@ trust_level = "builtin"
     assert!(err_msg.contains("invalid transport"));
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+fn mcp_valid_stdio_server(name: &str, capability: &str) -> mcp::McpServerConfig {
+    mcp::McpServerConfig {
+        name: name.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 30"
+            ),
+        ],
+        transport: mcp::McpTransport::Stdio,
+        trust_level: mcp::McpTrustLevel::Builtin,
+    }
+}
+
+#[cfg(test)]
+fn mcp_invalid_initialize_stdio_server(name: &str) -> mcp::McpServerConfig {
+    mcp::McpServerConfig {
+        name: name.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "read _line; printf '%s\\n' 'not-json'; sleep 30".to_string(),
+        ],
+        transport: mcp::McpTransport::Stdio,
+        trust_level: mcp::McpTrustLevel::Builtin,
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn mcp_host_starts_declared_servers() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![
+        mcp_valid_stdio_server("mcp-fs", "fs.read_file"),
+        mcp_valid_stdio_server("mcp-shell", "shell.execute"),
+    ];
+
+    host.start_declared_servers(&configs)
+        .await
+        .expect("mcp host should start configured servers");
+    let health = host
+        .refresh_health()
+        .expect("mcp host health check should succeed");
+
+    assert_eq!(health.total, configs.len());
+    assert_eq!(health.healthy, configs.len());
+    assert_eq!(host.registry().len(), configs.len());
+
+    let fs_handle = host
+        .server_handle("mcp-fs")
+        .expect("mcp-fs handle should exist");
+    assert_eq!(fs_handle.initialize_capabilities, vec!["fs.read_file"]);
+
+    host.stop_all().await.expect("host stop should succeed");
+    assert_eq!(host.server_count(), 0);
+    assert!(host.registry().is_empty());
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn mcp_host_rolls_back_on_init_failure() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![
+        mcp_valid_stdio_server("mcp-fs", "fs.read_file"),
+        mcp_invalid_initialize_stdio_server("mcp-bad"),
+    ];
+
+    let err = host
+        .start_declared_servers(&configs)
+        .await
+        .expect_err("initialize failure should trigger rollback");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("initialize") || err_text.contains("parse"),
+        "unexpected startup error: {err_text}"
+    );
+
+    assert_eq!(host.server_count(), 0);
+    assert!(host.registry().is_empty());
+
+    let startup_failure = host
+        .audit_events()
+        .iter()
+        .any(|event| event.action == "startup" && !event.success && event.server_id == "mcp-bad");
+    assert!(startup_failure, "startup failure should be audited");
+
+    let rollback_event = host
+        .audit_events()
+        .iter()
+        .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
+    assert!(rollback_event, "rollback completion should be audited");
 }
 
 async fn health_server(
@@ -4629,6 +4724,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(config.daemon.agent_card_root.clone()),
     );
 
+    let mut mcp_host = McpHost::new();
+    mcp_host.start_declared_servers(&mcp_server_configs).await?;
+    let mcp_health = mcp_host.refresh_health()?;
+    info!(
+        total_servers = mcp_health.total,
+        healthy_servers = mcp_health.healthy,
+        "MCP host lifecycle initialized"
+    );
+
     let health_listener = TcpListener::bind(bind_addr).await?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -4730,6 +4834,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "One-API supervisor graceful shutdown timed out"
                 );
             }
+        }
+    }
+
+    match mcp_host.stop_all().await {
+        Ok(()) => {
+            info!("MCP host servers shut down gracefully");
+        }
+        Err(err) => {
+            warn!(%err, "MCP host shutdown encountered errors");
         }
     }
 
