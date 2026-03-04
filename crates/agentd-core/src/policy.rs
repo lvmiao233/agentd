@@ -79,17 +79,38 @@ pub struct PolicyGatewayDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PolicyInputContext {
-    pub agent_id: Option<String>,
-    pub tool: String,
-    pub resource: Option<String>,
-    pub request_meta: BTreeMap<String, String>,
+pub struct PolicyAgentContext {
+    pub id: Option<String>,
+    pub trust_level: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyToolContext {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyResourceContext {
+    pub uri: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyTimeContext {
     pub timestamp_rfc3339: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyInputContext {
+    pub agent: PolicyAgentContext,
+    pub tool: PolicyToolContext,
+    pub resource: PolicyResourceContext,
+    pub time: PolicyTimeContext,
+    pub request_meta: BTreeMap<String, String>,
 }
 
 impl PolicyInputContext {
     pub fn validate(&self) -> Result<(), AgentError> {
-        if self.tool.trim().is_empty() {
+        if self.tool.name.trim().is_empty() {
             return Err(AgentError::InvalidInput(
                 "policy input missing required field tool".to_string(),
             ));
@@ -98,14 +119,42 @@ impl PolicyInputContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyEngineLayers {
+    pub global: PolicyLayer,
+    pub agent_profile: PolicyLayer,
+    pub session_override: PolicyLayer,
+}
+
+impl PolicyEngineLayers {
+    pub fn new(
+        global: PolicyLayer,
+        agent_profile: PolicyLayer,
+        session_override: PolicyLayer,
+    ) -> Self {
+        Self {
+            global,
+            agent_profile,
+            session_override,
+        }
+    }
+}
+
 pub trait PolicyEngine {
     fn evaluate(&self, input: &PolicyInputContext) -> PolicyEvaluation;
+    fn load(&mut self, layers: PolicyEngineLayers) -> Result<(), AgentError>;
     fn load_policy_layers(
         &mut self,
         global: PolicyLayer,
         agent_profile: PolicyLayer,
         session_override: PolicyLayer,
-    ) -> Result<(), AgentError>;
+    ) -> Result<(), AgentError> {
+        self.load(PolicyEngineLayers::new(
+            global,
+            agent_profile,
+            session_override,
+        ))
+    }
     fn reload(&mut self) -> Result<(), AgentError>;
     fn explain(&self, input: &PolicyInputContext) -> String;
 }
@@ -137,19 +186,14 @@ impl PolicyEngine for LayeredPolicyEngine {
             &self.global,
             &self.agent_profile,
             &self.session_override,
-            &input.tool,
+            &input.tool.name,
         )
     }
 
-    fn load_policy_layers(
-        &mut self,
-        global: PolicyLayer,
-        agent_profile: PolicyLayer,
-        session_override: PolicyLayer,
-    ) -> Result<(), AgentError> {
-        self.global = global;
-        self.agent_profile = agent_profile;
-        self.session_override = session_override;
+    fn load(&mut self, layers: PolicyEngineLayers) -> Result<(), AgentError> {
+        self.global = layers.global;
+        self.agent_profile = layers.agent_profile;
+        self.session_override = layers.session_override;
         Ok(())
     }
 
@@ -420,18 +464,27 @@ mod tests {
             session.clone(),
         ));
         let input = PolicyInputContext {
-            agent_id: Some("agent-1".to_string()),
-            tool: "mcp.fs.read_file".to_string(),
-            resource: Some(".env".to_string()),
+            agent: PolicyAgentContext {
+                id: Some("agent-1".to_string()),
+                trust_level: Some("ask".to_string()),
+            },
+            tool: PolicyToolContext {
+                name: "mcp.fs.read_file".to_string(),
+            },
+            resource: PolicyResourceContext {
+                uri: Some(".env".to_string()),
+            },
+            time: PolicyTimeContext {
+                timestamp_rfc3339: None,
+            },
             request_meta: BTreeMap::new(),
-            timestamp_rfc3339: None,
         };
 
         let evaluation = engine.evaluate(&input);
         assert_eq!(evaluation.decision, PolicyDecision::Deny);
 
         engine
-            .load_policy_layers(global, profile, session)
+            .load(PolicyEngineLayers::new(global, profile, session))
             .expect("load should succeed");
         engine.reload().expect("reload should succeed");
 
@@ -447,11 +500,20 @@ mod tests {
         request_meta.insert("request_id".to_string(), "rpc-7".to_string());
 
         let input = PolicyInputContext {
-            agent_id: Some("agent-7".to_string()),
-            tool: "mcp.git.status".to_string(),
-            resource: Some("repo:/work".to_string()),
+            agent: PolicyAgentContext {
+                id: Some("agent-7".to_string()),
+                trust_level: Some("allow".to_string()),
+            },
+            tool: PolicyToolContext {
+                name: "mcp.git.status".to_string(),
+            },
+            resource: PolicyResourceContext {
+                uri: Some("repo:/work".to_string()),
+            },
+            time: PolicyTimeContext {
+                timestamp_rfc3339: Some("2026-03-04T17:00:00Z".to_string()),
+            },
             request_meta,
-            timestamp_rfc3339: Some("2026-03-04T17:00:00Z".to_string()),
         };
 
         let encoded = serde_json::to_string(&input).expect("serialize input should succeed");
@@ -464,11 +526,18 @@ mod tests {
     #[test]
     fn policy_input_context_missing_tool_rejected() {
         let input = PolicyInputContext {
-            agent_id: Some("agent-9".to_string()),
-            tool: "   ".to_string(),
-            resource: None,
+            agent: PolicyAgentContext {
+                id: Some("agent-9".to_string()),
+                trust_level: None,
+            },
+            tool: PolicyToolContext {
+                name: "   ".to_string(),
+            },
+            resource: PolicyResourceContext { uri: None },
+            time: PolicyTimeContext {
+                timestamp_rfc3339: None,
+            },
             request_meta: BTreeMap::new(),
-            timestamp_rfc3339: None,
         };
 
         let err = input
