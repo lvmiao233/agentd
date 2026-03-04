@@ -18,13 +18,18 @@ members = [
     "python/agentd-agent-lite",
     "python/agentd-mcp-fs",
     "python/agentd-mcp-shell",
+    "python/agentd-mcp-search",
+    "python/agentd-mcp-git",
 ]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 pythonpath = [
     "python/agentd-agent-lite/src",
     "python/agentd-mcp-fs/src",
     "python/agentd-mcp-shell/src",
+    "python/agentd-mcp-search/src",
+    "python/agentd-mcp-git/src",
 ]
 
 [tool.basedpyright]
@@ -32,6 +37,8 @@ extraPaths = [
     "python/agentd-agent-lite/src",
     "python/agentd-mcp-fs/src",
     "python/agentd-mcp-shell/src",
+    "python/agentd-mcp-search/src",
+    "python/agentd-mcp-git/src",
 ]
 
 [build-system]

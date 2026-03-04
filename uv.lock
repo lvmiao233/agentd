@@ -8,6 +8,8 @@ members = [
     "agentd-agent-lite",
     "agentd-mcp-fs",
     "agentd-mcp-shell",
+    "agentd-mcp-git",
+    "agentd-mcp-search",
 ]
 
 [[package]]
@@ -45,6 +47,16 @@ source = { editable = "python/agentd-mcp-fs" }
 name = "agentd-mcp-shell"
 version = "0.1.0"
 source = { editable = "python/agentd-mcp-shell" }
+
+[[package]]
+name = "agentd-mcp-git"
+version = "0.1.0"
+source = { editable = "python/agentd-mcp-git" }
+
+[[package]]
+name = "agentd-mcp-search"
+version = "0.1.0"
+source = { editable = "python/agentd-mcp-search" }
 
 [[package]]
 name = "annotated-types"
