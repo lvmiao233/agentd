@@ -44,6 +44,30 @@ pub struct EventPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PolicyReplayReference {
+    pub tool: String,
+    pub input: serde_json::Value,
+    pub reason: String,
+    pub trace_id: String,
+}
+
+impl PolicyReplayReference {
+    pub fn new(
+        tool: impl Into<String>,
+        input: serde_json::Value,
+        reason: impl Into<String>,
+        trace_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool: tool.into(),
+            input,
+            reason: reason.into(),
+            trace_id: trace_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EventResult {
     Success,
     Failure,

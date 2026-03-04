@@ -1,0 +1,4 @@
+command: cargo test -p agentd-daemon tests::authorize_mcp_tool_deny_blocks_forward -- --exact
+test name: tests::authorize_mcp_tool_deny_blocks_forward
+test result: ok
+summary: deny rule blocked forwarding as expected
