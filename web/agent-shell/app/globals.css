@@ -1,314 +1,84 @@
-:root {
-  color-scheme: dark;
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: oklch(1 0 0);
+  --color-foreground: oklch(0.145 0 0);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.145 0 0);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.145 0 0);
+  --color-primary: oklch(0.205 0 0);
+  --color-primary-foreground: oklch(0.985 0 0);
+  --color-secondary: oklch(0.97 0 0);
+  --color-secondary-foreground: oklch(0.205 0 0);
+  --color-muted: oklch(0.97 0 0);
+  --color-muted-foreground: oklch(0.556 0 0);
+  --color-accent: oklch(0.97 0 0);
+  --color-accent-foreground: oklch(0.205 0 0);
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --color-destructive-foreground: oklch(0.577 0.245 27.325);
+  --color-border: oklch(0.922 0 0);
+  --color-input: oklch(0.922 0 0);
+  --color-ring: oklch(0.708 0 0);
+  --color-chart-1: oklch(0.646 0.222 41.116);
+  --color-chart-2: oklch(0.6 0.118 184.714);
+  --color-chart-3: oklch(0.398 0.07 227.392);
+  --color-chart-4: oklch(0.828 0.189 84.429);
+  --color-chart-5: oklch(0.769 0.188 70.08);
+  --color-sidebar: oklch(0.985 0 0);
+  --color-sidebar-foreground: oklch(0.145 0 0);
+  --color-sidebar-primary: oklch(0.205 0 0);
+  --color-sidebar-primary-foreground: oklch(0.985 0 0);
+  --color-sidebar-accent: oklch(0.97 0 0);
+  --color-sidebar-accent-foreground: oklch(0.205 0 0);
+  --color-sidebar-border: oklch(0.922 0 0);
+  --color-sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
 }
 
-* {
-  box-sizing: border-box;
+.dark {
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-card: oklch(0.145 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+  --color-popover: oklch(0.145 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+  --color-primary: oklch(0.985 0 0);
+  --color-primary-foreground: oklch(0.205 0 0);
+  --color-secondary: oklch(0.269 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.269 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+  --color-accent: oklch(0.269 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: oklch(0.396 0.141 25.723);
+  --color-destructive-foreground: oklch(0.637 0.237 25.331);
+  --color-border: oklch(0.269 0 0);
+  --color-input: oklch(0.269 0 0);
+  --color-ring: oklch(0.439 0 0);
+  --color-chart-1: oklch(0.488 0.243 264.376);
+  --color-chart-2: oklch(0.696 0.17 162.48);
+  --color-chart-3: oklch(0.769 0.188 70.08);
+  --color-chart-4: oklch(0.627 0.265 303.9);
+  --color-chart-5: oklch(0.645 0.246 16.439);
+  --color-sidebar: oklch(0.205 0 0);
+  --color-sidebar-foreground: oklch(0.985 0 0);
+  --color-sidebar-primary: oklch(0.488 0.243 264.376);
+  --color-sidebar-primary-foreground: oklch(0.985 0 0);
+  --color-sidebar-accent: oklch(0.269 0 0);
+  --color-sidebar-accent-foreground: oklch(0.985 0 0);
+  --color-sidebar-border: oklch(0.269 0 0);
+  --color-sidebar-ring: oklch(0.439 0 0);
 }
 
-body {
-  margin: 0;
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  background: #0f172a;
-  color: #e2e8f0;
-}
-
-.shell-root {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 20px;
-}
-
-.shell-content {
-  margin-top: 14px;
-}
-
-.shell-nav {
-  border-radius: 12px;
-  background: #111827;
-  box-shadow: 0 16px 48px rgba(2, 6, 23, 0.4);
-}
-
-.shell-nav-list {
-  margin: 0;
-  padding: 10px;
-  display: flex;
-  gap: 8px;
-  list-style: none;
-  flex-wrap: wrap;
-}
-
-.shell-nav-link {
-  display: inline-flex;
-  text-decoration: none;
-  color: #cbd5e1;
-  border-radius: 8px;
-  padding: 8px 12px;
-  border: 1px solid transparent;
-}
-
-.shell-nav-link:hover {
-  border-color: #1e3a8a;
-  background: #0f1f43;
-}
-
-.shell-nav-link.active {
-  background: #1d4ed8;
-  color: #f8fafc;
-}
-
-.chat-page {
-  margin: 0;
-  padding: 24px;
-  border-radius: 14px;
-  background: #111827;
-  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.45);
-}
-
-.shell-page {
-  padding: 24px;
-  border-radius: 14px;
-  background: #111827;
-  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.45);
-}
-
-.page-hint {
-  margin-top: 6px;
-  color: #94a3b8;
-}
-
-.metric-grid {
-  margin: 18px 0;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-}
-
-.metric-card {
-  border-radius: 10px;
-  background: #0f172a;
-  border: 1px solid #1f2937;
-  padding: 12px;
-}
-
-.metric-card h2 {
-  margin: 0;
-  font-size: 14px;
-  color: #93c5fd;
-}
-
-.metric-value {
-  margin: 8px 0 0;
-  font-size: 20px;
-  font-weight: 700;
-}
-
-.status-list,
-.events-stream,
-.mcp-server-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.status-list li,
-.events-stream li,
-.mcp-server-list li {
-  border-radius: 10px;
-  background: #0b1220;
-  border: 1px solid #1f2937;
-  padding: 10px;
-}
-
-.status-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 6px 0;
-}
-
-.status-pill {
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  text-transform: capitalize;
-  border: 1px solid transparent;
-}
-
-.status-pill.running,
-.status-pill.healthy {
-  background: #052e16;
-  color: #86efac;
-  border-color: #14532d;
-}
-
-.status-pill.idle {
-  background: #1e293b;
-  color: #cbd5e1;
-  border-color: #334155;
-}
-
-.status-pill.degraded,
-.status-pill.onboarding {
-  background: #422006;
-  color: #fcd34d;
-  border-color: #92400e;
-}
-
-.status-pill.failed {
-  background: #450a0a;
-  color: #fca5a5;
-  border-color: #7f1d1d;
-}
-
-.events-stream li {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.events-stream p {
-  margin: 4px 0 0;
-}
-
-.token-chart {
-  margin-top: 8px;
-  min-height: 220px;
-  border-radius: 10px;
-  border: 1px solid #1f2937;
-  background: linear-gradient(180deg, #0b1220 0%, #0f172a 100%);
-  padding: 12px;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  align-items: end;
-}
-
-.token-bar-item {
-  display: grid;
-  gap: 6px;
-  align-items: end;
-  justify-items: center;
-}
-
-.token-bar {
-  width: 100%;
-  min-height: 10px;
-  border-radius: 8px 8px 0 0;
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
-}
-
-.settings-section + .settings-section {
-  margin-top: 18px;
-}
-
-.mcp-onboarding-form {
-  display: grid;
-  gap: 10px;
-}
-
-.mcp-onboarding-form label {
-  display: grid;
-  gap: 4px;
-  font-size: 13px;
-}
-
-.mcp-onboarding-form input,
-.mcp-onboarding-form select {
-  border-radius: 8px;
-  border: 1px solid #334155;
-  background: #0b1220;
-  color: #e2e8f0;
-  padding: 8px 10px;
-}
-
-.mcp-onboarding-form button {
-  width: fit-content;
-  border: 0;
-  border-radius: 8px;
-  background: #0ea5e9;
-  color: #fff;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-
-.settings-feedback {
-  margin: 10px 0 0;
-  color: #93c5fd;
-}
-
-.reconnect-banner {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #7f1d1d;
-  color: #fecaca;
-}
-
-.chat-history,
-.chat-stream,
-.tool-panel,
-.events-panel {
-  margin-bottom: 16px;
-}
-
-.chat-messages,
-.tool-calls,
-.policy-events {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.chat-messages li {
-  border-radius: 8px;
-  background: #1f2937;
-  padding: 8px 10px;
-}
-
-.stream-token {
-  min-height: 28px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #334155;
-  background: #0f172a;
-}
-
-.tool-calls li {
-  border-radius: 8px;
-  background: #172554;
-  color: #bfdbfe;
-  padding: 8px 10px;
-}
-
-.policy-events li {
-  border-radius: 8px;
-  background: #3f3f46;
-  color: #fafafa;
-  padding: 8px 10px;
-}
-
-.chat-input {
-  width: 100%;
-  min-height: 96px;
-  resize: vertical;
-  border-radius: 8px;
-  border: 1px solid #334155;
-  background: #0b1220;
-  color: #e2e8f0;
-  padding: 10px;
-}
-
-.send-button {
-  margin-top: 10px;
-  border: 0;
-  border-radius: 8px;
-  background: #2563eb;
-  color: #fff;
-  padding: 10px 14px;
-  cursor: pointer;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
 }

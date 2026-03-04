@@ -1,0 +1,5 @@
+node_modules/
+.next/
+target/
+__pycache__/
+*.db
