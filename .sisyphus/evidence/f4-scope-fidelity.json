@@ -1,0 +1,17 @@
+{
+  "verification": "F4",
+  "name": "Scope Fidelity Check",
+  "verdict": "APPROVE",
+  "source_session_id": "ses_3460aa99bffeW8Srm4YpJKTSNs",
+  "summary": "No hard violations of Forbidden Paths; no blocking scope creep or cross-task contamination found.",
+  "findings": [
+    "Task 1-28 change mapping and boundary comparison completed.",
+    "No hard hit on Forbidden Paths detected.",
+    "Minor soft boundary overreach exists but is attributable to in-scope supporting changes and is non-blocking."
+  ],
+  "evidence_basis": [
+    ".sisyphus/plans/roadmap-v1.md",
+    ".sisyphus/evidence/final-wave-f4-scope-fidelity.txt"
+  ],
+  "recorded_at": "2026-03-05T00:00:00+08:00"
+}
