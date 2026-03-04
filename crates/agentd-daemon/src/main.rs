@@ -5,11 +5,14 @@ mod mcp;
 use agentd_core::audit::{
     AuditContext, EventPayload, EventResult, EventSeverity, EventType, PolicyReplayReference,
 };
+use agentd_core::policy::{
+    PolicyAgentContext, PolicyResourceContext, PolicyTimeContext, PolicyToolContext,
+};
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
-    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, LayeredPolicyEngine,
-    PolicyDecision, PolicyEngine, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
-    PolicyRule, SessionPolicyOverrides,
+    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, LayeredPolicyEngine, PolicyDecision,
+    PolicyEngine, PolicyGatewayDecision, PolicyInputContext, PolicyLayer, PolicyRule,
+    SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -1785,7 +1788,10 @@ mod tests {
             .expect("tool denied event should exist");
 
         assert_eq!(deny_event.payload.message.as_deref(), Some("policy.deny"));
-        assert_eq!(deny_event.payload.tool_name.as_deref(), Some("mcp.fs.read_file"));
+        assert_eq!(
+            deny_event.payload.tool_name.as_deref(),
+            Some("mcp.fs.read_file")
+        );
         assert_eq!(
             deny_event.payload.metadata["trace_id"],
             json!(outcome.decision.trace_id)
@@ -2765,7 +2771,9 @@ where
     F: FnOnce(&Value) -> Value,
 {
     if tool.trim().is_empty() {
-        return Err(AgentError::InvalidInput("tool must be non-empty".to_string()));
+        return Err(AgentError::InvalidInput(
+            "tool must be non-empty".to_string(),
+        ));
     }
 
     let profile = store.get_agent(agent_id).await?;
@@ -2784,11 +2792,18 @@ where
     let mut request_meta = BTreeMap::new();
     request_meta.insert("trace_id".to_string(), audit_context.trace_id.clone());
     let policy_input = PolicyInputContext {
-        agent_id: Some(agent_id.to_string()),
-        tool: tool.to_string(),
-        resource: None,
+        agent: PolicyAgentContext {
+            id: Some(agent_id.to_string()),
+            trust_level: Some(format!("{:?}", profile.permissions.policy).to_ascii_lowercase()),
+        },
+        tool: PolicyToolContext {
+            name: tool.to_string(),
+        },
+        resource: PolicyResourceContext { uri: None },
+        time: PolicyTimeContext {
+            timestamp_rfc3339: Some(Utc::now().to_rfc3339()),
+        },
         request_meta,
-        timestamp_rfc3339: None,
     };
     policy_input.validate()?;
     let engine = LayeredPolicyEngine::new(global_layer, profile_layer, session_layer);
@@ -3089,6 +3104,7 @@ async fn handle_rpc_request(
             let global_layer = convert_rule_inputs("global", params.global_rules);
             let mut profile_layer = convert_rule_inputs("agent_profile", params.profile_rules);
             let mut evaluated_agent_id: Option<uuid::Uuid> = None;
+            let mut evaluated_trust_level: Option<String> = None;
 
             if let Some(agent_id) = params.agent_id.clone() {
                 let parsed_agent_id = match uuid::Uuid::parse_str(&agent_id) {
@@ -3113,6 +3129,8 @@ async fn handle_rpc_request(
                         )
                     }
                 };
+                evaluated_trust_level =
+                    Some(format!("{:?}", profile.permissions.policy).to_ascii_lowercase());
                 profile_layer = profile_to_policy_layer(&profile);
             }
 
@@ -3128,11 +3146,18 @@ async fn handle_rpc_request(
             let mut request_meta = BTreeMap::new();
             request_meta.insert("trace_id".to_string(), audit_context.trace_id.clone());
             let policy_input = PolicyInputContext {
-                agent_id: params.agent_id.clone(),
-                tool: params.tool.clone(),
-                resource: None,
+                agent: PolicyAgentContext {
+                    id: params.agent_id.clone(),
+                    trust_level: evaluated_trust_level,
+                },
+                tool: PolicyToolContext {
+                    name: params.tool.clone(),
+                },
+                resource: PolicyResourceContext { uri: None },
+                time: PolicyTimeContext {
+                    timestamp_rfc3339: Some(Utc::now().to_rfc3339()),
+                },
                 request_meta,
-                timestamp_rfc3339: None,
             };
             if let Err(err) = policy_input.validate() {
                 return JsonRpcResponse::error(request.id, -32602, err.to_string());
@@ -3182,11 +3207,7 @@ async fn handle_rpc_request(
                     )
                     .await;
                 }
-                return JsonRpcResponse::error(
-                    request.id,
-                    -32016,
-                    gateway_decision.reason.clone(),
-                );
+                return JsonRpcResponse::error(request.id, -32016, gateway_decision.reason.clone());
             }
 
             if let Some(agent_id) = evaluated_agent_id {
