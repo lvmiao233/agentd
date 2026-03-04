@@ -1,0 +1,18 @@
+task=19
+status=passed
+step=build-rootfs
+tag=0.1.0
+rootfs_dir=images/agent-rootfs/out/0.1.0/rootfs
+archive=images/agent-rootfs/out/0.1.0/rootfs.tar.gz
+sha256=23c7916b1a2ea2b67b875b74fd710124a883ea3c4b4538b1ae690a8c3c51bfda
+manifest=images/agent-rootfs/rootfs-manifest.json
+---
+task=19
+status=passed
+step=verify-rootfs
+rootfs_dir=images/agent-rootfs/out/0.1.0/rootfs
+python_version=Python 3.13.7
+python_runtime=available
+agent_lite=available
+import_check=passed
+help_check=passed
