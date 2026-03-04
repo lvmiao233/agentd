@@ -9,7 +9,7 @@ use agentd_core::audit::{
 use agentd_core::policy::{
     PolicyAgentContext, PolicyResourceContext, PolicyTimeContext, PolicyToolContext,
 };
-use agentd_core::profile::{ModelConfig, PermissionPolicy};
+use agentd_core::profile::{ModelConfig, PermissionPolicy, TrustLevel};
 use agentd_core::{
     AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyEngine,
     PolicyEngineLayers, PolicyEvaluation, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
@@ -20,7 +20,7 @@ use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
-use lifecycle::{LifecycleManager, ManagedAgentSpec};
+use lifecycle::{FirecrackerRuntimeSpec, LifecycleManager, ManagedAgentSpec, ManagedRuntimeSpec};
 use mcp::{load_mcp_server_configs, McpHost};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -259,6 +259,7 @@ struct RuntimeState {
     lifecycle_manager: LifecycleManager,
     agent_card_root: Arc<PathBuf>,
     mcp_host: Arc<Mutex<McpHost>>,
+    firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
 }
 
 impl RuntimeState {
@@ -299,12 +300,29 @@ impl RuntimeState {
         agent_card_root: PathBuf,
         mcp_host: Arc<Mutex<McpHost>>,
     ) -> Self {
+        Self::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
+            initial_status,
+            lifecycle_manager,
+            agent_card_root,
+            mcp_host,
+            None,
+        )
+    }
+
+    fn with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
+        initial_status: &str,
+        lifecycle_manager: LifecycleManager,
+        agent_card_root: PathBuf,
+        mcp_host: Arc<Mutex<McpHost>>,
+        firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
+    ) -> Self {
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
             lifecycle_manager,
             agent_card_root: Arc::new(agent_card_root),
             mcp_host,
+            firecracker_executor,
         }
     }
 
@@ -323,6 +341,10 @@ impl RuntimeState {
 
     fn mcp_host(&self) -> Arc<Mutex<McpHost>> {
         self.mcp_host.clone()
+    }
+
+    fn firecracker_executor(&self) -> Option<Arc<firecracker::FirecrackerExecutor>> {
+        self.firecracker_executor.clone()
     }
 }
 
@@ -711,6 +733,8 @@ async fn firecracker_executor_launches_vm() {
             vcpu_count: Some(2),
             mem_size_mib: Some(1024),
             network: Some(network.clone()),
+            network_policy: None,
+            jailer: None,
             launch_timeout: Duration::from_secs(2),
         })
         .await
@@ -860,6 +884,8 @@ async fn firecracker_vsock_roundtrip() {
             vcpu_count: None,
             mem_size_mib: None,
             network: None,
+            network_policy: None,
+            jailer: None,
             launch_timeout: Duration::from_secs(2),
         })
         .await
@@ -1006,6 +1032,8 @@ async fn firecracker_launch_timeout_returns_stable_error() {
             vcpu_count: None,
             mem_size_mib: None,
             network: None,
+            network_policy: None,
+            jailer: None,
             launch_timeout: Duration::from_millis(200),
         })
         .await
@@ -1035,6 +1063,145 @@ async fn firecracker_launch_timeout_returns_stable_error() {
                 "launch timeout should not leave orphan vm process"
             );
         }
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn untrusted_agent_uses_firecracker_runtime() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task21-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let cgroup_root = std::env::temp_dir().join(format!("agentd-task21-cgroup-{}", uuid::Uuid::new_v4()));
+    let firecracker_root = temp_firecracker_runtime_dir();
+    let script = firecracker_echo_script_path();
+    assert!(script.exists(), "vsock echo script should exist");
+
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let firecracker_executor = Arc::new(build_firecracker_executor_for_test(&firecracker_root));
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new(&cgroup_root, "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(McpHost::new())),
+        Some(firecracker_executor),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21001),
+            "CreateAgent",
+            json!({
+                "name": "task21-untrusted-runtime",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+
+    let start_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21002),
+            "StartManagedAgent",
+            json!({
+                "agent_id": agent_id,
+                "command": "/usr/bin/env",
+                "args": ["python3", script.display().to_string()],
+                "restart_max_attempts": 0,
+                "restart_backoff_secs": 0,
+                "trust_level": "untrusted",
+                "network_policy": "allow",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        start_response.error.is_none(),
+        "start should succeed: {start_response:?}"
+    );
+    assert_eq!(
+        start_response
+            .result
+            .expect("start result should exist")
+            .get("runtime")
+            .expect("runtime field should exist"),
+        "firecracker"
+    );
+
+    let stop_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21003),
+            "StopManagedAgent",
+            json!({"agent_id": agent_id}),
+        ),
+        store,
+        state,
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        stop_response.error.is_none(),
+        "stop should succeed: {stop_response:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(cgroup_root);
+    let _ = std::fs::remove_dir_all(firecracker_root);
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn jailer_policy_blocks_forbidden_network() {
+    let root = temp_firecracker_runtime_dir();
+    let executor = build_firecracker_executor_for_test(&root);
+
+    let err = executor
+        .launch_agent(firecracker::FirecrackerAgentLaunchSpec {
+            agent_id: uuid::Uuid::new_v4(),
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "echo should-not-run".to_string()],
+            env: HashMap::new(),
+            vcpu_count: None,
+            mem_size_mib: None,
+            network: Some(firecracker::FirecrackerNetworkConfig::default()),
+            network_policy: Some(firecracker::NetworkIsolationPolicy::DenyAll),
+            jailer: Some(firecracker::JailerConfig::default()),
+            launch_timeout: Duration::from_secs(1),
+        })
+        .await
+        .expect_err("deny-all network policy should block firecracker launch");
+
+    match err {
+        AgentError::Permission(message) => {
+            assert!(
+                message.contains("jailer network policy denied outbound access"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected permission error, got: {other}"),
     }
 
     let _ = std::fs::remove_dir_all(root);
@@ -2907,6 +3074,10 @@ struct StartManagedAgentParams {
     memory_high: Option<String>,
     #[serde(default)]
     memory_max: Option<String>,
+    #[serde(default)]
+    trust_level: Option<String>,
+    #[serde(default)]
+    network_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4055,6 +4226,44 @@ async fn provision_one_api(
     })
 }
 
+fn derive_trust_level_from_profile(profile: &AgentProfile) -> TrustLevel {
+    match profile.permissions.policy {
+        PermissionPolicy::Allow => TrustLevel::Builtin,
+        PermissionPolicy::Ask => TrustLevel::Verified,
+        PermissionPolicy::Deny => TrustLevel::Untrusted,
+    }
+}
+
+fn resolve_trust_level(
+    profile: &AgentProfile,
+    explicit_trust_level: Option<&str>,
+) -> Result<TrustLevel, AgentError> {
+    if let Some(raw) = explicit_trust_level {
+        return TrustLevel::parse(raw);
+    }
+
+    Ok(derive_trust_level_from_profile(profile))
+}
+
+fn parse_network_isolation_policy(
+    trust_level: TrustLevel,
+    raw_network_policy: Option<&str>,
+) -> Result<firecracker::NetworkIsolationPolicy, AgentError> {
+    if let Some(raw) = raw_network_policy {
+        let normalized = raw.trim().to_ascii_lowercase();
+        return match normalized.as_str() {
+            "allow" | "allow_all" => Ok(firecracker::NetworkIsolationPolicy::AllowAll),
+            "deny" | "deny_all" => Ok(firecracker::NetworkIsolationPolicy::DenyAll),
+            _ => Err(AgentError::InvalidInput(format!(
+                "invalid network_policy `{raw}` (expected allow|deny)"
+            ))),
+        };
+    }
+
+    let _ = trust_level;
+    Ok(firecracker::NetworkIsolationPolicy::AllowAll)
+}
+
 async fn handle_rpc_request(
     request: JsonRpcRequest,
     store: Arc<SqliteStore>,
@@ -4571,13 +4780,70 @@ async fn handle_rpc_request(
                 }
             };
 
-            if let Err(err) = store.get_agent(agent_id).await {
-                return JsonRpcResponse::error(
-                    request.id,
-                    -32010,
-                    format!("query agent for managed lifecycle failed: {err}"),
-                );
-            }
+            let profile = match store.get_agent(agent_id).await {
+                Ok(profile) => profile,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32010,
+                        format!("query agent for managed lifecycle failed: {err}"),
+                    )
+                }
+            };
+
+            let trust_level = match resolve_trust_level(&profile, params.trust_level.as_deref()) {
+                Ok(level) => level,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message);
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32017,
+                        format!("resolve trust level failed: {err}"),
+                    );
+                }
+            };
+
+            let network_policy = match parse_network_isolation_policy(
+                trust_level,
+                params.network_policy.as_deref(),
+            ) {
+                Ok(policy) => policy,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message);
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32017,
+                        format!("resolve network policy failed: {err}"),
+                    );
+                }
+            };
+
+            let runtime = match trust_level {
+                TrustLevel::Builtin | TrustLevel::Verified => ManagedRuntimeSpec::Cgroup,
+                TrustLevel::Community | TrustLevel::Untrusted => {
+                    let Some(executor) = state.firecracker_executor() else {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            "firecracker runtime requested but executor is not configured",
+                        );
+                    };
+
+                    ManagedRuntimeSpec::Firecracker(FirecrackerRuntimeSpec {
+                        executor,
+                        vcpu_count: None,
+                        mem_size_mib: None,
+                        network: None,
+                        network_policy: Some(network_policy),
+                        jailer: Some(firecracker::JailerConfig::default()),
+                        launch_timeout: Duration::from_secs(3),
+                    })
+                }
+            };
 
             let limits = CgroupResourceLimits {
                 cpu_weight: params.cpu_weight.unwrap_or(100),
@@ -4592,6 +4858,7 @@ async fn handle_rpc_request(
                 restart_max_attempts: params.restart_max_attempts.unwrap_or(3),
                 restart_backoff_secs: params.restart_backoff_secs.unwrap_or(1),
                 limits,
+                runtime,
             };
 
             match state.lifecycle().start_agent(lifecycle_spec).await {
@@ -4609,6 +4876,9 @@ async fn handle_rpc_request(
                                 "pid": snapshot.pid,
                                 "restart_count": snapshot.restart_count,
                                 "cgroup_path": snapshot.cgroup_path,
+                                "runtime": snapshot.runtime,
+                                "trust_level": trust_level.as_str(),
+                                "network_policy": params.network_policy,
                             }),
                         },
                     )

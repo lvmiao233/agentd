@@ -1,0 +1,6 @@
+command: cargo test -p agentd-daemon jailer_policy_blocks_forbidden_network -- --exact
+result: PASS
+assertions:
+  - Firecracker launch is rejected when network_policy=deny_all and tap network is requested
+  - error type is AgentError::Permission
+  - error contains "jailer network policy denied outbound access"
