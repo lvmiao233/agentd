@@ -3743,6 +3743,165 @@ explain := "data.agentd.policy.deny[mcp.fs]" if {
 
 #[cfg(test)]
 #[test]
+fn rego_hot_reload_without_restart() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("hot-reload.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+allow if {
+  input.tool.name == "mcp.fs.read_file"
+}
+"#,
+    )
+    .expect("write allow policy");
+
+    let engine = RegorusPolicyEngine::from_policy_dir(
+        PolicyEngineLayers::new(
+            ask_only_layer("global"),
+            ask_only_layer("agent_profile"),
+            ask_only_layer("session_override"),
+        ),
+        &dir,
+    )
+    .expect("create regorus engine");
+
+    let first = engine.evaluate(&test_policy_input("mcp.fs.read_file"));
+    assert_eq!(first.decision, PolicyDecision::Allow);
+
+    std::fs::write(
+        dir.join("hot-reload.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+deny if {
+  input.tool.name == "mcp.fs.read_file"
+}
+
+explain := "data.agentd.policy.deny[mcp.fs.read_file]" if {
+  deny
+}
+"#,
+    )
+    .expect("rewrite policy for deny");
+
+    let second = engine.evaluate(&test_policy_input("mcp.fs.read_file"));
+    assert_eq!(second.decision, PolicyDecision::Deny);
+    assert_eq!(
+        second.matched_rule.as_deref(),
+        Some("data.agentd.policy.deny[mcp.fs.read_file]")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn deny_explain_contains_rule_path() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("deny-explain.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+deny if {
+  startswith(input.tool.name, "mcp.fs.")
+}
+
+explain := "data.agentd.policy.deny[mcp.fs]" if {
+  deny
+}
+"#,
+    )
+    .expect("write deny policy");
+
+    let evaluation = evaluate_policy_with_rego_dir(
+        &dir,
+        ask_only_layer("global"),
+        ask_only_layer("agent_profile"),
+        ask_only_layer("session_override"),
+        &test_policy_input("mcp.fs.read_file"),
+    )
+    .expect("rego policy should evaluate");
+    let gateway = evaluation.to_gateway_decision("trace-rego-explain");
+
+    assert_eq!(evaluation.decision, PolicyDecision::Deny);
+    assert!(gateway.reason.contains("matched_rule=data.agentd.policy.deny[mcp.fs]"));
+    assert!(gateway.reason.contains("input_snapshot="));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn rego_reload_bad_policy_keeps_previous_engine() {
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+    std::fs::write(
+        dir.join("reload-fallback.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+default allow := false
+default deny := false
+
+allow if {
+  input.tool.name == "mcp.fs.read_file"
+}
+"#,
+    )
+    .expect("write allow policy");
+
+    let engine = RegorusPolicyEngine::from_policy_dir(
+        PolicyEngineLayers::new(
+            ask_only_layer("global"),
+            ask_only_layer("agent_profile"),
+            ask_only_layer("session_override"),
+        ),
+        &dir,
+    )
+    .expect("create regorus engine");
+
+    let before = engine.evaluate(&test_policy_input("mcp.fs.read_file"));
+    assert_eq!(before.decision, PolicyDecision::Allow);
+
+    std::fs::write(
+        dir.join("reload-fallback.rego"),
+        r#"
+package agentd.policy
+import rego.v1
+
+allow if {
+  input.tool.name ==
+}
+"#,
+    )
+    .expect("write invalid policy");
+
+    let after = engine.evaluate(&test_policy_input("mcp.fs.read_file"));
+    assert_eq!(after.decision, PolicyDecision::Allow);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
 fn rego_invalid_policy_compile_error() {
     let dir = temp_rego_policy_dir();
     std::fs::create_dir_all(&dir).expect("create rego test dir");

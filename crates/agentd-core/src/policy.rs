@@ -1,6 +1,8 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     collections::BTreeMap,
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -74,6 +76,7 @@ pub struct PolicyEvaluation {
     pub decision: PolicyDecision,
     pub matched_rule: Option<String>,
     pub source_layer: Option<String>,
+    pub input_snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,9 +200,17 @@ const TRANSPILED_POLICY_PATH: &str = "__generated__/toml-transpiled.rego";
 pub struct RegorusPolicyEngine {
     layered: LayeredPolicyEngine,
     policy_dir: PathBuf,
-    policy_files: Vec<PathBuf>,
+    policy_files: Mutex<Vec<PathBuf>>,
+    policy_fingerprints: Mutex<BTreeMap<PathBuf, PolicyFileFingerprint>>,
     query_paths: RegorusQueryPaths,
     rego_engine: Option<Mutex<regorus::Engine>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyFileFingerprint {
+    size: u64,
+    modified_unix_secs: i64,
+    content_hash: u64,
 }
 
 impl RegorusPolicyEngine {
@@ -214,6 +225,7 @@ impl RegorusPolicyEngine {
             layers.session_override.clone(),
         );
         let policy_files = discover_rego_files(&policy_dir)?;
+        let policy_fingerprints = collect_policy_fingerprints(&policy_files)?;
         let transpiled_policy = transpile_policy_layers_to_rego(
             &layers.global,
             &layers.agent_profile,
@@ -228,16 +240,74 @@ impl RegorusPolicyEngine {
         Ok(Self {
             layered,
             policy_dir,
-            policy_files,
+            policy_files: Mutex::new(policy_files),
+            policy_fingerprints: Mutex::new(policy_fingerprints),
             query_paths: RegorusQueryPaths::default(),
             rego_engine,
         })
+    }
+
+    fn maybe_reload_if_policy_changed(&self) -> Result<(), AgentError> {
+        let next_policy_files = discover_rego_files(&self.policy_dir)?;
+        let next_fingerprints = collect_policy_fingerprints(&next_policy_files)?;
+
+        let changed = {
+            let current_policy_files = self
+                .policy_files
+                .lock()
+                .map_err(|_| AgentError::Runtime("policy files lock poisoned".to_string()))?;
+            let current_fingerprints = self.policy_fingerprints.lock().map_err(|_| {
+                AgentError::Runtime("policy file fingerprints lock poisoned".to_string())
+            })?;
+            *current_policy_files != next_policy_files || *current_fingerprints != next_fingerprints
+        };
+
+        if !changed {
+            return Ok(());
+        }
+
+        let transpiled_policy = transpile_policy_layers_to_rego(
+            &self.layered.global,
+            &self.layered.agent_profile,
+            &self.layered.session_override,
+        )?;
+        let generated_modules = vec![(TRANSPILED_POLICY_PATH.to_string(), transpiled_policy)];
+        let next_engine = build_regorus_engine(&next_policy_files, &generated_modules)?;
+
+        let Some(rego_engine) = &self.rego_engine else {
+            return Err(AgentError::Runtime(
+                "regorus engine not initialized".to_string(),
+            ));
+        };
+
+        let mut current_engine = rego_engine
+            .lock()
+            .map_err(|_| AgentError::Runtime("regorus engine lock poisoned".to_string()))?;
+        *current_engine = next_engine;
+
+        {
+            let mut current_policy_files = self
+                .policy_files
+                .lock()
+                .map_err(|_| AgentError::Runtime("policy files lock poisoned".to_string()))?;
+            *current_policy_files = next_policy_files;
+        }
+        {
+            let mut current_fingerprints = self.policy_fingerprints.lock().map_err(|_| {
+                AgentError::Runtime("policy file fingerprints lock poisoned".to_string())
+            })?;
+            *current_fingerprints = next_fingerprints;
+        }
+
+        Ok(())
     }
 
     fn evaluate_with_regorus(
         &self,
         input: &PolicyInputContext,
     ) -> Result<PolicyEvaluation, AgentError> {
+        let _ = self.maybe_reload_if_policy_changed();
+
         let Some(rego_engine) = &self.rego_engine else {
             return Ok(self.layered.evaluate(input));
         };
@@ -319,6 +389,7 @@ impl RegorusPolicyEngine {
             decision,
             matched_rule,
             source_layer,
+            input_snapshot: Some(summarize_policy_input(input)),
         })
     }
 }
@@ -346,12 +417,14 @@ impl LayeredPolicyEngine {
 
 impl PolicyEngine for LayeredPolicyEngine {
     fn evaluate(&self, input: &PolicyInputContext) -> PolicyEvaluation {
-        PolicyLayer::evaluate_tool(
+        let mut evaluation = PolicyLayer::evaluate_tool(
             &self.global,
             &self.agent_profile,
             &self.session_override,
             &input.tool.name,
-        )
+        );
+        evaluation.input_snapshot = Some(summarize_policy_input(input));
+        evaluation
     }
 
     fn load(&mut self, layers: PolicyEngineLayers) -> Result<(), AgentError> {
@@ -368,11 +441,12 @@ impl PolicyEngine for LayeredPolicyEngine {
     fn explain(&self, input: &PolicyInputContext) -> String {
         let evaluation = self.evaluate(input);
         format!(
-            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={}",
+            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={} input_snapshot={}",
             evaluation.tool,
             evaluation.decision,
             evaluation.matched_rule.as_deref().unwrap_or("<none>"),
-            evaluation.source_layer.as_deref().unwrap_or("<none>")
+            evaluation.source_layer.as_deref().unwrap_or("<none>"),
+            evaluation.input_snapshot.as_deref().unwrap_or("<none>")
         )
     }
 }
@@ -386,6 +460,7 @@ impl PolicyEngine for RegorusPolicyEngine {
                 decision: PolicyDecision::Ask,
                 matched_rule: Some(format!("regorus.error: {err}")),
                 source_layer: Some(REGO_POLICY_SOURCE.to_string()),
+                input_snapshot: Some(summarize_policy_input(input)),
             },
         }
     }
@@ -397,28 +472,42 @@ impl PolicyEngine for RegorusPolicyEngine {
     }
 
     fn reload(&mut self) -> Result<(), AgentError> {
-        self.policy_files = discover_rego_files(&self.policy_dir)?;
+        let next_policy_files = discover_rego_files(&self.policy_dir)?;
+        let next_fingerprints = collect_policy_fingerprints(&next_policy_files)?;
         let transpiled_policy = transpile_policy_layers_to_rego(
             &self.layered.global,
             &self.layered.agent_profile,
             &self.layered.session_override,
         )?;
         let generated_modules = vec![(TRANSPILED_POLICY_PATH.to_string(), transpiled_policy)];
-        self.rego_engine = Some(Mutex::new(build_regorus_engine(
-            &self.policy_files,
-            &generated_modules,
-        )?));
+        let next_engine = build_regorus_engine(&next_policy_files, &generated_modules)?;
+
+        self.rego_engine = Some(Mutex::new(next_engine));
+        {
+            let mut current_policy_files = self
+                .policy_files
+                .lock()
+                .map_err(|_| AgentError::Runtime("policy files lock poisoned".to_string()))?;
+            *current_policy_files = next_policy_files;
+        }
+        {
+            let mut current_fingerprints = self.policy_fingerprints.lock().map_err(|_| {
+                AgentError::Runtime("policy file fingerprints lock poisoned".to_string())
+            })?;
+            *current_fingerprints = next_fingerprints;
+        }
         Ok(())
     }
 
     fn explain(&self, input: &PolicyInputContext) -> String {
         let evaluation = self.evaluate(input);
         format!(
-            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={}",
+            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={} input_snapshot={}",
             evaluation.tool,
             evaluation.decision,
             evaluation.matched_rule.as_deref().unwrap_or("<none>"),
-            evaluation.source_layer.as_deref().unwrap_or("<none>")
+            evaluation.source_layer.as_deref().unwrap_or("<none>"),
+            evaluation.input_snapshot.as_deref().unwrap_or("<none>")
         )
     }
 }
@@ -451,6 +540,71 @@ fn discover_rego_files(policy_dir: &Path) -> Result<Vec<PathBuf>, AgentError> {
         .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
+}
+
+fn collect_policy_fingerprints(
+    policy_files: &[PathBuf],
+) -> Result<BTreeMap<PathBuf, PolicyFileFingerprint>, AgentError> {
+    let mut fingerprints = BTreeMap::new();
+
+    for path in policy_files {
+        let metadata = fs::metadata(path).map_err(|err| {
+            AgentError::Runtime(format!(
+                "read policy file metadata {} failed: {err}",
+                path.display()
+            ))
+        })?;
+        let modified_unix_secs = metadata
+            .modified()
+            .ok()
+            .and_then(|time| {
+                time.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_secs() as i64)
+            })
+            .unwrap_or(0);
+        let content = fs::read(path).map_err(|err| {
+            AgentError::Runtime(format!(
+                "read policy file content {} failed: {err}",
+                path.display()
+            ))
+        })?;
+        let mut hasher = DefaultHasher::new();
+        content.hash(&mut hasher);
+
+        fingerprints.insert(
+            path.clone(),
+            PolicyFileFingerprint {
+                size: metadata.len(),
+                modified_unix_secs,
+                content_hash: hasher.finish(),
+            },
+        );
+    }
+
+    Ok(fingerprints)
+}
+
+fn summarize_policy_input(input: &PolicyInputContext) -> String {
+    let request_meta_keys = if input.request_meta.is_empty() {
+        "<none>".to_string()
+    } else {
+        input
+            .request_meta
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "agent.id={} trust_level={} tool={} resource={} request_meta_keys=[{}]",
+        input.agent.id.as_deref().unwrap_or("<none>"),
+        input.agent.trust_level.as_deref().unwrap_or("<none>"),
+        input.tool.name,
+        input.resource.uri.as_deref().unwrap_or("<none>"),
+        request_meta_keys,
+    )
 }
 
 fn build_regorus_engine(
@@ -536,18 +690,23 @@ impl PolicyEvaluation {
     pub fn to_gateway_decision(&self, trace_id: impl Into<String>) -> PolicyGatewayDecision {
         let matched_rule = self.matched_rule.as_deref().unwrap_or("<none>").to_string();
         let source_layer = self.source_layer.as_deref().unwrap_or("<none>").to_string();
+        let input_snapshot = self
+            .input_snapshot
+            .as_deref()
+            .unwrap_or("<none>")
+            .to_string();
         let reason = match self.decision {
             PolicyDecision::Allow => format!(
                 "policy.allow: tool={} matched_rule={} source_layer={}",
                 self.tool, matched_rule, source_layer
             ),
             PolicyDecision::Ask => format!(
-                "policy.ask: tool={} matched_rule={} source_layer={}",
-                self.tool, matched_rule, source_layer
+                "policy.ask: tool={} matched_rule={} source_layer={} input_snapshot={}",
+                self.tool, matched_rule, source_layer, input_snapshot
             ),
             PolicyDecision::Deny => format!(
-                "policy.deny: tool={} matched_rule={} source_layer={}",
-                self.tool, matched_rule, source_layer
+                "policy.deny: tool={} matched_rule={} source_layer={} input_snapshot={}",
+                self.tool, matched_rule, source_layer, input_snapshot
             ),
         };
 
@@ -773,12 +932,14 @@ impl PolicyLayer {
                 decision: matched.decision,
                 matched_rule: Some(matched.pattern),
                 source_layer: Some(matched.layer_name),
+                input_snapshot: None,
             },
             None => PolicyEvaluation {
                 tool: tool.to_string(),
                 decision: PolicyDecision::Ask,
                 matched_rule: None,
                 source_layer: None,
+                input_snapshot: None,
             },
         }
     }
@@ -914,6 +1075,7 @@ mod tests {
             decision: PolicyDecision::Deny,
             matched_rule: Some("mcp.fs.*".to_string()),
             source_layer: Some("agent_profile".to_string()),
+            input_snapshot: Some("agent.id=agent-1 trust_level=ask tool=mcp.fs.read_file resource=.env request_meta_keys=[trace_id]".to_string()),
         };
 
         let gateway = evaluation.to_gateway_decision("trace-rpc-8");
