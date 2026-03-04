@@ -2,6 +2,7 @@ mod cgroup;
 mod firecracker;
 mod lifecycle;
 mod mcp;
+mod ws_bridge;
 
 use agentd_core::audit::{
     AuditContext, EventPayload, EventResult, EventSeverity, EventType, PolicyReplayReference,
@@ -2403,6 +2404,7 @@ async fn a2a_server_task_crud_and_stream() {
         bind_addr,
         store,
         state.clone(),
+        OneApiConfig::default(),
         shutdown_rx,
     ));
 
@@ -2486,6 +2488,150 @@ async fn a2a_server_task_crud_and_stream() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn ws_bridge_forwards_rpc_and_stream() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task27-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind health server listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve health server local address");
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state.clone(),
+        OneApiConfig::default(),
+        shutdown_rx,
+    ));
+
+    let (mut socket, _) = connect_async(format!("ws://{bind_addr}/ws"))
+        .await
+        .expect("connect websocket bridge");
+
+    socket
+        .send(Message::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9001,
+                "method": "GetHealth",
+                "params": {}
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send health rpc over ws");
+
+    let mut health_result_seen = false;
+    for _ in 0..3 {
+        let next = tokio::time::timeout(Duration::from_millis(800), socket.next())
+            .await
+            .expect("ws health timeout");
+        let Some(message) = next else {
+            break;
+        };
+        let message = message.expect("receive ws health response");
+        let Message::Text(payload) = message else {
+            continue;
+        };
+        let decoded: Value = serde_json::from_str(payload.as_ref()).expect("decode ws json response");
+        if decoded.get("id") == Some(&json!(9001)) {
+            assert!(decoded.get("error").is_none(), "rpc should succeed: {decoded}");
+            assert!(
+                decoded["result"].get("status").is_some(),
+                "health result should include status"
+            );
+            health_result_seen = true;
+            break;
+        }
+    }
+    assert!(health_result_seen, "expected health rpc response over websocket");
+
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({"prompt": "ws stream"}),
+        })
+        .await;
+    tokio::spawn(drive_a2a_task_lifecycle(state.clone(), created.id));
+
+    socket
+        .send(Message::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9002,
+                "method": "A2A.SubscribeStream",
+                "params": {
+                    "task_id": created.id,
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("subscribe task stream over ws");
+
+    let mut subscribe_ack_seen = false;
+    let mut streamed_states = Vec::new();
+    for _ in 0..12 {
+        let next = tokio::time::timeout(Duration::from_millis(800), socket.next())
+            .await
+            .expect("ws stream timeout");
+        let Some(message) = next else {
+            break;
+        };
+        let message = message.expect("receive ws stream message");
+        let Message::Text(payload) = message else {
+            continue;
+        };
+        let decoded: Value = serde_json::from_str(payload.as_ref()).expect("decode ws stream json");
+
+        if decoded.get("id") == Some(&json!(9002)) {
+            subscribe_ack_seen = true;
+            continue;
+        }
+
+        if decoded.get("method") == Some(&json!("A2A.StreamEvent")) {
+            let state_value = decoded["params"]["state"]
+                .as_str()
+                .expect("stream event state should be string")
+                .to_string();
+            streamed_states.push(state_value.clone());
+            if state_value == "completed" {
+                break;
+            }
+        }
+    }
+
+    assert!(subscribe_ack_seen, "expected subscribe ack over websocket");
+    assert!(
+        streamed_states.iter().any(|state| state == "working"),
+        "expected working state in stream: {streamed_states:?}"
+    );
+    assert!(
+        streamed_states.iter().any(|state| state == "completed"),
+        "expected completed state in stream: {streamed_states:?}"
+    );
+
+    let _ = socket.close(None).await;
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn a2a_client_discovers_remote_card() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task23-test-{}.sqlite",
@@ -2525,6 +2671,7 @@ async fn a2a_client_discovers_remote_card() {
         bind_addr,
         store,
         state,
+        OneApiConfig::default(),
         shutdown_rx,
     ));
 
@@ -2684,6 +2831,7 @@ async fn mdns_peer_discovery_finds_remote_agent() {
         bind_addr,
         store,
         state,
+        OneApiConfig::default(),
         shutdown_rx,
     ));
 
@@ -3091,6 +3239,7 @@ async fn health_server(
     bind_addr: SocketAddr,
     store: Arc<SqliteStore>,
     state: RuntimeState,
+    one_api_config: OneApiConfig,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(%bind_addr, "Health endpoint listening");
@@ -3114,6 +3263,18 @@ async fn health_server(
                 let method = request_parts.next().unwrap_or("");
                 let raw_path = request_parts.next().unwrap_or("/");
                 let (path, query) = split_path_and_query(raw_path);
+
+                if ws_bridge::is_ws_upgrade_request(method, path, &request) {
+                    ws_bridge::serve_ws_bridge(
+                        stream,
+                        &request,
+                        store.clone(),
+                        state.clone(),
+                        one_api_config.clone(),
+                    )
+                    .await?;
+                    continue;
+                }
 
                 if method == "GET" && path == "/.well-known/agent.json" {
                     let response = match store.list_agents().await {
@@ -8956,6 +9117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind_addr,
         store.clone(),
         state.clone(),
+        config.one_api.clone(),
         shutdown_rx,
     ));
     let protocol_task = tokio::spawn(protocol_server(
