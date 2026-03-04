@@ -16,7 +16,8 @@ use agentd_core::{
     PolicyRule, RegorusPolicyEngine, SessionPolicyOverrides,
 };
 use agentd_protocol::{
-    A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse,
+    A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
+    JsonRpcRequest, JsonRpcResponse,
 };
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
@@ -433,6 +434,131 @@ impl RuntimeState {
     }
 }
 
+#[derive(Debug, Clone)]
+struct A2AHttpClient {
+    http: reqwest::Client,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct A2AAgentCard {
+    agent_id: String,
+    name: String,
+    version: String,
+    model: String,
+    provider: String,
+    #[serde(default)]
+    capabilities: Value,
+}
+
+impl A2AHttpClient {
+    fn new() -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("build reqwest client without proxy"),
+        }
+    }
+
+    async fn discover_agent(&self, base_url: &str) -> Result<A2AAgentCard, AgentError> {
+        let url = format!(
+            "{}/.well-known/agent.json",
+            normalize_http_base_url(base_url)?
+        );
+        let response =
+            self.http.get(url).send().await.map_err(|err| {
+                AgentError::Runtime(format!("discover agent request failed: {err}"))
+            })?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("discover agent failed: {err}")))?;
+        response
+            .json::<A2AAgentCard>()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("decode agent card failed: {err}")))
+    }
+
+    async fn create_task(
+        &self,
+        base_url: &str,
+        payload: &CreateA2ATaskRequest,
+    ) -> Result<A2ATask, AgentError> {
+        let url = format!("{}/a2a/tasks", normalize_http_base_url(base_url)?);
+        let response = self
+            .http
+            .post(url)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("create task request failed: {err}")))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("create task failed: {err}")))?;
+        let created = response
+            .json::<CreateA2ATaskResponse>()
+            .await
+            .map_err(|err| {
+                AgentError::Runtime(format!("decode create task response failed: {err}"))
+            })?;
+        Ok(created.task)
+    }
+
+    async fn stream_task(
+        &self,
+        base_url: &str,
+        task_id: uuid::Uuid,
+    ) -> Result<Vec<A2ATaskEvent>, AgentError> {
+        let url = format!(
+            "{}/a2a/stream?task_id={}",
+            normalize_http_base_url(base_url)?,
+            task_id
+        );
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("stream task request failed: {err}")))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("stream task failed: {err}")))?;
+        let body = response
+            .text()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("read stream body failed: {err}")))?;
+
+        let mut events = Vec::new();
+        for line in body.lines() {
+            if let Some(payload) = line.strip_prefix("data: ") {
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let event = serde_json::from_str::<A2ATaskEvent>(payload).map_err(|err| {
+                    AgentError::Runtime(format!("decode stream payload failed: {err}"))
+                })?;
+                events.push(event);
+            }
+        }
+
+        Ok(events)
+    }
+}
+
+fn normalize_http_base_url(base_url: &str) -> Result<String, AgentError> {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return Err(AgentError::InvalidInput(
+            "base url must be non-empty".to_string(),
+        ));
+    }
+    if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
+        return Err(AgentError::InvalidInput(format!(
+            "base url must start with http:// or https://, got: {normalized}"
+        )));
+    }
+    Ok(normalized.to_string())
+}
+
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
         info!(config_path = path, "Config file not found, using defaults");
@@ -839,7 +965,9 @@ async fn firecracker_executor_launches_vm() {
     assert_eq!(ready["status"], json!("ok"));
 
     let socket_path = vm.config().vsock_path.clone();
-    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    vm.shutdown()
+        .await
+        .expect("firecracker vm shutdown should succeed");
     assert!(!socket_path.exists(), "vsock socket should be cleaned up");
 
     let _ = std::fs::remove_dir_all(root);
@@ -990,7 +1118,9 @@ async fn firecracker_vsock_roundtrip() {
     assert_eq!(response["transport"], json!("vsock-simulated"));
     assert_eq!(response["echo"], payload);
 
-    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    vm.shutdown()
+        .await
+        .expect("firecracker vm shutdown should succeed");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1160,7 +1290,8 @@ async fn untrusted_agent_uses_firecracker_runtime() {
         "agentd-daemon-task21-test-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let cgroup_root = std::env::temp_dir().join(format!("agentd-task21-cgroup-{}", uuid::Uuid::new_v4()));
+    let cgroup_root =
+        std::env::temp_dir().join(format!("agentd-task21-cgroup-{}", uuid::Uuid::new_v4()));
     let firecracker_root = temp_firecracker_runtime_dir();
     let script = firecracker_echo_script_path();
     assert!(script.exists(), "vsock echo script should exist");
@@ -1479,6 +1610,65 @@ async fn a2a_server_task_crud_and_stream() {
     cleanup_sqlite_files(&db_path);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_client_discovers_remote_card() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task23-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(1),
+            "CreateAgent",
+            json!({
+                "name": "remote-card-agent",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        created.error.is_none(),
+        "create should succeed: {created:?}"
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test health listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve listener socket address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state,
+        shutdown_rx,
+    ));
+
+    let client = A2AHttpClient::new();
+    let card = client
+        .discover_agent(&format!("http://{bind_addr}"))
+        .await
+        .expect("discover remote agent card");
+    assert_eq!(card.name, "remote-card-agent");
+    assert_eq!(card.model, "claude-4-sonnet");
+    assert_eq!(card.provider, "one-api");
+    assert_eq!(card.capabilities["protocol"], json!("a2a-compatible"));
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
 async fn health_server(
     listener: TcpListener,
     bind_addr: SocketAddr,
@@ -1507,6 +1697,28 @@ async fn health_server(
                 let method = request_parts.next().unwrap_or("");
                 let raw_path = request_parts.next().unwrap_or("/");
                 let (path, query) = split_path_and_query(raw_path);
+
+                if method == "GET" && path == "/.well-known/agent.json" {
+                    let response = match store.list_agents().await {
+                        Ok(agents) => {
+                            if let Some(profile) = agents.into_iter().next() {
+                                json_http_response("200 OK", &build_a2a_agent_card(&profile))?
+                            } else {
+                                json_http_response(
+                                    "404 Not Found",
+                                    &json!({"error": "no registered agents"}),
+                                )?
+                            }
+                        }
+                        Err(err) => json_http_response(
+                            "500 Internal Server Error",
+                            &json!({"error": format!("load agent card failed: {err}")}),
+                        )?,
+                    };
+                    stream.write_all(response.as_bytes()).await?;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
 
                 if method == "GET" && path == "/a2a/stream" {
                     let Some(task_id_raw) = query_param(query, "task_id") else {
@@ -5223,22 +5435,21 @@ async fn handle_rpc_request(
                 }
             };
 
-            let network_policy = match parse_network_isolation_policy(
-                trust_level,
-                params.network_policy.as_deref(),
-            ) {
-                Ok(policy) => policy,
-                Err(AgentError::InvalidInput(message)) => {
-                    return JsonRpcResponse::error(request.id, -32602, message);
-                }
-                Err(err) => {
-                    return JsonRpcResponse::error(
-                        request.id,
-                        -32017,
-                        format!("resolve network policy failed: {err}"),
-                    );
-                }
-            };
+            let network_policy =
+                match parse_network_isolation_policy(trust_level, params.network_policy.as_deref())
+                {
+                    Ok(policy) => policy,
+                    Err(AgentError::InvalidInput(message)) => {
+                        return JsonRpcResponse::error(request.id, -32602, message);
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            format!("resolve network policy failed: {err}"),
+                        );
+                    }
+                };
 
             let runtime = match trust_level {
                 TrustLevel::Builtin | TrustLevel::Verified => ManagedRuntimeSpec::Cgroup,

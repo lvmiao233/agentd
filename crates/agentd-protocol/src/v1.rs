@@ -106,3 +106,14 @@ pub struct A2ATaskEvent {
     #[serde(default)]
     pub payload: Value,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2AAgentCard {
+    pub agent_id: String,
+    pub name: String,
+    pub version: String,
+    pub model: String,
+    pub provider: String,
+    #[serde(default)]
+    pub capabilities: Value,
+}

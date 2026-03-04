@@ -8,14 +8,17 @@ version = "0.1.0"
 dependencies = [
  "agentd-core",
  "agentd-protocol",
+ "chrono",
  "clap",
  "crossterm",
  "ratatui",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
