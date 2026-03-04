@@ -11,7 +11,7 @@ pub mod db;
 pub mod one_api;
 pub mod usage;
 
-pub use agent::RegistryAgentEntry;
+pub use agent::{ContextSessionSnapshot, RegistryAgentEntry};
 pub use one_api::OneApiMapping;
 pub use usage::{AgentUsageSummary, UsageWindow};
 
@@ -92,6 +92,19 @@ pub trait AgentStore: Send + Sync {
         window: UsageWindow,
     ) -> Result<AgentUsageSummary, AgentError>;
     async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError>;
+    async fn upsert_context_session_snapshot(
+        &self,
+        snapshot: ContextSessionSnapshot,
+    ) -> Result<ContextSessionSnapshot, AgentError>;
+    async fn get_context_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ContextSessionSnapshot>, AgentError>;
+    async fn update_context_session_migration_state(
+        &self,
+        session_id: &str,
+        migration_state: &str,
+    ) -> Result<ContextSessionSnapshot, AgentError>;
 }
 
 #[async_trait]
@@ -197,6 +210,35 @@ impl AgentStore for SqliteStore {
     async fn get_daily_total_tokens(&self, agent_id: Uuid, day: &str) -> Result<i64, AgentError> {
         let conn = self.open_connection()?;
         usage::fetch_daily_total_tokens(&conn, agent_id, day)
+    }
+
+    async fn upsert_context_session_snapshot(
+        &self,
+        snapshot: ContextSessionSnapshot,
+    ) -> Result<ContextSessionSnapshot, AgentError> {
+        let conn = self.open_connection()?;
+        agent::upsert_context_session_snapshot(&conn, &snapshot)?;
+        Ok(snapshot)
+    }
+
+    async fn get_context_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ContextSessionSnapshot>, AgentError> {
+        let conn = self.open_connection()?;
+        agent::fetch_context_session_snapshot(&conn, session_id)
+    }
+
+    async fn update_context_session_migration_state(
+        &self,
+        session_id: &str,
+        migration_state: &str,
+    ) -> Result<ContextSessionSnapshot, AgentError> {
+        let conn = self.open_connection()?;
+        agent::update_context_session_migration_state(&conn, session_id, migration_state)?;
+        agent::fetch_context_session_snapshot(&conn, session_id)?.ok_or_else(|| {
+            AgentError::NotFound(format!("context session snapshot not found: {session_id}"))
+        })
     }
 }
 

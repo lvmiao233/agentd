@@ -17,9 +17,9 @@ use agentd_core::{
 };
 use agentd_protocol::{
     A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
-    JsonRpcRequest, JsonRpcResponse,
+    GetA2ATaskResponse, JsonRpcRequest, JsonRpcResponse,
 };
-use agentd_store::agent::delegation_candidates_from_profiles;
+use agentd_store::agent::{delegation_candidates_from_profiles, ContextSessionSnapshot};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
@@ -662,6 +662,27 @@ impl A2AHttpClient {
         Ok(created.task)
     }
 
+    async fn get_task(&self, base_url: &str, task_id: uuid::Uuid) -> Result<A2ATask, AgentError> {
+        let url = format!(
+            "{}/a2a/tasks/{}",
+            normalize_http_base_url(base_url)?,
+            task_id
+        );
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("get task request failed: {err}")))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("get task failed: {err}")))?;
+        let payload = response.json::<GetA2ATaskResponse>().await.map_err(|err| {
+            AgentError::Runtime(format!("decode get task response failed: {err}"))
+        })?;
+        Ok(payload.task)
+    }
+
     async fn stream_task(
         &self,
         base_url: &str,
@@ -736,6 +757,320 @@ struct OrchestratorRunResult {
     merge_strategy: String,
     children: Vec<OrchestratorChildResult>,
     aggregated_output: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationSummary {
+    text: String,
+    #[serde(default)]
+    key_files: Vec<String>,
+    message_count: usize,
+    #[serde(default)]
+    source_head_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationSnapshotL2 {
+    #[serde(default)]
+    head_id: Option<String>,
+    #[serde(default)]
+    messages: Vec<Value>,
+    #[serde(default)]
+    tool_results_cache: Value,
+    #[serde(default)]
+    working_directory: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationContextPayload {
+    level: String,
+    source_agent_id: String,
+    session_id: String,
+    summary: MigrationSummary,
+    #[serde(default)]
+    snapshot: Option<MigrationSnapshotL2>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MigrateContextParams {
+    source_agent_id: String,
+    target_base_url: String,
+    #[serde(default)]
+    target_agent_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    key_files: Vec<String>,
+    #[serde(default)]
+    messages: Vec<Value>,
+    #[serde(default)]
+    head_id: Option<String>,
+    #[serde(default)]
+    tool_results_cache: Value,
+    #[serde(default)]
+    working_directory: BTreeMap<String, String>,
+    #[serde(default)]
+    include_snapshot: bool,
+}
+
+fn compact_summary_line(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.len() > 180 {
+        return Some(format!("{}...", &normalized[..177]));
+    }
+    Some(normalized)
+}
+
+fn build_migration_summary(
+    messages: &[Value],
+    key_files: &[String],
+    source_head_id: Option<String>,
+) -> MigrationSummary {
+    let mut facts = Vec::new();
+    let mut seen = HashSet::new();
+
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let Some(content) = message.get("content").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(line) = compact_summary_line(content) else {
+            continue;
+        };
+        let key = format!("{role}:{line}");
+        if !seen.insert(key) {
+            continue;
+        }
+        facts.push(format!("- {role}: {line}"));
+        if facts.len() >= 8 {
+            break;
+        }
+    }
+
+    if facts.is_empty() {
+        facts.push("- no key facts extracted".to_string());
+    }
+
+    MigrationSummary {
+        text: format!("context summary (migration l1):\n{}", facts.join("\n")),
+        key_files: key_files.to_vec(),
+        message_count: messages.len(),
+        source_head_id,
+    }
+}
+
+fn build_migration_snapshot(
+    params: &MigrateContextParams,
+) -> Result<MigrationSnapshotL2, AgentError> {
+    let tool_results_cache = if params.tool_results_cache.is_null() {
+        json!({})
+    } else if params.tool_results_cache.is_object() {
+        params.tool_results_cache.clone()
+    } else {
+        return Err(AgentError::InvalidInput(
+            "tool_results_cache must be a JSON object".to_string(),
+        ));
+    };
+
+    Ok(MigrationSnapshotL2 {
+        head_id: params.head_id.clone(),
+        messages: params.messages.clone(),
+        tool_results_cache,
+        working_directory: params.working_directory.clone(),
+    })
+}
+
+fn build_migration_context_payload(
+    params: &MigrateContextParams,
+    session_id: String,
+    summary: MigrationSummary,
+    snapshot: MigrationSnapshotL2,
+) -> MigrationContextPayload {
+    let level = if params.include_snapshot { "l2" } else { "l1" };
+    MigrationContextPayload {
+        level: level.to_string(),
+        source_agent_id: params.source_agent_id.clone(),
+        session_id,
+        summary,
+        snapshot: params.include_snapshot.then_some(snapshot),
+    }
+}
+
+fn restore_task_migration_context(task_input: &Value) -> Result<Option<Value>, AgentError> {
+    let Some(raw_context) = task_input.get("migration_context") else {
+        return Ok(None);
+    };
+    let migration_context = serde_json::from_value::<MigrationContextPayload>(raw_context.clone())
+        .map_err(|err| AgentError::InvalidInput(format!("invalid migration_context: {err}")))?;
+
+    let summary = migration_context.summary.clone();
+    let resume_prompt = summary.text.clone();
+
+    let mut restored = json!({
+        "resumed": true,
+        "level": migration_context.level,
+        "session_id": migration_context.session_id,
+        "source_agent_id": migration_context.source_agent_id,
+        "summary": summary,
+        "resume_prompt": resume_prompt,
+    });
+
+    if let Some(snapshot) = migration_context.snapshot {
+        restored["snapshot"] = json!({
+            "head_id": snapshot.head_id,
+            "message_count": snapshot.messages.len(),
+            "tool_cache_entries": snapshot
+                .tool_results_cache
+                .as_object()
+                .map(|obj| obj.len())
+                .unwrap_or(0),
+            "working_directory_files": snapshot.working_directory.keys().cloned().collect::<Vec<_>>(),
+        });
+    }
+
+    Ok(Some(restored))
+}
+
+async fn rollback_source_context_session(
+    store: &SqliteStore,
+    session_id: &str,
+) -> Result<(), AgentError> {
+    let _ = store
+        .update_context_session_migration_state(session_id, "active")
+        .await?;
+    Ok(())
+}
+
+async fn migrate_context_to_target(
+    store: &SqliteStore,
+    params: MigrateContextParams,
+) -> Result<Value, AgentError> {
+    let source_agent_id = uuid::Uuid::parse_str(&params.source_agent_id)
+        .map_err(|err| AgentError::InvalidInput(format!("invalid source_agent_id: {err}")))?;
+    let _ = store.get_agent(source_agent_id).await?;
+
+    if params.target_base_url.trim().is_empty() {
+        return Err(AgentError::InvalidInput(
+            "target_base_url must be non-empty".to_string(),
+        ));
+    }
+
+    let session_id = params
+        .session_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("session-migrate-{}", uuid::Uuid::new_v4()));
+    let snapshot = build_migration_snapshot(&params)?;
+    let summary = build_migration_summary(
+        &snapshot.messages,
+        &params.key_files,
+        snapshot.head_id.clone(),
+    );
+    let migration_context = build_migration_context_payload(
+        &params,
+        session_id.clone(),
+        summary.clone(),
+        snapshot.clone(),
+    );
+
+    let now = Utc::now().to_rfc3339();
+    let persisted_snapshot = ContextSessionSnapshot {
+        session_id: session_id.clone(),
+        agent_id: params.source_agent_id.clone(),
+        head_id: snapshot.head_id.clone(),
+        messages: snapshot.messages.clone(),
+        tool_results_cache: snapshot.tool_results_cache.clone(),
+        working_directory: snapshot.working_directory.clone(),
+        summary: summary.text.clone(),
+        key_files: summary.key_files.clone(),
+        migration_state: "active".to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let _ = store
+        .upsert_context_session_snapshot(persisted_snapshot)
+        .await?;
+
+    let target_agent_id = params
+        .target_agent_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|err| AgentError::InvalidInput(format!("invalid target_agent_id: {err}")))?;
+
+    let client = A2AHttpClient::new();
+    let created_task = match client
+        .create_task(
+            &params.target_base_url,
+            &CreateA2ATaskRequest {
+                agent_id: target_agent_id,
+                input: json!({
+                    "kind": "context_migration",
+                    "migration_context": migration_context,
+                }),
+            },
+        )
+        .await
+    {
+        Ok(task) => task,
+        Err(err) => {
+            rollback_source_context_session(store, &session_id).await?;
+            return Err(AgentError::Runtime(format!(
+                "context migration create task failed: {err}"
+            )));
+        }
+    };
+
+    if let Err(err) = client
+        .stream_task(&params.target_base_url, created_task.id)
+        .await
+    {
+        rollback_source_context_session(store, &session_id).await?;
+        return Err(AgentError::Runtime(format!(
+            "context migration stream failed: {err}"
+        )));
+    }
+
+    let final_task = match client
+        .get_task(&params.target_base_url, created_task.id)
+        .await
+    {
+        Ok(task) => task,
+        Err(err) => {
+            rollback_source_context_session(store, &session_id).await?;
+            return Err(AgentError::Runtime(format!(
+                "context migration final task fetch failed: {err}"
+            )));
+        }
+    };
+
+    if final_task.state != A2ATaskState::Completed {
+        rollback_source_context_session(store, &session_id).await?;
+        return Err(AgentError::Runtime(format!(
+            "context migration target task ended in state {}",
+            serde_json::to_string(&final_task.state).unwrap_or_else(|_| "\"unknown\"".to_string())
+        )));
+    }
+
+    let migrated_snapshot = store
+        .update_context_session_migration_state(&session_id, "migrated")
+        .await?;
+
+    Ok(json!({
+        "session_id": session_id,
+        "migration_level": if params.include_snapshot { "l2" } else { "l1" },
+        "target_task_id": created_task.id,
+        "target_state": final_task.state,
+        "target_output": final_task.output,
+        "summary": summary,
+        "source_session_state": migrated_snapshot.migration_state,
+    }))
 }
 
 fn split_orchestrator_subtasks(input: &Value, explicit_subtasks: Option<Vec<Value>>) -> Vec<Value> {
@@ -864,8 +1199,11 @@ where
 
     let local_profiles = store.list_agents().await?;
     let local_candidates = delegation_candidates_from_profiles(&local_profiles);
-    let delegation_agents =
-        resolve_orchestrator_agents(&params.delegate_agent_ids, &local_candidates, parent_agent_id);
+    let delegation_agents = resolve_orchestrator_agents(
+        &params.delegate_agent_ids,
+        &local_candidates,
+        parent_agent_id,
+    );
 
     let subtasks = split_orchestrator_subtasks(&params.input, params.subtasks);
     let retry_limit = params.retry_limit.unwrap_or(1);
@@ -2376,6 +2714,378 @@ async fn mdns_peer_discovery_finds_remote_agent() {
     cleanup_sqlite_files(&db_path);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn semantic_migration_l1_continues_workflow() {
+    let source_db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task26-l1-source-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let target_db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task26-l1-target-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let source_store =
+        Arc::new(SqliteStore::new(&source_db_path).expect("initialize source store"));
+    let target_store =
+        Arc::new(SqliteStore::new(&target_db_path).expect("initialize target store"));
+    let source_state = RuntimeState::new("disabled");
+    let target_state = RuntimeState::new("disabled");
+
+    let source_created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260001),
+            "CreateAgent",
+            json!({
+                "name": "task26-source-l1",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        source_store.clone(),
+        source_state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        source_created.error.is_none(),
+        "source create should succeed: {source_created:?}"
+    );
+    let source_agent_id = source_created
+        .result
+        .expect("source create result should exist")["agent"]["id"]
+        .as_str()
+        .expect("source agent id should be string")
+        .to_string();
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve target listener address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        target_store,
+        target_state,
+        shutdown_rx,
+    ));
+
+    let migration_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260002),
+            "MigrateContext",
+            json!({
+                "source_agent_id": source_agent_id,
+                "target_base_url": format!("http://{bind_addr}"),
+                "messages": [
+                    {
+                        "id": "msg-root",
+                        "parent_id": Value::Null,
+                        "role": "user",
+                        "content": "remember project codename atlas and prepare migration checklist"
+                    },
+                    {
+                        "id": "msg-head",
+                        "parent_id": "msg-root",
+                        "role": "assistant",
+                        "content": "atlas checklist captured; continue workflow on next device"
+                    }
+                ],
+                "head_id": "msg-head",
+                "key_files": ["README.md", "crates/agentd-daemon/src/main.rs"],
+                "include_snapshot": false
+            }),
+        ),
+        source_store.clone(),
+        source_state,
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        migration_response.error.is_none(),
+        "migration should succeed: {migration_response:?}"
+    );
+
+    let result = migration_response
+        .result
+        .expect("migration result should exist");
+    assert_eq!(result["migration_level"], json!("l1"));
+    assert_eq!(result["source_session_state"], json!("migrated"));
+    assert_eq!(result["target_state"], json!("completed"));
+
+    let resume_prompt = result["target_output"]["migration_restore"]["resume_prompt"]
+        .as_str()
+        .expect("resume_prompt should be string");
+    assert!(
+        resume_prompt.contains("atlas"),
+        "resume prompt should include migrated key fact: {resume_prompt}"
+    );
+    assert!(
+        resume_prompt.contains("context summary"),
+        "resume prompt should include summary marker: {resume_prompt}"
+    );
+
+    let session_id = result["session_id"]
+        .as_str()
+        .expect("session_id should be string");
+    let persisted = source_store
+        .get_context_session_snapshot(session_id)
+        .await
+        .expect("load source migration snapshot")
+        .expect("source migration snapshot should exist");
+    assert_eq!(persisted.migration_state, "migrated");
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&source_db_path);
+    cleanup_sqlite_files(&target_db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn snapshot_migration_l2_roundtrip() {
+    let source_db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task26-l2-source-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let target_db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task26-l2-target-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let source_store =
+        Arc::new(SqliteStore::new(&source_db_path).expect("initialize source store"));
+    let target_store =
+        Arc::new(SqliteStore::new(&target_db_path).expect("initialize target store"));
+    let source_state = RuntimeState::new("disabled");
+    let target_state = RuntimeState::new("disabled");
+
+    let source_created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260101),
+            "CreateAgent",
+            json!({
+                "name": "task26-source-l2",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        source_store.clone(),
+        source_state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        source_created.error.is_none(),
+        "source create should succeed: {source_created:?}"
+    );
+    let source_agent_id = source_created
+        .result
+        .expect("source create result should exist")["agent"]["id"]
+        .as_str()
+        .expect("source agent id should be string")
+        .to_string();
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve target listener address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        target_store,
+        target_state,
+        shutdown_rx,
+    ));
+
+    let migration_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260102),
+            "MigrateContext",
+            json!({
+                "source_agent_id": source_agent_id,
+                "target_base_url": format!("http://{bind_addr}"),
+                "messages": [
+                    {
+                        "id": "root",
+                        "parent_id": Value::Null,
+                        "role": "system",
+                        "content": "boot"
+                    },
+                    {
+                        "id": "user-1",
+                        "parent_id": "root",
+                        "role": "user",
+                        "content": "review migration notes"
+                    },
+                    {
+                        "id": "assistant-1",
+                        "parent_id": "user-1",
+                        "role": "assistant",
+                        "content": "notes captured"
+                    }
+                ],
+                "head_id": "assistant-1",
+                "tool_results_cache": {
+                    "call-1": {"status": "ok"},
+                    "call-2": {"status": "cached"}
+                },
+                "working_directory": {
+                    "README.md": "# migrated",
+                    "notes/todo.txt": "finish l2"
+                },
+                "include_snapshot": true
+            }),
+        ),
+        source_store.clone(),
+        source_state,
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        migration_response.error.is_none(),
+        "l2 migration should succeed: {migration_response:?}"
+    );
+
+    let result = migration_response
+        .result
+        .expect("l2 migration result should exist");
+    assert_eq!(result["migration_level"], json!("l2"));
+    assert_eq!(result["target_state"], json!("completed"));
+    assert_eq!(
+        result["target_output"]["migration_restore"]["snapshot"]["message_count"],
+        json!(3)
+    );
+    assert_eq!(
+        result["target_output"]["migration_restore"]["snapshot"]["tool_cache_entries"],
+        json!(2)
+    );
+
+    let files = result["target_output"]["migration_restore"]["snapshot"]["working_directory_files"]
+        .as_array()
+        .expect("working_directory_files should be array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        files.contains(&"README.md") && files.contains(&"notes/todo.txt"),
+        "restored snapshot should include working directory files: {files:?}"
+    );
+
+    let session_id = result["session_id"]
+        .as_str()
+        .expect("session_id should be string");
+    let persisted = source_store
+        .get_context_session_snapshot(session_id)
+        .await
+        .expect("load source migration snapshot")
+        .expect("source migration snapshot should exist");
+    assert_eq!(persisted.migration_state, "migrated");
+    assert_eq!(persisted.messages.len(), 3);
+    assert_eq!(
+        persisted
+            .tool_results_cache
+            .as_object()
+            .map(|value| value.len())
+            .unwrap_or(0),
+        2
+    );
+    assert_eq!(
+        persisted.working_directory.get("README.md"),
+        Some(&"# migrated".to_string())
+    );
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&source_db_path);
+    cleanup_sqlite_files(&target_db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn migration_failure_rolls_back_source_session() {
+    let source_db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task26-rollback-source-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let source_store =
+        Arc::new(SqliteStore::new(&source_db_path).expect("initialize source store"));
+    let source_state = RuntimeState::new("disabled");
+
+    let source_created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260201),
+            "CreateAgent",
+            json!({
+                "name": "task26-source-rollback",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        source_store.clone(),
+        source_state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        source_created.error.is_none(),
+        "source create should succeed: {source_created:?}"
+    );
+    let source_agent_id = source_created
+        .result
+        .expect("source create result should exist")["agent"]["id"]
+        .as_str()
+        .expect("source agent id should be string")
+        .to_string();
+
+    let session_id = format!("session-task26-rollback-{}", uuid::Uuid::new_v4());
+    let migration_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(260202),
+            "MigrateContext",
+            json!({
+                "source_agent_id": source_agent_id,
+                "target_base_url": "http://127.0.0.1:9",
+                "session_id": session_id,
+                "messages": [
+                    {
+                        "id": "rollback-root",
+                        "parent_id": Value::Null,
+                        "role": "user",
+                        "content": "must remain runnable on failure"
+                    }
+                ],
+                "include_snapshot": false
+            }),
+        ),
+        source_store.clone(),
+        source_state,
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(migration_response.error.is_some(), "migration should fail");
+    assert!(
+        migration_response
+            .error
+            .as_ref()
+            .and_then(|err| Some(err.message.contains("context migration failed")))
+            .unwrap_or(false),
+        "failure should include context migration error: {migration_response:?}"
+    );
+
+    let persisted = source_store
+        .get_context_session_snapshot(&session_id)
+        .await
+        .expect("load persisted source snapshot after failure")
+        .expect("snapshot should persist for rollback");
+    assert_eq!(persisted.migration_state, "active");
+    assert_eq!(persisted.messages.len(), 1);
+
+    cleanup_sqlite_files(&source_db_path);
+}
+
 async fn health_server(
     listener: TcpListener,
     bind_addr: SocketAddr,
@@ -2680,18 +3390,52 @@ fn request_body(request: &str) -> &str {
 }
 
 async fn drive_a2a_task_lifecycle(state: RuntimeState, task_id: uuid::Uuid) {
+    let task_input = state
+        .get_a2a_task(task_id)
+        .await
+        .map(|task| task.input)
+        .unwrap_or_else(|| json!({}));
+    let restored_context = match restore_task_migration_context(&task_input) {
+        Ok(context) => context,
+        Err(err) => {
+            let _ = state
+                .transition_a2a_task(
+                    task_id,
+                    A2ATaskState::Failed,
+                    None,
+                    Some(err.to_string()),
+                    json!({"migration_restore_error": err.to_string()}),
+                )
+                .await;
+            return;
+        }
+    };
+
     tokio::time::sleep(Duration::from_millis(50)).await;
     let _ = state
         .transition_a2a_task(task_id, A2ATaskState::Working, None, None, json!({}))
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let completion_output = if let Some(context) = restored_context.clone() {
+        json!({
+            "result": "ok",
+            "migration_restore": context,
+        })
+    } else {
+        json!({"result": "ok"})
+    };
+    let completion_payload = restored_context
+        .map(|context| json!({"migration_restore": context}))
+        .unwrap_or_else(|| json!({}));
+
     let _ = state
         .transition_a2a_task(
             task_id,
             A2ATaskState::Completed,
-            Some(json!({"result": "ok"})),
+            Some(completion_output),
             None,
-            json!({}),
+            completion_payload,
         )
         .await;
 }
@@ -4040,9 +4784,7 @@ mod tests {
             "authorize mcp tool should return pending outcome: {ask:?}"
         );
         assert_eq!(
-            ask.result
-                .as_ref()
-                .expect("authorize result should exist")["decision"]["decision"],
+            ask.result.as_ref().expect("authorize result should exist")["decision"]["decision"],
             json!(PolicyDecision::Ask)
         );
 
@@ -4057,7 +4799,10 @@ mod tests {
             OneApiConfig::default(),
         )
         .await;
-        assert!(list.error.is_none(), "list approval queue should succeed: {list:?}");
+        assert!(
+            list.error.is_none(),
+            "list approval queue should succeed: {list:?}"
+        );
         let approvals = list.result.expect("list result should exist")["approvals"]
             .as_array()
             .expect("approvals should be array")
@@ -4108,9 +4853,7 @@ mod tests {
             "list approval queue after resolve should succeed: {list_after:?}"
         );
         assert!(
-            list_after
-                .result
-                .expect("list after result should exist")["approvals"]
+            list_after.result.expect("list after result should exist")["approvals"]
                 .as_array()
                 .expect("approvals should be array")
                 .is_empty(),
@@ -4606,6 +5349,28 @@ struct InvokeSkillParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct MigrateContextRpcParams {
+    source_agent_id: String,
+    target_base_url: String,
+    #[serde(default)]
+    target_agent_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    key_files: Vec<String>,
+    #[serde(default)]
+    messages: Vec<Value>,
+    #[serde(default)]
+    head_id: Option<String>,
+    #[serde(default)]
+    tool_results_cache: Value,
+    #[serde(default)]
+    working_directory: BTreeMap<String, String>,
+    #[serde(default)]
+    include_snapshot: bool,
+}
+
+#[derive(Debug, Deserialize)]
 struct ListApprovalQueueParams {
     agent_id: String,
 }
@@ -4984,7 +5749,9 @@ explain := "data.agentd.policy.deny[mcp.fs]" if {
     let gateway = evaluation.to_gateway_decision("trace-rego-explain");
 
     assert_eq!(evaluation.decision, PolicyDecision::Deny);
-    assert!(gateway.reason.contains("matched_rule=data.agentd.policy.deny[mcp.fs]"));
+    assert!(gateway
+        .reason
+        .contains("matched_rule=data.agentd.policy.deny[mcp.fs]"));
     assert!(gateway.reason.contains("input_snapshot="));
 
     let _ = std::fs::remove_dir_all(dir);
@@ -5636,13 +6403,15 @@ fn is_pending_approval_event(event: &AuditEvent) -> bool {
 }
 
 fn is_approval_resolution_event(event: &AuditEvent) -> bool {
-    matches!(event.event_type, EventType::ToolApproved | EventType::ToolDenied)
-        && event
-            .payload
-            .metadata
-            .get("approval_id")
-            .and_then(Value::as_str)
-            .is_some()
+    matches!(
+        event.event_type,
+        EventType::ToolApproved | EventType::ToolDenied
+    ) && event
+        .payload
+        .metadata
+        .get("approval_id")
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
@@ -6583,6 +7352,50 @@ async fn handle_rpc_request(
 
             JsonRpcResponse::success(request.id, json!(orchestrated))
         }
+        "MigrateContext" | "management.MigrateContext" => {
+            let params = match serde_json::from_value::<MigrateContextRpcParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid migrate context params: {err}"),
+                    )
+                }
+            };
+
+            let migration = migrate_context_to_target(
+                store.as_ref(),
+                MigrateContextParams {
+                    source_agent_id: params.source_agent_id,
+                    target_base_url: params.target_base_url,
+                    target_agent_id: params.target_agent_id,
+                    session_id: params.session_id,
+                    key_files: params.key_files,
+                    messages: params.messages,
+                    head_id: params.head_id,
+                    tool_results_cache: params.tool_results_cache,
+                    working_directory: params.working_directory,
+                    include_snapshot: params.include_snapshot,
+                },
+            )
+            .await;
+
+            match migration {
+                Ok(result) => JsonRpcResponse::success(request.id, result),
+                Err(AgentError::InvalidInput(message)) => {
+                    JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32026,
+                    format!("context migration failed: {err}"),
+                ),
+            }
+        }
         "StartManagedAgent" | "management.StartManagedAgent" => {
             let params = match serde_json::from_value::<StartManagedAgentParams>(request.params) {
                 Ok(params) => params,
@@ -7055,11 +7868,7 @@ async fn handle_rpc_request(
                     EventResult::Success,
                     "approval.approve",
                 ),
-                "deny" => (
-                    EventType::ToolDenied,
-                    EventResult::Failure,
-                    "approval.deny",
-                ),
+                "deny" => (EventType::ToolDenied, EventResult::Failure, "approval.deny"),
                 _ => unreachable!("decision validated above"),
             };
 
