@@ -1,0 +1,20 @@
+{
+  "verification": "F3",
+  "name": "Real QA Replay",
+  "verdict": "REJECT",
+  "source_session_id": "ses_3460abe1affeVAMzQpkB4Gg4YG",
+  "summary": "Replay command execution passed, but evidence completeness and selector validity failed.",
+  "blocking_findings": [
+    "QA evidence required by roadmap: 56; present: 20; missing: 36.",
+    "Task 2/3 acceptance selectors matched 0 tests in replay context, so required scenarios were not actually replayed."
+  ],
+  "supporting_results": {
+    "commands_replayed": 71,
+    "command_expectation_match": "71/71"
+  },
+  "evidence_basis": [
+    ".sisyphus/plans/roadmap-v1.md",
+    ".sisyphus/evidence/final-wave-f3-qa-replay.txt"
+  ],
+  "recorded_at": "2026-03-05T00:00:00+08:00"
+}
