@@ -1,0 +1,10 @@
+[server]
+name = "mcp-fs"
+command = "python"
+args = ["-m", "agentd_mcp_fs"]
+transport = "stdio"
+trust_level = "builtin"
+
+[policy]
+allowed_directories = ["/home", "/tmp"]
+denied_patterns = ["*.env", "*.key", "*.pem"]

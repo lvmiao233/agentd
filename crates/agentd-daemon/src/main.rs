@@ -1,5 +1,6 @@
 mod cgroup;
 mod lifecycle;
+mod mcp;
 
 use agentd_core::audit::{AuditContext, EventPayload, EventResult, EventSeverity, EventType};
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
@@ -13,6 +14,7 @@ use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
 use clap::Parser;
 use lifecycle::{LifecycleManager, ManagedAgentSpec};
+use mcp::load_mcp_server_configs;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -79,6 +81,8 @@ struct DaemonConfig {
     agent_card_root: String,
     #[serde(default = "default_agent_profiles_dir")]
     agent_profiles_dir: String,
+    #[serde(default = "default_mcp_servers_dir")]
+    mcp_servers_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +133,7 @@ impl Default for DaemonConfig {
             cgroup_parent: default_cgroup_parent(),
             agent_card_root: default_agent_card_root(),
             agent_profiles_dir: default_agent_profiles_dir(),
+            mcp_servers_dir: default_mcp_servers_dir(),
         }
     }
 }
@@ -190,6 +195,10 @@ fn default_agent_card_root() -> String {
 
 fn default_agent_profiles_dir() -> String {
     "configs/agents".to_string()
+}
+
+fn default_mcp_servers_dir() -> String {
+    "configs/mcp-servers".to_string()
 }
 
 fn default_one_api_command() -> String {
@@ -331,6 +340,106 @@ fn cleanup_sqlite_files(db_path: &Path) {
         let path = format!("{db_path_str}{suffix}");
         let _ = std::fs::remove_file(path);
     }
+}
+
+#[cfg(test)]
+fn temp_mcp_configs_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("agentd-mcp-config-test-{}", uuid::Uuid::new_v4()))
+}
+
+#[cfg(test)]
+#[test]
+fn mcp_config_loads_all_servers() {
+    let dir = temp_mcp_configs_dir();
+    std::fs::create_dir_all(&dir).expect("create temp mcp dir");
+
+    std::fs::write(
+        dir.join("a-fs.toml"),
+        r#"
+[server]
+name = "mcp-fs"
+command = "python"
+args = ["-m", "agentd_mcp_fs"]
+transport = "stdio"
+trust_level = "builtin"
+"#,
+    )
+    .expect("write fs config");
+
+    std::fs::write(
+        dir.join("b-shell.toml"),
+        r#"
+[server]
+name = "mcp-shell"
+command = "python"
+args = ["-m", "agentd_mcp_shell"]
+transport = "stdio"
+trust_level = "verified"
+"#,
+    )
+    .expect("write shell config");
+
+    let configs = load_mcp_server_configs(&dir).expect("mcp configs should load");
+    assert_eq!(configs.len(), 2);
+    assert_eq!(configs[0].name, "mcp-fs");
+    assert_eq!(configs[0].transport, mcp::McpTransport::Stdio);
+    assert_eq!(configs[0].trust_level, mcp::McpTrustLevel::Builtin);
+    assert_eq!(configs[1].name, "mcp-shell");
+    assert_eq!(configs[1].transport, mcp::McpTransport::Stdio);
+    assert_eq!(configs[1].trust_level, mcp::McpTrustLevel::Verified);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn mcp_config_rejects_missing_required_field() {
+    let dir = temp_mcp_configs_dir();
+    std::fs::create_dir_all(&dir).expect("create temp mcp dir");
+
+    std::fs::write(
+        dir.join("invalid-missing-command.toml"),
+        r#"
+[server]
+name = "mcp-fs"
+args = ["-m", "agentd_mcp_fs"]
+transport = "stdio"
+trust_level = "builtin"
+"#,
+    )
+    .expect("write invalid config");
+
+    let err = load_mcp_server_configs(&dir).expect_err("missing command should fail");
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("missing required field server.command"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn mcp_config_rejects_invalid_transport() {
+    let dir = temp_mcp_configs_dir();
+    std::fs::create_dir_all(&dir).expect("create temp mcp dir");
+
+    std::fs::write(
+        dir.join("invalid-transport.toml"),
+        r#"
+[server]
+name = "mcp-fs"
+command = "python"
+args = ["-m", "agentd_mcp_fs"]
+transport = "http"
+trust_level = "builtin"
+"#,
+    )
+    .expect("write invalid transport config");
+
+    let err = load_mcp_server_configs(&dir).expect_err("invalid transport should fail");
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("invalid transport"));
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 async fn health_server(
@@ -4036,6 +4145,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             count = loaded_profiles.len(),
             names = ?profile_names,
             "Loaded agent profiles"
+        );
+    }
+
+    let mcp_server_configs = load_mcp_server_configs(Path::new(&config.daemon.mcp_servers_dir))?;
+    if mcp_server_configs.is_empty() {
+        info!("No MCP server configs loaded");
+    } else {
+        let mcp_server_names = mcp_server_configs
+            .iter()
+            .map(|server| server.name.clone())
+            .collect::<Vec<_>>();
+        info!(
+            configs_dir = %config.daemon.mcp_servers_dir,
+            count = mcp_server_configs.len(),
+            names = ?mcp_server_names,
+            "Loaded MCP server configs"
         );
     }
 
