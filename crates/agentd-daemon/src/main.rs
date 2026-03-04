@@ -2997,6 +2997,212 @@ allow if {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(test)]
+#[test]
+fn toml_to_rego_equivalence_suite() {
+    let profile_path = PathBuf::from("equivalence.toml");
+    let profile_content = r#"
+[agent]
+name = "equivalence-agent"
+
+[llm]
+models = ["gpt-4.1-mini"]
+
+[policy]
+"*" = "ask"
+"mcp.fs.read:*" = "allow"
+"mcp.fs.read:*.env" = "deny"
+"mcp.shell.execute" = "deny"
+"mcp.search.ripgrep" = "allow"
+"mcp.net.fetch" = "allow"
+"#;
+
+    let profile = parse_agent_profile_file(&profile_path, profile_content)
+        .expect("parse profile should work");
+    let profile_layer = profile_to_policy_layer(&profile);
+
+    let global_layer = PolicyLayer {
+        name: "global".to_string(),
+        rules: vec![
+            PolicyRule {
+                pattern: "*".to_string(),
+                decision: PolicyDecision::Ask,
+            },
+            PolicyRule {
+                pattern: "mcp.search.*".to_string(),
+                decision: PolicyDecision::Deny,
+            },
+        ],
+    };
+    let session_layer = SessionPolicyOverrides {
+        allow_tools: vec!["mcp.search.ripgrep".to_string()],
+        ask_tools: vec!["mcp.fs.read:*.txt".to_string()],
+        deny_tools: vec!["mcp.net.fetch".to_string()],
+    }
+    .into_layer();
+
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+
+    let tools = [
+        "mcp.fs.read:notes.txt",
+        "mcp.fs.read:secret.env",
+        "mcp.shell.execute",
+        "mcp.search.ripgrep",
+        "mcp.net.fetch",
+        "mcp.git.status",
+    ];
+    let mut mismatches = Vec::new();
+
+    for tool in tools {
+        let expected =
+            PolicyLayer::evaluate_tool(&global_layer, &profile_layer, &session_layer, tool);
+        let actual = evaluate_policy_with_rego_dir(
+            &dir,
+            global_layer.clone(),
+            profile_layer.clone(),
+            session_layer.clone(),
+            &test_policy_input(tool),
+        )
+        .expect("rego evaluation should succeed");
+
+        if actual.decision != expected.decision
+            || actual.matched_rule != expected.matched_rule
+            || actual.source_layer != expected.source_layer
+        {
+            mismatches.push(json!({
+                "tool": tool,
+                "expected": {
+                    "decision": expected.decision,
+                    "matched_rule": expected.matched_rule,
+                    "source_layer": expected.source_layer,
+                },
+                "actual": {
+                    "decision": actual.decision,
+                    "matched_rule": actual.matched_rule,
+                    "source_layer": actual.source_layer,
+                }
+            }));
+        }
+    }
+
+    let total = tools.len();
+    let matched = total.saturating_sub(mismatches.len());
+    let report = json!({
+        "suite": "toml_to_rego_equivalence_suite",
+        "total": total,
+        "matched": matched,
+        "parity_percent": (matched as f64 / total as f64) * 100.0,
+        "mismatches": mismatches,
+    });
+
+    assert!(
+        report["mismatches"]
+            .as_array()
+            .expect("mismatches should be array")
+            .is_empty(),
+        "toml->rego diff report:\n{}",
+        serde_json::to_string_pretty(&report).expect("report serialization should succeed")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn toml_policy_legacy_behavior_unchanged() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let profile_path = manifest_dir.join("../../configs/agents/example.toml");
+    let content = std::fs::read_to_string(&profile_path).expect("read example profile");
+    let profile = parse_agent_profile_file(&profile_path, &content)
+        .expect("parse example profile should work");
+
+    let global_layer = ask_only_layer("global");
+    let profile_layer = profile_to_policy_layer(&profile);
+    let session_layer = SessionPolicyOverrides {
+        allow_tools: vec![],
+        ask_tools: vec![],
+        deny_tools: vec![],
+    }
+    .into_layer();
+
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+
+    for tool in [
+        "edit",
+        "web_fetch",
+        "read:secrets.env",
+        "read:docs.md",
+        "bash",
+    ] {
+        let expected =
+            PolicyLayer::evaluate_tool(&global_layer, &profile_layer, &session_layer, tool);
+        let actual = evaluate_policy_with_rego_dir(
+            &dir,
+            global_layer.clone(),
+            profile_layer.clone(),
+            session_layer.clone(),
+            &test_policy_input(tool),
+        )
+        .expect("rego evaluation should succeed");
+
+        assert_eq!(
+            actual.decision, expected.decision,
+            "decision mismatch for {tool}"
+        );
+        assert_eq!(
+            actual.matched_rule, expected.matched_rule,
+            "matched_rule mismatch for {tool}"
+        );
+        assert_eq!(
+            actual.source_layer, expected.source_layer,
+            "source_layer mismatch for {tool}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(test)]
+#[test]
+fn toml_to_rego_rejects_unsupported_construct() {
+    let profile_path = PathBuf::from("unsupported-policy.toml");
+    let content = r#"
+[agent]
+name = "unsupported-agent"
+
+[llm]
+models = ["gpt-4.1-mini"]
+
+[policy]
+"*" = "ask"
+"mcp.shell.execute\nunsafe" = "deny"
+"#;
+
+    let profile =
+        parse_agent_profile_file(&profile_path, content).expect("parse profile should work");
+    let profile_layer = profile_to_policy_layer(&profile);
+
+    let dir = temp_rego_policy_dir();
+    std::fs::create_dir_all(&dir).expect("create rego test dir");
+
+    let err = evaluate_policy_with_rego_dir(
+        &dir,
+        ask_only_layer("global"),
+        profile_layer,
+        ask_only_layer("session_override"),
+        &test_policy_input("mcp.shell.execute"),
+    )
+    .expect_err("unsupported policy key should be rejected");
+
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("unsupported toml policy key"));
+    assert!(err_msg.contains("mcp.shell.execute\\nunsafe"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "allow" => Ok(PermissionPolicy::Allow),
