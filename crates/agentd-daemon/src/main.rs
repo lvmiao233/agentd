@@ -480,6 +480,22 @@ fn mcp_invalid_initialize_stdio_server(name: &str) -> mcp::McpServerConfig {
 }
 
 #[cfg(test)]
+fn mcp_short_lived_stdio_server(name: &str, capability: &str) -> mcp::McpServerConfig {
+    mcp::McpServerConfig {
+        name: name.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 0.1"
+            ),
+        ],
+        transport: mcp::McpTransport::Stdio,
+        trust_level: mcp::McpTrustLevel::Builtin,
+    }
+}
+
+#[cfg(test)]
 #[tokio::test]
 async fn mcp_host_starts_declared_servers() {
     let mut host = mcp::McpHost::new();
@@ -542,6 +558,63 @@ async fn mcp_host_rolls_back_on_init_failure() {
         .iter()
         .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
     assert!(rollback_event, "rollback completion should be audited");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn mcp_registry_syncs_capabilities_from_initialize() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![mcp_valid_stdio_server("mcp-search", "search.query")];
+
+    host.start_declared_servers(&configs)
+        .await
+        .expect("mcp host should start configured server");
+
+    let registry_entry = host
+        .registry()
+        .get("mcp-search")
+        .expect("registry entry should exist");
+    assert_eq!(registry_entry.capabilities, vec!["search.query".to_string()]);
+    assert_eq!(registry_entry.health, mcp::McpServerHealth::Healthy);
+
+    let available_tools = host.list_available_tools();
+    assert!(available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-search" && tool.tool_name == "search.query"));
+
+    host.stop_all().await.expect("mcp host stop should succeed");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn unhealthy_server_removed_from_available_tools() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![
+        mcp_valid_stdio_server("mcp-fs", "fs.read_file"),
+        mcp_short_lived_stdio_server("mcp-transient", "transient.echo"),
+    ];
+
+    host.start_declared_servers(&configs)
+        .await
+        .expect("mcp host should start configured servers");
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let health = host
+        .refresh_health()
+        .expect("mcp host health refresh should succeed");
+    assert_eq!(health.total, 2);
+    assert_eq!(health.healthy, 1);
+    assert_eq!(health.unreachable, 1);
+
+    let available_tools = host.list_available_tools();
+    assert!(available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-fs" && tool.tool_name == "fs.read_file"));
+    assert!(!available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-transient" && tool.tool_name == "transient.echo"));
+
+    host.stop_all().await.expect("mcp host stop should succeed");
 }
 
 async fn health_server(
@@ -4914,9 +4987,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mcp_host = McpHost::new();
     mcp_host.start_declared_servers(&mcp_server_configs).await?;
     let mcp_health = mcp_host.refresh_health()?;
+    let available_tools = mcp_host.list_available_tools();
     info!(
         total_servers = mcp_health.total,
         healthy_servers = mcp_health.healthy,
+        degraded_servers = mcp_health.degraded,
+        unreachable_servers = mcp_health.unreachable,
+        available_tools = available_tools.len(),
         "MCP host lifecycle initialized"
     );
 
