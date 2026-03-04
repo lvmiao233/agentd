@@ -169,6 +169,10 @@ pub struct RegorusQueryPaths {
     pub allow: String,
     pub deny: String,
     pub explain: String,
+    pub transpiled_allow: String,
+    pub transpiled_deny: String,
+    pub transpiled_explain: String,
+    pub transpiled_source_layer: String,
 }
 
 impl Default for RegorusQueryPaths {
@@ -177,9 +181,17 @@ impl Default for RegorusQueryPaths {
             allow: "data.agentd.policy.allow".to_string(),
             deny: "data.agentd.policy.deny".to_string(),
             explain: "data.agentd.policy.explain".to_string(),
+            transpiled_allow: "data.agentd.transpiled.allow".to_string(),
+            transpiled_deny: "data.agentd.transpiled.deny".to_string(),
+            transpiled_explain: "data.agentd.transpiled.explain".to_string(),
+            transpiled_source_layer: "data.agentd.transpiled.source_layer".to_string(),
         }
     }
 }
+
+const REGO_POLICY_SOURCE: &str = "rego:data.agentd.policy";
+const REGO_TRANSPILED_SOURCE: &str = "rego:data.agentd.transpiled";
+const TRANSPILED_POLICY_PATH: &str = "__generated__/toml-transpiled.rego";
 
 #[derive(Debug)]
 pub struct RegorusPolicyEngine {
@@ -202,11 +214,16 @@ impl RegorusPolicyEngine {
             layers.session_override.clone(),
         );
         let policy_files = discover_rego_files(&policy_dir)?;
-        let rego_engine = if policy_files.is_empty() {
-            None
-        } else {
-            Some(Mutex::new(build_regorus_engine(&policy_files)?))
-        };
+        let transpiled_policy = transpile_policy_layers_to_rego(
+            &layers.global,
+            &layers.agent_profile,
+            &layers.session_override,
+        )?;
+        let generated_modules = vec![(TRANSPILED_POLICY_PATH.to_string(), transpiled_policy)];
+        let rego_engine = Some(Mutex::new(build_regorus_engine(
+            &policy_files,
+            &generated_modules,
+        )?));
 
         Ok(Self {
             layered,
@@ -236,37 +253,72 @@ impl RegorusPolicyEngine {
             .set_input_json(&input_json)
             .map_err(|err| AgentError::Runtime(format!("set rego input failed: {err}")))?;
 
-        let deny = engine
-            .eval_bool_query(self.query_paths.deny.clone(), false)
-            .map_err(|err| AgentError::Runtime(format!("evaluate deny query failed: {err}")))?;
-        let allow = engine
-            .eval_bool_query(self.query_paths.allow.clone(), false)
-            .map_err(|err| AgentError::Runtime(format!("evaluate allow query failed: {err}")))?;
+        let policy_deny = eval_rule_as_bool_or_false(&mut engine, &self.query_paths.deny)?;
+        let policy_allow = eval_rule_as_bool_or_false(&mut engine, &self.query_paths.allow)?;
 
-        let explanation = match engine.eval_rule(self.query_paths.explain.clone()) {
-            Ok(value) if value != regorus::Value::Undefined => {
-                if let Ok(explain) = value.as_string() {
-                    Some(explain.as_ref().to_string())
-                } else {
-                    Some(value.to_string())
-                }
-            }
-            _ => None,
-        };
+        let transpiled_deny =
+            eval_rule_as_bool_or_false(&mut engine, &self.query_paths.transpiled_deny)?;
+        let transpiled_allow =
+            eval_rule_as_bool_or_false(&mut engine, &self.query_paths.transpiled_allow)?;
 
-        let (decision, matched_rule) = if deny {
-            (PolicyDecision::Deny, explanation)
-        } else if allow {
-            (PolicyDecision::Allow, explanation)
+        let policy_explanation =
+            eval_rule_as_optional_string(&mut engine, &self.query_paths.explain)?;
+        let transpiled_explanation =
+            eval_rule_as_optional_string(&mut engine, &self.query_paths.transpiled_explain)?;
+        let transpiled_source_layer =
+            eval_rule_as_optional_string(&mut engine, &self.query_paths.transpiled_source_layer)?;
+
+        let (decision, matched_rule, source_layer) = if policy_deny {
+            (
+                PolicyDecision::Deny,
+                policy_explanation
+                    .clone()
+                    .or_else(|| transpiled_explanation.clone()),
+                Some(REGO_POLICY_SOURCE.to_string()),
+            )
+        } else if transpiled_deny {
+            (
+                PolicyDecision::Deny,
+                transpiled_explanation.clone(),
+                transpiled_source_layer
+                    .clone()
+                    .or_else(|| Some(REGO_TRANSPILED_SOURCE.to_string())),
+            )
+        } else if policy_allow {
+            (
+                PolicyDecision::Allow,
+                policy_explanation
+                    .clone()
+                    .or_else(|| transpiled_explanation.clone()),
+                Some(REGO_POLICY_SOURCE.to_string()),
+            )
+        } else if transpiled_allow {
+            (
+                PolicyDecision::Allow,
+                transpiled_explanation.clone(),
+                transpiled_source_layer
+                    .clone()
+                    .or_else(|| Some(REGO_TRANSPILED_SOURCE.to_string())),
+            )
+        } else if policy_explanation.is_some() {
+            (
+                PolicyDecision::Ask,
+                policy_explanation,
+                Some(REGO_POLICY_SOURCE.to_string()),
+            )
         } else {
-            (PolicyDecision::Ask, explanation)
+            (
+                PolicyDecision::Ask,
+                transpiled_explanation,
+                transpiled_source_layer,
+            )
         };
 
         Ok(PolicyEvaluation {
             tool: input.tool.name.clone(),
             decision,
             matched_rule,
-            source_layer: Some("rego:data.agentd.policy".to_string()),
+            source_layer,
         })
     }
 }
@@ -333,7 +385,7 @@ impl PolicyEngine for RegorusPolicyEngine {
                 tool: input.tool.name.clone(),
                 decision: PolicyDecision::Ask,
                 matched_rule: Some(format!("regorus.error: {err}")),
-                source_layer: Some("rego:data.agentd.policy".to_string()),
+                source_layer: Some(REGO_POLICY_SOURCE.to_string()),
             },
         }
     }
@@ -341,16 +393,21 @@ impl PolicyEngine for RegorusPolicyEngine {
     fn load(&mut self, layers: PolicyEngineLayers) -> Result<(), AgentError> {
         self.layered =
             LayeredPolicyEngine::new(layers.global, layers.agent_profile, layers.session_override);
-        Ok(())
+        self.reload()
     }
 
     fn reload(&mut self) -> Result<(), AgentError> {
         self.policy_files = discover_rego_files(&self.policy_dir)?;
-        self.rego_engine = if self.policy_files.is_empty() {
-            None
-        } else {
-            Some(Mutex::new(build_regorus_engine(&self.policy_files)?))
-        };
+        let transpiled_policy = transpile_policy_layers_to_rego(
+            &self.layered.global,
+            &self.layered.agent_profile,
+            &self.layered.session_override,
+        )?;
+        let generated_modules = vec![(TRANSPILED_POLICY_PATH.to_string(), transpiled_policy)];
+        self.rego_engine = Some(Mutex::new(build_regorus_engine(
+            &self.policy_files,
+            &generated_modules,
+        )?));
         Ok(())
     }
 
@@ -396,7 +453,10 @@ fn discover_rego_files(policy_dir: &Path) -> Result<Vec<PathBuf>, AgentError> {
     Ok(paths)
 }
 
-fn build_regorus_engine(policy_files: &[PathBuf]) -> Result<regorus::Engine, AgentError> {
+fn build_regorus_engine(
+    policy_files: &[PathBuf],
+    generated_modules: &[(String, String)],
+) -> Result<regorus::Engine, AgentError> {
     let mut engine = regorus::Engine::new();
     for path in policy_files {
         engine.add_policy_from_file(path).map_err(|err| {
@@ -406,7 +466,70 @@ fn build_regorus_engine(policy_files: &[PathBuf]) -> Result<regorus::Engine, Age
             ))
         })?;
     }
+    for (path, rego) in generated_modules {
+        engine
+            .add_policy(path.clone(), rego.clone())
+            .map_err(|err| {
+                AgentError::Config(format!("compile rego policy {path} failed: {err}"))
+            })?;
+    }
     Ok(engine)
+}
+
+fn eval_rule_as_optional_string(
+    engine: &mut regorus::Engine,
+    query: &str,
+) -> Result<Option<String>, AgentError> {
+    match engine.eval_rule(query.to_string()) {
+        Ok(value) if value != regorus::Value::Undefined => {
+            if let Ok(explain) = value.as_string() {
+                Ok(Some(explain.as_ref().to_string()))
+            } else {
+                Ok(Some(value.to_string()))
+            }
+        }
+        Ok(_) => Ok(None),
+        Err(err) => {
+            let err_msg = err.to_string();
+            if err_msg.contains("not a valid rule path") {
+                Ok(None)
+            } else {
+                Err(AgentError::Runtime(format!(
+                    "evaluate rego rule `{query}` failed: {err_msg}"
+                )))
+            }
+        }
+    }
+}
+
+fn eval_rule_as_bool_or_false(
+    engine: &mut regorus::Engine,
+    query: &str,
+) -> Result<bool, AgentError> {
+    let value = match engine.eval_rule(query.to_string()) {
+        Ok(value) => value,
+        Err(err) => {
+            let err_msg = err.to_string();
+            if err_msg.contains("not a valid rule path") {
+                return Ok(false);
+            }
+            return Err(AgentError::Runtime(format!(
+                "evaluate rego rule `{query}` failed: {err_msg}"
+            )));
+        }
+    };
+
+    if value == regorus::Value::Undefined {
+        return Ok(false);
+    }
+
+    if let Ok(as_bool) = value.as_bool() {
+        return Ok(*as_bool);
+    }
+
+    Err(AgentError::Runtime(format!(
+        "rego rule `{query}` must evaluate to boolean, got {value}"
+    )))
 }
 
 impl PolicyEvaluation {
@@ -444,6 +567,174 @@ struct RuleMatch {
     pattern: String,
     specificity: usize,
     rule_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranspiledRule {
+    id: usize,
+    decision: PolicyDecision,
+    layer_index: usize,
+    layer_name: String,
+    pattern: String,
+    specificity: usize,
+    rule_index: usize,
+    regex_pattern: String,
+}
+
+fn transpile_policy_layers_to_rego(
+    global: &PolicyLayer,
+    agent_profile: &PolicyLayer,
+    session_override: &PolicyLayer,
+) -> Result<String, AgentError> {
+    let rules = collect_transpiled_rules(global, agent_profile, session_override)?;
+
+    let mut rego = String::from("package agentd.transpiled\nimport rego.v1\n\n");
+    if rules.is_empty() {
+        return Ok(rego);
+    }
+
+    for rule in &rules {
+        let regex_literal = serde_json::to_string(&rule.regex_pattern)
+            .map_err(|err| AgentError::Runtime(format!("serialize regex pattern failed: {err}")))?;
+        rego.push_str(&format!(
+            "rule_{}_match if {{\n  regex.match({}, input.tool.name)\n}}\n\n",
+            rule.id, regex_literal
+        ));
+    }
+
+    for rule in &rules {
+        rego.push_str(&format!(
+            "rule_{}_wins if {{\n  rule_{}_match\n",
+            rule.id, rule.id
+        ));
+        for higher in rules
+            .iter()
+            .filter(|candidate| has_higher_precedence(candidate, rule))
+        {
+            rego.push_str(&format!("  not rule_{}_match\n", higher.id));
+        }
+        rego.push_str("}\n\n");
+    }
+
+    for rule in &rules {
+        match rule.decision {
+            PolicyDecision::Allow => {
+                rego.push_str(&format!("allow if rule_{}_wins\n\n", rule.id));
+            }
+            PolicyDecision::Deny => {
+                rego.push_str(&format!("deny if rule_{}_wins\n\n", rule.id));
+            }
+            PolicyDecision::Ask => {}
+        }
+
+        let pattern_literal = serde_json::to_string(&rule.pattern)
+            .map_err(|err| AgentError::Runtime(format!("serialize matched rule failed: {err}")))?;
+        let layer_literal = serde_json::to_string(&rule.layer_name)
+            .map_err(|err| AgentError::Runtime(format!("serialize layer name failed: {err}")))?;
+        rego.push_str(&format!(
+            "explain := {} if rule_{}_wins\n\n",
+            pattern_literal, rule.id
+        ));
+        rego.push_str(&format!(
+            "source_layer := {} if rule_{}_wins\n\n",
+            layer_literal, rule.id
+        ));
+    }
+
+    Ok(rego)
+}
+
+fn collect_transpiled_rules(
+    global: &PolicyLayer,
+    agent_profile: &PolicyLayer,
+    session_override: &PolicyLayer,
+) -> Result<Vec<TranspiledRule>, AgentError> {
+    let layers = [global, agent_profile, session_override];
+    let mut rules = Vec::new();
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        for (rule_index, rule) in layer.rules.iter().enumerate() {
+            validate_transpilable_pattern(&layer.name, &rule.pattern)?;
+            rules.push(TranspiledRule {
+                id: rules.len(),
+                decision: rule.decision,
+                layer_index,
+                layer_name: layer.name.clone(),
+                pattern: rule.pattern.clone(),
+                specificity: rule
+                    .pattern
+                    .chars()
+                    .filter(|c| *c != '*' && *c != '?')
+                    .count(),
+                rule_index,
+                regex_pattern: wildcard_pattern_to_regex(&rule.pattern),
+            });
+        }
+    }
+
+    Ok(rules)
+}
+
+fn validate_transpilable_pattern(layer_name: &str, pattern: &str) -> Result<(), AgentError> {
+    let printable = pattern.escape_default().to_string();
+
+    if pattern.trim().is_empty() {
+        return Err(AgentError::InvalidInput(format!(
+            "unsupported toml policy key `{printable}` in layer `{layer_name}`: empty pattern"
+        )));
+    }
+
+    if pattern.contains('\n') || pattern.contains('\r') {
+        return Err(AgentError::InvalidInput(format!(
+            "unsupported toml policy key `{printable}` in layer `{layer_name}`: multiline pattern"
+        )));
+    }
+
+    Ok(())
+}
+
+fn wildcard_pattern_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '\\' | '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' => {
+                regex.push('\\');
+                regex.push(ch);
+            }
+            _ => regex.push(ch),
+        }
+    }
+    regex.push('$');
+    regex
+}
+
+fn has_higher_precedence(candidate: &TranspiledRule, current: &TranspiledRule) -> bool {
+    let candidate_decision = decision_precedence_rank(candidate.decision);
+    let current_decision = decision_precedence_rank(current.decision);
+
+    if candidate_decision != current_decision {
+        return candidate_decision < current_decision;
+    }
+
+    if candidate.layer_index != current.layer_index {
+        return candidate.layer_index > current.layer_index;
+    }
+
+    if candidate.specificity != current.specificity {
+        return candidate.specificity > current.specificity;
+    }
+
+    candidate.rule_index < current.rule_index
+}
+
+fn decision_precedence_rank(decision: PolicyDecision) -> u8 {
+    match decision {
+        PolicyDecision::Deny => 0,
+        PolicyDecision::Ask => 1,
+        PolicyDecision::Allow => 2,
+    }
 }
 
 impl PolicyLayer {
@@ -740,5 +1031,110 @@ mod tests {
             .validate()
             .expect_err("missing tool should be rejected");
         assert!(err.to_string().contains("missing required field tool"));
+    }
+
+    #[test]
+    fn transpile_rejects_multiline_policy_key() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![],
+        };
+        let profile = PolicyLayer {
+            name: "agent_profile".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "mcp.fs.read\nsecret".to_string(),
+                decision: PolicyDecision::Deny,
+            }],
+        };
+        let session = PolicyLayer {
+            name: "session_override".to_string(),
+            rules: vec![],
+        };
+
+        let err = transpile_policy_layers_to_rego(&global, &profile, &session)
+            .expect_err("multiline key should be rejected");
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("unsupported toml policy key"));
+        assert!(err_msg.contains("mcp.fs.read\\nsecret"));
+    }
+
+    #[test]
+    fn transpiled_rego_matches_legacy_layer_resolution() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "*".to_string(),
+                decision: PolicyDecision::Ask,
+            }],
+        };
+        let profile = PolicyLayer {
+            name: "agent_profile".to_string(),
+            rules: vec![
+                PolicyRule {
+                    pattern: "mcp.fs.read:*".to_string(),
+                    decision: PolicyDecision::Allow,
+                },
+                PolicyRule {
+                    pattern: "mcp.fs.read:*.env".to_string(),
+                    decision: PolicyDecision::Deny,
+                },
+            ],
+        };
+        let session = SessionPolicyOverrides {
+            allow_tools: vec![],
+            ask_tools: vec![],
+            deny_tools: vec!["mcp.shell.exec".to_string()],
+        }
+        .into_layer();
+
+        let transpiled = transpile_policy_layers_to_rego(&global, &profile, &session)
+            .expect("transpile should succeed");
+        let mut rego = regorus::Engine::new();
+        rego.add_policy(TRANSPILED_POLICY_PATH.to_string(), transpiled)
+            .expect("load transpiled rego should succeed");
+
+        for tool in [
+            "mcp.fs.read:notes.txt",
+            "mcp.fs.read:secrets.env",
+            "mcp.shell.exec",
+            "mcp.git.status",
+        ] {
+            let legacy = PolicyLayer::evaluate_tool(&global, &profile, &session, tool);
+            let input = PolicyInputContext {
+                agent: PolicyAgentContext {
+                    id: Some("agent-test".to_string()),
+                    trust_level: Some("ask".to_string()),
+                },
+                tool: PolicyToolContext {
+                    name: tool.to_string(),
+                },
+                resource: PolicyResourceContext { uri: None },
+                time: PolicyTimeContext {
+                    timestamp_rfc3339: None,
+                },
+                request_meta: BTreeMap::new(),
+            };
+            rego.set_input_json(
+                &serde_json::to_string(&input).expect("serialize policy input should succeed"),
+            )
+            .expect("set rego input should succeed");
+
+            let deny = eval_rule_as_bool_or_false(&mut rego, "data.agentd.transpiled.deny")
+                .expect("evaluate deny should succeed");
+            let allow = eval_rule_as_bool_or_false(&mut rego, "data.agentd.transpiled.allow")
+                .expect("evaluate allow should succeed");
+            let re_eval_decision = if deny {
+                PolicyDecision::Deny
+            } else if allow {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Ask
+            };
+
+            assert_eq!(
+                re_eval_decision, legacy.decision,
+                "decision mismatch for tool {tool}"
+            );
+        }
     }
 }
