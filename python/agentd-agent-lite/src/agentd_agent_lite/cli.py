@@ -55,6 +55,52 @@ class RetryExhaustedError(Exception):
         )
 
 
+class AgentSession:
+    def __init__(self, agent_id: str, *, max_context_tokens: int = 0) -> None:
+        self.agent_id = agent_id
+        self.messages: list[dict[str, Any]] = []
+        self.head_id: str | None = None
+        self.tool_results_cache: dict[str, Any] = {}
+        self.context_window_tokens = 0
+        self.max_context_tokens = max_context_tokens
+
+    def _append_message(self, role: str, content: str) -> dict[str, Any]:
+        message = {
+            "id": str(uuid.uuid4()),
+            "parent_id": self.head_id,
+            "role": role,
+            "content": content,
+        }
+        self.messages.append(message)
+        self.head_id = message["id"]
+        return message
+
+    def _get_active_branch(self) -> list[dict[str, Any]]:
+        branch: list[dict[str, Any]] = []
+        index = {
+            message["id"]: message
+            for message in self.messages
+            if isinstance(message.get("id"), str) and message["id"]
+        }
+
+        current_id = self.head_id
+        visited: set[str] = set()
+        while (
+            isinstance(current_id, str)
+            and current_id
+            and current_id not in visited
+            and current_id in index
+        ):
+            visited.add(current_id)
+            message = index[current_id]
+            branch.append(message)
+
+            parent_id = message.get("parent_id")
+            current_id = parent_id if isinstance(parent_id, str) else None
+
+        return list(reversed(branch))
+
+
 def call_rpc(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "jsonrpc": "2.0",
