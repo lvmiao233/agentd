@@ -1,0 +1,19 @@
+{
+  "verification": "F1",
+  "name": "Plan Compliance Audit",
+  "verdict": "REJECT",
+  "source_session_id": "ses_3460b0439ffepPMD2qhQZZyyPw",
+  "summary": "Evidence completeness does not meet roadmap baseline.",
+  "blocking_findings": [
+    "Roadmap-linked required evidence count: 57; present: 21; missing: 36.",
+    "Existing final-wave-f1 text artifact uses stale baseline (top_level_tasks=20/20, required_task_evidence=40/40) and does not match current 1-28 scope."
+  ],
+  "non_blocking_findings": [
+    "Implementation-side spot checks across Rust/Python/Web were found for key tasks."
+  ],
+  "evidence_basis": [
+    ".sisyphus/plans/roadmap-v1.md",
+    ".sisyphus/evidence/final-wave-f1-plan-compliance.txt"
+  ],
+  "recorded_at": "2026-03-05T00:00:00+08:00"
+}
