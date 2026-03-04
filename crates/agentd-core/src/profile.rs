@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::error::AgentError;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub id: Uuid,
@@ -43,6 +45,29 @@ pub enum PermissionPolicy {
     Allow,
     Ask,
     Deny,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustLevel {
+    Builtin,
+    Verified,
+    Community,
+    Untrusted,
+}
+
+impl TrustLevel {
+    pub fn parse(raw: &str) -> Result<Self, AgentError> {
+        match raw {
+            "builtin" => Ok(Self::Builtin),
+            "verified" => Ok(Self::Verified),
+            "community" => Ok(Self::Community),
+            "untrusted" => Ok(Self::Untrusted),
+            _ => Err(AgentError::InvalidInput(format!(
+                "invalid trust_level `{raw}` (expected: builtin|verified|community|untrusted)"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

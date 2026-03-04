@@ -1,5 +1,6 @@
 mod cgroup;
 mod lifecycle;
+mod mcp;
 
 use agentd_core::audit::{AuditContext, EventPayload, EventResult, EventSeverity, EventType};
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
@@ -4036,6 +4037,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             count = loaded_profiles.len(),
             names = ?profile_names,
             "Loaded agent profiles"
+        );
+    }
+
+    let mcp_configs_dir = Path::new("configs/mcp-servers");
+    let loaded_mcp_configs = mcp::load_mcp_server_configs(mcp_configs_dir)?;
+    if loaded_mcp_configs.is_empty() {
+        info!(configs_dir = %mcp_configs_dir.display(), "No MCP server configs loaded");
+    } else {
+        let mcp_servers = loaded_mcp_configs
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        info!(
+            configs_dir = %mcp_configs_dir.display(),
+            count = loaded_mcp_configs.len(),
+            servers = ?mcp_servers,
+            "Loaded MCP server configs"
         );
     }
 
