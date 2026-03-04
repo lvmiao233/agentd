@@ -16,7 +16,8 @@ use agentd_core::{
     PolicyRule, RegorusPolicyEngine, SessionPolicyOverrides,
 };
 use agentd_protocol::{
-    A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse,
+    A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
+    JsonRpcRequest, JsonRpcResponse,
 };
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
@@ -24,6 +25,7 @@ use chrono::Utc;
 use clap::Parser;
 use lifecycle::{FirecrackerRuntimeSpec, LifecycleManager, ManagedAgentSpec, ManagedRuntimeSpec};
 use mcp::{load_mcp_server_configs, McpHost};
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -38,6 +40,131 @@ use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
+
+const AGENTD_MDNS_SERVICE_TYPE: &str = "_agentd._tcp.local.";
+const AGENTD_MDNS_DISCOVERY_TIMEOUT_MS: u64 = 500;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiscoveryAgentRecord {
+    agent_id: String,
+    name: String,
+    model: String,
+    provider: String,
+    endpoint: String,
+    source: String,
+    health: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RegistryRegisterRequest {
+    agent_id: String,
+    name: String,
+    model: String,
+    provider: String,
+    endpoint: String,
+    #[serde(default)]
+    health: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegistryAgentEntry {
+    agent_id: String,
+    name: String,
+    model: String,
+    provider: String,
+    endpoint: String,
+    health: String,
+    updated_at: String,
+}
+
+trait LanDiscovery: Send + Sync {
+    fn discover(&self) -> Result<Vec<DiscoveryAgentRecord>, String>;
+}
+
+#[derive(Debug, Default)]
+struct MdnsLanDiscovery;
+
+impl LanDiscovery for MdnsLanDiscovery {
+    fn discover(&self) -> Result<Vec<DiscoveryAgentRecord>, String> {
+        let daemon =
+            ServiceDaemon::new().map_err(|err| format!("create mdns daemon failed: {err}"))?;
+        let receiver = daemon
+            .browse(AGENTD_MDNS_SERVICE_TYPE)
+            .map_err(|err| format!("browse mdns service failed: {err}"))?;
+        let deadline =
+            std::time::Instant::now() + Duration::from_millis(AGENTD_MDNS_DISCOVERY_TIMEOUT_MS);
+        let mut discovered = HashMap::new();
+
+        while std::time::Instant::now() < deadline {
+            if let Ok(ServiceEvent::ServiceResolved(info)) =
+                receiver.recv_timeout(Duration::from_millis(100))
+            {
+                let endpoint = info
+                    .get_property("endpoint")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| {
+                        let host = info
+                            .get_addresses()
+                            .iter()
+                            .next()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "127.0.0.1".to_string());
+                        format!("http://{}:{}", host, info.get_port())
+                    });
+                let agent_id = info
+                    .get_property("agent_id")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| info.get_fullname().to_string());
+                let name = info
+                    .get_property("name")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| info.get_fullname().to_string());
+                let model = info
+                    .get_property("model")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let provider = info
+                    .get_property("provider")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let health = info
+                    .get_property("health")
+                    .map(|value| value.val_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                discovered.insert(
+                    agent_id.clone(),
+                    DiscoveryAgentRecord {
+                        agent_id,
+                        name,
+                        model,
+                        provider,
+                        endpoint,
+                        source: "lan".to_string(),
+                        health,
+                    },
+                );
+            }
+        }
+
+        let _ = daemon.stop_browse(AGENTD_MDNS_SERVICE_TYPE);
+        let _ = daemon.shutdown();
+
+        Ok(discovered.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct StaticLanDiscovery {
+    records: Vec<DiscoveryAgentRecord>,
+}
+
+#[cfg(test)]
+impl LanDiscovery for StaticLanDiscovery {
+    fn discover(&self) -> Result<Vec<DiscoveryAgentRecord>, String> {
+        Ok(self.records.clone())
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "agentd")]
@@ -254,7 +381,7 @@ fn default_one_api_create_channel_path() -> String {
     "/api/channel/".to_string()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct RuntimeState {
     one_api_status: Arc<RwLock<String>>,
     create_agent_lock: Arc<Mutex<()>>,
@@ -264,6 +391,8 @@ struct RuntimeState {
     firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
     a2a_tasks: Arc<RwLock<HashMap<uuid::Uuid, A2ATask>>>,
     a2a_stream_tx: broadcast::Sender<A2ATaskEvent>,
+    registry_agents: Arc<RwLock<HashMap<String, RegistryAgentEntry>>>,
+    lan_discovery: Arc<RwLock<Arc<dyn LanDiscovery>>>,
 }
 
 impl RuntimeState {
@@ -330,6 +459,8 @@ impl RuntimeState {
             firecracker_executor,
             a2a_tasks: Arc::new(RwLock::new(HashMap::new())),
             a2a_stream_tx,
+            registry_agents: Arc::new(RwLock::new(HashMap::new())),
+            lan_discovery: Arc::new(RwLock::new(Arc::new(MdnsLanDiscovery))),
         }
     }
 
@@ -431,6 +562,223 @@ impl RuntimeState {
         };
         let _ = self.a2a_stream_tx.send(event);
     }
+
+    async fn upsert_registry_agent(&self, entry: RegistryAgentEntry) {
+        let mut registry = self.registry_agents.write().await;
+        registry.insert(entry.agent_id.clone(), entry);
+    }
+
+    async fn list_registry_agents(&self) -> Vec<RegistryAgentEntry> {
+        self.registry_agents
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    async fn discover_lan_agents(&self) -> Result<Vec<DiscoveryAgentRecord>, AgentError> {
+        let discovery = self.lan_discovery.read().await.clone();
+        tokio::task::spawn_blocking(move || discovery.discover())
+            .await
+            .map_err(|err| AgentError::Runtime(format!("join lan discovery task failed: {err}")))?
+            .map_err(|err| AgentError::Runtime(format!("lan discovery failed: {err}")))
+    }
+
+    #[cfg(test)]
+    async fn set_lan_discovery_for_test(&self, discovery: Arc<dyn LanDiscovery>) {
+        let mut guard = self.lan_discovery.write().await;
+        *guard = discovery;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct A2AHttpClient {
+    http: reqwest::Client,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct A2AAgentCard {
+    agent_id: String,
+    name: String,
+    version: String,
+    model: String,
+    provider: String,
+    #[serde(default)]
+    capabilities: Value,
+}
+
+impl A2AHttpClient {
+    fn new() -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("build reqwest client without proxy"),
+        }
+    }
+
+    async fn discover_agent(&self, base_url: &str) -> Result<A2AAgentCard, AgentError> {
+        let url = format!(
+            "{}/.well-known/agent.json",
+            normalize_http_base_url(base_url)?
+        );
+        let response =
+            self.http.get(url).send().await.map_err(|err| {
+                AgentError::Runtime(format!("discover agent request failed: {err}"))
+            })?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("discover agent failed: {err}")))?;
+        response
+            .json::<A2AAgentCard>()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("decode agent card failed: {err}")))
+    }
+
+    async fn create_task(
+        &self,
+        base_url: &str,
+        payload: &CreateA2ATaskRequest,
+    ) -> Result<A2ATask, AgentError> {
+        let url = format!("{}/a2a/tasks", normalize_http_base_url(base_url)?);
+        let response = self
+            .http
+            .post(url)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("create task request failed: {err}")))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("create task failed: {err}")))?;
+        let created = response
+            .json::<CreateA2ATaskResponse>()
+            .await
+            .map_err(|err| {
+                AgentError::Runtime(format!("decode create task response failed: {err}"))
+            })?;
+        Ok(created.task)
+    }
+
+    async fn stream_task(
+        &self,
+        base_url: &str,
+        task_id: uuid::Uuid,
+    ) -> Result<Vec<A2ATaskEvent>, AgentError> {
+        let url = format!(
+            "{}/a2a/stream?task_id={}",
+            normalize_http_base_url(base_url)?,
+            task_id
+        );
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("stream task request failed: {err}")))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| AgentError::Runtime(format!("stream task failed: {err}")))?;
+        let body = response
+            .text()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("read stream body failed: {err}")))?;
+
+        let mut events = Vec::new();
+        for line in body.lines() {
+            if let Some(payload) = line.strip_prefix("data: ") {
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let event = serde_json::from_str::<A2ATaskEvent>(payload).map_err(|err| {
+                    AgentError::Runtime(format!("decode stream payload failed: {err}"))
+                })?;
+                events.push(event);
+            }
+        }
+
+        Ok(events)
+    }
+}
+
+fn normalize_http_base_url(base_url: &str) -> Result<String, AgentError> {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return Err(AgentError::InvalidInput(
+            "base url must be non-empty".to_string(),
+        ));
+    }
+    if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
+        return Err(AgentError::InvalidInput(format!(
+            "base url must start with http:// or https://, got: {normalized}"
+        )));
+    }
+    Ok(normalized.to_string())
+}
+
+fn registry_entry_to_discovery(entry: &RegistryAgentEntry) -> DiscoveryAgentRecord {
+    DiscoveryAgentRecord {
+        agent_id: entry.agent_id.clone(),
+        name: entry.name.clone(),
+        model: entry.model.clone(),
+        provider: entry.provider.clone(),
+        endpoint: entry.endpoint.clone(),
+        source: "registry".to_string(),
+        health: entry.health.clone(),
+    }
+}
+
+async fn fetch_remote_registry_agents(
+    base_url: &str,
+) -> Result<Vec<RegistryAgentEntry>, AgentError> {
+    let url = format!("{}/registry/agents", normalize_http_base_url(base_url)?);
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|err| AgentError::Runtime(format!("build reqwest client failed: {err}")))?;
+    let response = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("fetch registry agents failed: {err}")))?;
+    let response = response
+        .error_for_status()
+        .map_err(|err| AgentError::Runtime(format!("registry endpoint returned error: {err}")))?;
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("decode registry payload failed: {err}")))?;
+    serde_json::from_value::<Vec<RegistryAgentEntry>>(payload["agents"].clone())
+        .map_err(|err| AgentError::Runtime(format!("decode registry entries failed: {err}")))
+}
+
+fn start_mdns_advertisement(bind_addr: SocketAddr) -> Result<ServiceDaemon, AgentError> {
+    let daemon = ServiceDaemon::new()
+        .map_err(|err| AgentError::Runtime(format!("create mdns daemon failed: {err}")))?;
+    let instance_name = format!("agentd-{}", bind_addr.port());
+    let host_name = format!("{}.local.", bind_addr.ip());
+    let properties = [
+        ("endpoint", format!("http://{bind_addr}")),
+        ("agent_id", instance_name.clone()),
+        ("name", "agentd-daemon".to_string()),
+        ("model", "daemon".to_string()),
+        ("provider", "agentd".to_string()),
+        ("health", "ready".to_string()),
+    ];
+    let service = ServiceInfo::new(
+        AGENTD_MDNS_SERVICE_TYPE,
+        &instance_name,
+        &host_name,
+        bind_addr.ip().to_string(),
+        bind_addr.port(),
+        &properties[..],
+    )
+    .map_err(|err| AgentError::Runtime(format!("build mdns service info failed: {err}")))?;
+    daemon
+        .register(service)
+        .map_err(|err| AgentError::Runtime(format!("register mdns service failed: {err}")))?;
+    Ok(daemon)
 }
 
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -839,7 +1187,9 @@ async fn firecracker_executor_launches_vm() {
     assert_eq!(ready["status"], json!("ok"));
 
     let socket_path = vm.config().vsock_path.clone();
-    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    vm.shutdown()
+        .await
+        .expect("firecracker vm shutdown should succeed");
     assert!(!socket_path.exists(), "vsock socket should be cleaned up");
 
     let _ = std::fs::remove_dir_all(root);
@@ -990,7 +1340,9 @@ async fn firecracker_vsock_roundtrip() {
     assert_eq!(response["transport"], json!("vsock-simulated"));
     assert_eq!(response["echo"], payload);
 
-    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    vm.shutdown()
+        .await
+        .expect("firecracker vm shutdown should succeed");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1160,7 +1512,8 @@ async fn untrusted_agent_uses_firecracker_runtime() {
         "agentd-daemon-task21-test-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let cgroup_root = std::env::temp_dir().join(format!("agentd-task21-cgroup-{}", uuid::Uuid::new_v4()));
+    let cgroup_root =
+        std::env::temp_dir().join(format!("agentd-task21-cgroup-{}", uuid::Uuid::new_v4()));
     let firecracker_root = temp_firecracker_runtime_dir();
     let script = firecracker_echo_script_path();
     assert!(script.exists(), "vsock echo script should exist");
@@ -1479,6 +1832,130 @@ async fn a2a_server_task_crud_and_stream() {
     cleanup_sqlite_files(&db_path);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_client_discovers_remote_card() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task23-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(1),
+            "CreateAgent",
+            json!({
+                "name": "remote-card-agent",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        created.error.is_none(),
+        "create should succeed: {created:?}"
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test health listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve listener socket address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state,
+        shutdown_rx,
+    ));
+
+    let client = A2AHttpClient::new();
+    let card = client
+        .discover_agent(&format!("http://{bind_addr}"))
+        .await
+        .expect("discover remote agent card");
+    assert_eq!(card.name, "remote-card-agent");
+    assert_eq!(card.model, "claude-4-sonnet");
+    assert_eq!(card.provider, "one-api");
+    assert_eq!(card.capabilities["protocol"], json!("a2a-compatible"));
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn mdns_peer_discovery_finds_remote_agent() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task25-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    state
+        .set_lan_discovery_for_test(Arc::new(StaticLanDiscovery {
+            records: vec![DiscoveryAgentRecord {
+                agent_id: "remote-agent-1".to_string(),
+                name: "remote-agent".to_string(),
+                model: "claude-4-sonnet".to_string(),
+                provider: "one-api".to_string(),
+                endpoint: "http://10.0.0.2:8080".to_string(),
+                source: "lan".to_string(),
+                health: "ready".to_string(),
+            }],
+        }))
+        .await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test health listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve listener socket address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state,
+        shutdown_rx,
+    ));
+
+    let mut conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect discover endpoint");
+    let req = "GET /discover HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    conn.write_all(req.as_bytes())
+        .await
+        .expect("send discover request");
+    let mut resp = Vec::new();
+    conn.read_to_end(&mut resp)
+        .await
+        .expect("read discover response");
+    let text = String::from_utf8(resp).expect("discover response should be utf8");
+    assert!(text.starts_with("HTTP/1.1 200 OK"));
+    let body = text
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("discover response body should exist");
+    let payload: Value =
+        serde_json::from_str(body).expect("discover response body should be valid json");
+    assert_eq!(payload["lan"][0]["agent_id"], json!("remote-agent-1"));
+    assert_eq!(payload["lan"][0]["source"], json!("lan"));
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
 async fn health_server(
     listener: TcpListener,
     bind_addr: SocketAddr,
@@ -1507,6 +1984,107 @@ async fn health_server(
                 let method = request_parts.next().unwrap_or("");
                 let raw_path = request_parts.next().unwrap_or("/");
                 let (path, query) = split_path_and_query(raw_path);
+
+                if method == "GET" && path == "/.well-known/agent.json" {
+                    let response = match store.list_agents().await {
+                        Ok(agents) => {
+                            if let Some(profile) = agents.into_iter().next() {
+                                json_http_response("200 OK", &build_a2a_agent_card(&profile))?
+                            } else {
+                                json_http_response(
+                                    "404 Not Found",
+                                    &json!({"error": "no registered agents"}),
+                                )?
+                            }
+                        }
+                        Err(err) => json_http_response(
+                            "500 Internal Server Error",
+                            &json!({"error": format!("load agent card failed: {err}")}),
+                        )?,
+                    };
+                    stream.write_all(response.as_bytes()).await?;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
+
+                if method == "POST" && path == "/registry/agents" {
+                    let parsed = serde_json::from_str::<RegistryRegisterRequest>(request_body(&request));
+                    let payload = match parsed {
+                        Ok(value) => value,
+                        Err(err) => {
+                            let response = json_http_response(
+                                "400 Bad Request",
+                                &json!({"error": format!("invalid registry payload: {err}")}),
+                            )?;
+                            stream.write_all(response.as_bytes()).await?;
+                            let _ = stream.shutdown().await;
+                            continue;
+                        }
+                    };
+
+                    let entry = RegistryAgentEntry {
+                        agent_id: payload.agent_id,
+                        name: payload.name,
+                        model: payload.model,
+                        provider: payload.provider,
+                        endpoint: payload.endpoint,
+                        health: payload.health.unwrap_or_else(|| "unknown".to_string()),
+                        updated_at: Utc::now().to_rfc3339(),
+                    };
+                    state.upsert_registry_agent(entry.clone()).await;
+                    let response = json_http_response("201 Created", &json!({"agent": entry}))?;
+                    stream.write_all(response.as_bytes()).await?;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
+
+                if method == "GET" && path == "/registry/agents" {
+                    let agents = state.list_registry_agents().await;
+                    let response = json_http_response("200 OK", &json!({"agents": agents}))?;
+                    stream.write_all(response.as_bytes()).await?;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
+
+                if method == "GET" && path == "/discover" {
+                    let mut errors = Vec::new();
+
+                    let lan = match state.discover_lan_agents().await {
+                        Ok(records) => records,
+                        Err(err) => {
+                            errors.push(format!("lan discovery failed: {err}"));
+                            Vec::new()
+                        }
+                    };
+
+                    let registry = if let Some(registry_url) = query_param(query, "registry_url") {
+                        match fetch_remote_registry_agents(&registry_url).await {
+                            Ok(records) => records,
+                            Err(err) => {
+                                errors.push(format!("registry query failed: {err}"));
+                                state.list_registry_agents().await
+                            }
+                        }
+                    } else {
+                        state.list_registry_agents().await
+                    };
+
+                    let registry = registry
+                        .iter()
+                        .map(registry_entry_to_discovery)
+                        .collect::<Vec<_>>();
+                    let response = json_http_response(
+                        "200 OK",
+                        &json!({
+                            "lan": lan,
+                            "registry": registry,
+                            "errors": errors,
+                        }),
+                    )?;
+                    stream.write_all(response.as_bytes()).await?;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
 
                 if method == "GET" && path == "/a2a/stream" {
                     let Some(task_id_raw) = query_param(query, "task_id") else {
@@ -5588,22 +6166,21 @@ async fn handle_rpc_request(
                 }
             };
 
-            let network_policy = match parse_network_isolation_policy(
-                trust_level,
-                params.network_policy.as_deref(),
-            ) {
-                Ok(policy) => policy,
-                Err(AgentError::InvalidInput(message)) => {
-                    return JsonRpcResponse::error(request.id, -32602, message);
-                }
-                Err(err) => {
-                    return JsonRpcResponse::error(
-                        request.id,
-                        -32017,
-                        format!("resolve network policy failed: {err}"),
-                    );
-                }
-            };
+            let network_policy =
+                match parse_network_isolation_policy(trust_level, params.network_policy.as_deref())
+                {
+                    Ok(policy) => policy,
+                    Err(AgentError::InvalidInput(message)) => {
+                        return JsonRpcResponse::error(request.id, -32602, message);
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            format!("resolve network policy failed: {err}"),
+                        );
+                    }
+                };
 
             let runtime = match trust_level {
                 TrustLevel::Builtin | TrustLevel::Verified => ManagedRuntimeSpec::Cgroup,
@@ -7088,6 +7665,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let health_listener = TcpListener::bind(bind_addr).await?;
+    let mdns_daemon = match start_mdns_advertisement(bind_addr) {
+        Ok(daemon) => {
+            info!(%bind_addr, service_type = AGENTD_MDNS_SERVICE_TYPE, "mDNS advertisement registered");
+            Some(daemon)
+        }
+        Err(err) => {
+            warn!(%err, %bind_addr, "mDNS advertisement disabled due to setup error");
+            None
+        }
+    };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let health_task = tokio::spawn(health_server(
@@ -7198,6 +7785,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(err) => {
             warn!(%err, "MCP host shutdown encountered errors");
+        }
+    }
+
+    if let Some(daemon) = mdns_daemon {
+        if let Err(err) = daemon.shutdown() {
+            warn!(%err, "mDNS daemon shutdown encountered errors");
+        } else {
+            info!(
+                service_type = AGENTD_MDNS_SERVICE_TYPE,
+                "mDNS daemon shut down"
+            );
         }
     }
 

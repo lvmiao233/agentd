@@ -24,6 +24,33 @@ struct StoredAgent {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RegistryAgentEntry {
+    pub agent_id: String,
+    pub name: String,
+    pub model: String,
+    pub provider: String,
+    pub endpoint: String,
+    pub health: String,
+    pub updated_at: String,
+}
+
+pub fn to_registry_agent_entry(
+    profile: &AgentProfile,
+    endpoint: String,
+    health: String,
+) -> RegistryAgentEntry {
+    RegistryAgentEntry {
+        agent_id: profile.id.to_string(),
+        name: profile.name.clone(),
+        model: profile.model.model_name.clone(),
+        provider: profile.model.provider.clone(),
+        endpoint,
+        health,
+        updated_at: Utc::now().to_rfc3339(),
+    }
+}
+
 pub fn insert_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), AgentError> {
     let stored = from_profile(profile)?;
     conn.execute(

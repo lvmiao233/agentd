@@ -11,6 +11,7 @@ pub mod db;
 pub mod one_api;
 pub mod usage;
 
+pub use agent::RegistryAgentEntry;
 pub use one_api::OneApiMapping;
 pub use usage::{AgentUsageSummary, UsageWindow};
 

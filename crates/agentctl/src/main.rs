@@ -1,4 +1,6 @@
-use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
+use agentd_protocol::{
+    A2ATask, A2ATaskEvent, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse,
+};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,9 +36,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Discover {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        registry_url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Agent {
         #[command(subcommand)]
         command: Box<AgentCommands>,
+    },
+    A2a {
+        #[command(subcommand)]
+        command: Box<A2aCommands>,
     },
 }
 
@@ -143,6 +157,154 @@ enum AgentCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum A2aCommands {
+    Discover {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Send {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        agent_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone)]
+struct AgentctlA2AClient {
+    http: reqwest::Client,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct A2AAgentCard {
+    agent_id: String,
+    name: String,
+    version: String,
+    model: String,
+    provider: String,
+    #[serde(default)]
+    capabilities: Value,
+}
+
+impl AgentctlA2AClient {
+    fn new() -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("build reqwest client without proxy"),
+        }
+    }
+
+    async fn discover_agent(&self, base_url: &str) -> Result<A2AAgentCard, DynError> {
+        let url = format!("{}/.well-known/agent.json", normalize_base_url(base_url)?);
+        let response = self.http.get(url).send().await?;
+        let response = response.error_for_status()?;
+        Ok(response.json::<A2AAgentCard>().await?)
+    }
+
+    async fn create_task(
+        &self,
+        target: &str,
+        payload: CreateA2ATaskRequest,
+    ) -> Result<A2ATask, DynError> {
+        let url = format!("{}/a2a/tasks", normalize_base_url(target)?);
+        let response = self.http.post(url).json(&payload).send().await?;
+        let response = response.error_for_status()?;
+        let body = response.json::<serde_json::Value>().await?;
+        let task = serde_json::from_value::<A2ATask>(body["task"].clone())
+            .map_err(|err| format!("invalid create task response: {err}"))?;
+        Ok(task)
+    }
+
+    async fn get_task(&self, target: &str, task_id: &str) -> Result<A2ATask, DynError> {
+        let url = format!(
+            "{}/a2a/tasks/{}",
+            normalize_base_url(target)?,
+            task_id.trim()
+        );
+        let response = self.http.get(url).send().await?;
+        let response = response.error_for_status()?;
+        let body = response.json::<serde_json::Value>().await?;
+        let task = serde_json::from_value::<A2ATask>(body["task"].clone())
+            .map_err(|err| format!("invalid get task response: {err}"))?;
+        Ok(task)
+    }
+
+    async fn stream_task(
+        &self,
+        target: &str,
+        task_id: &str,
+    ) -> Result<Vec<A2ATaskEvent>, DynError> {
+        let url = format!(
+            "{}/a2a/stream?task_id={}",
+            normalize_base_url(target)?,
+            task_id.trim()
+        );
+        let response = self.http.get(url).send().await?;
+        let response = response.error_for_status()?;
+        let text = response.text().await?;
+        let mut events = Vec::new();
+        for line in text.lines() {
+            if let Some(payload) = line.strip_prefix("data: ") {
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let event = serde_json::from_str::<A2ATaskEvent>(payload)
+                    .map_err(|err| format!("invalid stream event payload: {err}"))?;
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+}
+
+fn normalize_base_url(input: &str) -> Result<String, DynError> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("target url must be non-empty".into());
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(
+            format!("target url must start with http:// or https://, got: {trimmed}").into(),
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn fetch_discovery_report(
+    daemon_url: &str,
+    registry_url: Option<&str>,
+) -> Result<Value, DynError> {
+    let daemon = normalize_base_url(daemon_url)?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let mut endpoint = reqwest::Url::parse(&format!("{daemon}/discover"))?;
+    if let Some(registry) = registry_url {
+        endpoint
+            .query_pairs_mut()
+            .append_pair("registry_url", &normalize_base_url(registry)?);
+    }
+
+    let response = client.get(endpoint).send().await?;
+    let response = response.error_for_status()?;
+    Ok(response.json::<Value>().await?)
 }
 
 async fn call_rpc(
@@ -371,6 +533,79 @@ async fn run_cli(
             )
             .await?;
             print_response(response, json)?;
+        }
+        Commands::Discover {
+            url,
+            registry_url,
+            json,
+        } => {
+            let result = fetch_discovery_report(&url, registry_url.as_deref()).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", result);
+            }
+        }
+        Commands::A2a { command } => {
+            let client = AgentctlA2AClient::new();
+            match *command {
+                A2aCommands::Discover { url, json } => {
+                    let card = client.discover_agent(&url).await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&card)?);
+                    } else {
+                        println!(
+                            "agent={} model={} provider={} version={}",
+                            card.name, card.model, card.provider, card.version
+                        );
+                    }
+                }
+                A2aCommands::Send {
+                    target,
+                    input,
+                    agent_id,
+                    json,
+                } => {
+                    let task = client
+                        .create_task(
+                            &target,
+                            CreateA2ATaskRequest {
+                                agent_id: agent_id
+                                    .as_deref()
+                                    .map(uuid::Uuid::parse_str)
+                                    .transpose()
+                                    .map_err(|err| format!("invalid --agent-id: {err}"))?,
+                                input: json!(input),
+                            },
+                        )
+                        .await?;
+
+                    let status = client.get_task(&target, &task.id.to_string()).await?;
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "task": task,
+                                "status": status,
+                            }))?
+                        );
+                    } else {
+                        println!("task_id={} state={:?}", status.id, status.state);
+                    }
+                }
+                A2aCommands::Status {
+                    target,
+                    task_id,
+                    json,
+                } => {
+                    let task = client.get_task(&target, &task_id).await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&task)?);
+                    } else {
+                        println!("task_id={} state={:?}", task.id, task.state);
+                    }
+                }
+            }
         }
         Commands::Agent { command } => match *command {
             AgentCommands::List { json } => {
@@ -643,4 +878,224 @@ fn slash_commands_core_set_available() {
 #[test]
 fn approval_queue_roundtrip() {
     assert!(tui::approval_queue_roundtrip_probe());
+}
+
+fn test_json_http_response(status_line: &str, body: &Value) -> Vec<u8> {
+    let encoded = serde_json::to_string(body).expect("encode response body");
+    format!(
+        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        encoded.len(),
+        encoded
+    )
+    .into_bytes()
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_cli_discover_send_status_flow() {
+    let task_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock a2a listener");
+    let addr = listener.local_addr().expect("resolve mock listener addr");
+
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.expect("accept mock request");
+            let mut buf = [0_u8; 8192];
+            let read = stream.read(&mut buf).await.expect("read mock request");
+            let request = String::from_utf8_lossy(&buf[..read]).to_string();
+            let request_line = request.lines().next().unwrap_or_default().to_string();
+
+            let response = if request_line.starts_with("GET /.well-known/agent.json ") {
+                test_json_http_response(
+                    "200 OK",
+                    &json!({
+                        "agent_id": task_id.to_string(),
+                        "name": "mock-agent",
+                        "version": "0.1.0",
+                        "model": "claude-4-sonnet",
+                        "provider": "builtin",
+                        "capabilities": {
+                            "protocol": "a2a-compatible"
+                        }
+                    }),
+                )
+            } else if request_line.starts_with("POST /a2a/tasks ") {
+                test_json_http_response(
+                    "201 Created",
+                    &json!({
+                        "task": {
+                            "id": task_id,
+                            "agent_id": null,
+                            "state": "submitted",
+                            "input": "ping",
+                            "output": null,
+                            "error": null,
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    }),
+                )
+            } else if request_line.starts_with(&format!("GET /a2a/tasks/{task_id} ")) {
+                test_json_http_response(
+                    "200 OK",
+                    &json!({
+                        "task": {
+                            "id": task_id,
+                            "agent_id": null,
+                            "state": "completed",
+                            "input": "ping",
+                            "output": {"result": "ok"},
+                            "error": null,
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    }),
+                )
+            } else {
+                test_json_http_response("404 Not Found", &json!({"error": "not found"}))
+            };
+
+            stream
+                .write_all(&response)
+                .await
+                .expect("write mock response");
+            let _ = stream.shutdown().await;
+        }
+    });
+
+    let base = format!("http://{addr}");
+
+    let discover = Cli::try_parse_from(["agentctl", "a2a", "discover", "--url", &base, "--json"])
+        .expect("discover args should parse");
+    run_cli(discover, || Ok(()))
+        .await
+        .expect("discover should succeed");
+
+    let send = Cli::try_parse_from([
+        "agentctl", "a2a", "send", "--target", &base, "--input", "ping", "--json",
+    ])
+    .expect("send args should parse");
+    run_cli(send, || Ok(())).await.expect("send should succeed");
+
+    let status = Cli::try_parse_from([
+        "agentctl",
+        "a2a",
+        "status",
+        "--target",
+        &base,
+        "--task-id",
+        &task_id.to_string(),
+        "--json",
+    ])
+    .expect("status args should parse");
+    run_cli(status, || Ok(()))
+        .await
+        .expect("status should succeed");
+
+    server.await.expect("mock server should finish");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_discover_handles_unreachable_remote() {
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "a2a",
+        "discover",
+        "--url",
+        "http://127.0.0.1:9",
+        "--json",
+    ])
+    .expect("cli args should parse");
+    let result = run_cli(cli, || Ok(())).await;
+    assert!(
+        result.is_err(),
+        "discover should fail for unreachable remote"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn discover_lists_lan_and_registry_sources() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind discover mock server");
+    let addr = listener
+        .local_addr()
+        .expect("resolve discover mock address");
+
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept discover request");
+            let mut buf = [0_u8; 8192];
+            let read = stream.read(&mut buf).await.expect("read discover request");
+            let request = String::from_utf8_lossy(&buf[..read]).to_string();
+            let request_line = request.lines().next().unwrap_or_default().to_string();
+            assert!(request_line.contains("/discover"));
+
+            let response = test_json_http_response(
+                "200 OK",
+                &json!({
+                    "lan": [{
+                        "agent_id": "lan-a",
+                        "name": "lan-node",
+                        "model": "claude-4-sonnet",
+                        "provider": "one-api",
+                        "endpoint": "http://10.0.0.2:8080",
+                        "source": "lan",
+                        "health": "ready"
+                    }],
+                    "registry": [{
+                        "agent_id": "reg-b",
+                        "name": "registry-node",
+                        "model": "claude-4-sonnet",
+                        "provider": "one-api",
+                        "endpoint": "https://registry.example.com/agents/reg-b",
+                        "source": "registry",
+                        "health": "ready"
+                    }],
+                    "errors": []
+                }),
+            );
+            stream
+                .write_all(&response)
+                .await
+                .expect("write discover response");
+            let _ = stream.shutdown().await;
+        }
+    });
+
+    let base = format!("http://{addr}");
+    let report = fetch_discovery_report(&base, Some(&base))
+        .await
+        .expect("fetch discovery report");
+    assert_eq!(
+        report["lan"][0]["source"],
+        json!("lan"),
+        "lan source should be present"
+    );
+    assert_eq!(
+        report["registry"][0]["source"],
+        json!("registry"),
+        "registry source should be present"
+    );
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "discover",
+        "--url",
+        &base,
+        "--registry-url",
+        &base,
+        "--json",
+    ])
+    .expect("discover args should parse");
+    run_cli(cli, || Ok(()))
+        .await
+        .expect("discover command should succeed");
+
+    server.await.expect("discover mock server should finish");
 }
