@@ -1,4 +1,5 @@
 mod cgroup;
+mod firecracker;
 mod lifecycle;
 mod mcp;
 
@@ -609,6 +610,52 @@ async fn mcp_registry_syncs_capabilities_from_initialize() {
 }
 
 #[cfg(test)]
+fn temp_firecracker_runtime_dir() -> PathBuf {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    std::env::temp_dir().join(format!("adfc-{}", &suffix[..10]))
+}
+
+#[cfg(test)]
+fn write_test_placeholder(path: &Path) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create test parent directory");
+    }
+    std::fs::write(path, b"placeholder").expect("write test placeholder file");
+}
+
+#[cfg(test)]
+fn firecracker_echo_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/firecracker/vsock-agent-echo.py")
+}
+
+#[cfg(test)]
+fn build_firecracker_executor_for_test(root: &Path) -> firecracker::FirecrackerExecutor {
+    let kernel = root.join("vmlinux.bin");
+    let rootfs = root.join("rootfs.ext4");
+    write_test_placeholder(&kernel);
+    write_test_placeholder(&rootfs);
+
+    firecracker::FirecrackerExecutor::builder()
+        .kernel_path(kernel)
+        .rootfs_path(rootfs)
+        .default_vcpu_count(1)
+        .default_mem_size_mib(512)
+        .vsock_root_dir(root.join("vsock"))
+        .build()
+        .expect("build firecracker executor")
+}
+
+#[cfg(test)]
+async fn firecracker_wait_process_exit(pid: u32) {
+    for _ in 0..40 {
+        if !PathBuf::from(format!("/proc/{pid}")).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
 #[tokio::test]
 async fn unhealthy_server_removed_from_available_tools() {
     let mut host = mcp::McpHost::new();
@@ -638,6 +685,55 @@ async fn unhealthy_server_removed_from_available_tools() {
         .any(|tool| tool.server_id == "mcp-transient" && tool.tool_name == "transient.echo"));
 
     host.stop_all().await.expect("mcp host stop should succeed");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn firecracker_executor_launches_vm() {
+    let root = temp_firecracker_runtime_dir();
+    let script = firecracker_echo_script_path();
+    assert!(script.exists(), "vsock echo script should exist");
+
+    let executor = build_firecracker_executor_for_test(&root);
+    let agent_id = uuid::Uuid::new_v4();
+    let network = firecracker::FirecrackerNetworkConfig {
+        tap_device: "fc-test0".to_string(),
+        host_ipv4: "10.10.0.1/30".to_string(),
+        guest_ipv4: "10.10.0.2/30".to_string(),
+    };
+
+    let mut vm = executor
+        .launch_agent(firecracker::FirecrackerAgentLaunchSpec {
+            agent_id,
+            command: "/usr/bin/env".to_string(),
+            args: vec!["python3".to_string(), script.display().to_string()],
+            env: HashMap::new(),
+            vcpu_count: Some(2),
+            mem_size_mib: Some(1024),
+            network: Some(network.clone()),
+            launch_timeout: Duration::from_secs(2),
+        })
+        .await
+        .expect("firecracker vm launch should succeed");
+
+    assert_eq!(vm.agent_id(), agent_id);
+    assert_eq!(vm.config().kernel_path, root.join("vmlinux.bin"));
+    assert_eq!(vm.config().rootfs_path, root.join("rootfs.ext4"));
+    assert_eq!(vm.config().vcpu_count, 2);
+    assert_eq!(vm.config().mem_size_mib, 1024);
+    assert_eq!(vm.config().network, Some(network));
+
+    let ready = vm
+        .roundtrip_json(&json!({"rpc": "daemon.ready"}))
+        .await
+        .expect("firecracker vsock should be ready after launch");
+    assert_eq!(ready["status"], json!("ok"));
+
+    let socket_path = vm.config().vsock_path.clone();
+    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    assert!(!socket_path.exists(), "vsock socket should be cleaned up");
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[cfg(test)]
@@ -748,6 +844,47 @@ async fn list_available_tools_filters_by_policy() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn firecracker_vsock_roundtrip() {
+    let root = temp_firecracker_runtime_dir();
+    let script = firecracker_echo_script_path();
+    assert!(script.exists(), "vsock echo script should exist");
+
+    let executor = build_firecracker_executor_for_test(&root);
+    let agent_id = uuid::Uuid::new_v4();
+    let mut vm = executor
+        .launch_agent(firecracker::FirecrackerAgentLaunchSpec {
+            agent_id,
+            command: "/usr/bin/env".to_string(),
+            args: vec!["python3".to_string(), script.display().to_string()],
+            env: HashMap::new(),
+            vcpu_count: None,
+            mem_size_mib: None,
+            network: None,
+            launch_timeout: Duration::from_secs(2),
+        })
+        .await
+        .expect("firecracker vm launch should succeed");
+
+    let payload = json!({
+        "rpc": "daemon.ping",
+        "agent_id": agent_id,
+        "body": {"message": "hello-vsock"}
+    });
+    let response = vm
+        .roundtrip_json(&payload)
+        .await
+        .expect("vsock roundtrip should succeed");
+
+    assert_eq!(response["status"], json!("ok"));
+    assert_eq!(response["transport"], json!("vsock-simulated"));
+    assert_eq!(response["echo"], payload);
+
+    vm.shutdown().await.expect("firecracker vm shutdown should succeed");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn invoke_skill_denied_writes_audit() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-test-{}.sqlite",
@@ -849,6 +986,58 @@ async fn invoke_skill_denied_writes_audit() {
         .await
         .expect("mcp host stop should succeed");
     cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn firecracker_launch_timeout_returns_stable_error() {
+    let root = temp_firecracker_runtime_dir();
+    let executor = build_firecracker_executor_for_test(&root);
+    let agent_id = uuid::Uuid::new_v4();
+    let pid_file = root.join("vm.pid");
+
+    let command = format!("echo $$ > \"{}\"; sleep 5", pid_file.display());
+    let err = executor
+        .launch_agent(firecracker::FirecrackerAgentLaunchSpec {
+            agent_id,
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), command],
+            env: HashMap::new(),
+            vcpu_count: None,
+            mem_size_mib: None,
+            network: None,
+            launch_timeout: Duration::from_millis(200),
+        })
+        .await
+        .expect_err("vm launch should timeout when vsock is not connected");
+
+    match err {
+        AgentError::Runtime(message) => {
+            assert!(
+                message.contains("firecracker launch timeout"),
+                "unexpected timeout error message: {message}"
+            );
+        }
+        other => panic!("expected runtime timeout error, got: {other}"),
+    }
+
+    let socket_path = executor.vsock_path_for_agent(agent_id);
+    assert!(
+        !socket_path.exists(),
+        "launch timeout should clean stale vsock socket"
+    );
+
+    if let Ok(pid_text) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_text.trim().parse::<u32>() {
+            firecracker_wait_process_exit(pid).await;
+            assert!(
+                !PathBuf::from(format!("/proc/{pid}")).exists(),
+                "launch timeout should not leave orphan vm process"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 async fn health_server(
