@@ -2917,6 +2917,7 @@ async fn semantic_migration_l1_continues_workflow() {
         bind_addr,
         target_store,
         target_state,
+        OneApiConfig::default(),
         shutdown_rx,
     ));
 
@@ -3046,6 +3047,7 @@ async fn snapshot_migration_l2_roundtrip() {
         bind_addr,
         target_store,
         target_state,
+        OneApiConfig::default(),
         shutdown_rx,
     ));
 
