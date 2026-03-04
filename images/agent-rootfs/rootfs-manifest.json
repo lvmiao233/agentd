@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "image": {
+    "tag": "0.1.0",
+    "base_version": "0.1.0",
+    "source_date_epoch": 1772622006
+  },
+  "artifact": {
+    "rootfs_dir": "images/agent-rootfs/out/0.1.0/rootfs",
+    "archive": "images/agent-rootfs/out/0.1.0/rootfs.tar.gz",
+    "sha256": "23c7916b1a2ea2b67b875b74fd710124a883ea3c4b4538b1ae690a8c3c51bfda",
+    "checksum_file": "images/agent-rootfs/out/0.1.0/rootfs.tar.gz.sha256"
+  },
+  "content": {
+    "python_binary": "/usr/bin/python3",
+    "agent_lite_entrypoint": "/usr/local/bin/agentd-agent-lite",
+    "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py"
+  }
+}

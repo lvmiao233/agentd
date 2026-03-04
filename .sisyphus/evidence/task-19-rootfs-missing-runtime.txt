@@ -1,0 +1,5 @@
+task=19
+status=failed
+step=verify-rootfs
+reason=missing python runtime: images/agent-rootfs/out/0.1.0/broken-rootfs-fixture/usr/bin/python3
+rootfs_dir=images/agent-rootfs/out/0.1.0/broken-rootfs-fixture
