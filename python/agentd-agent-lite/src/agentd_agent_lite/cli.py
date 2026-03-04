@@ -6,6 +6,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .config import load_config
@@ -124,11 +125,103 @@ class AgentSession:
         return total
 
     def _compact_context(self) -> None:
+        branch = self._get_active_branch()
+        if not branch:
+            return
+
+        keep_tail_size = min(4, len(branch))
+        keep_tail = branch[-keep_tail_size:]
+        summary_source = branch[:-keep_tail_size]
+        if not summary_source and len(branch) > 1:
+            keep_tail = branch[-1:]
+            summary_source = branch[:-1]
+
+        summary_text = self._build_compact_summary(summary_source)
+        previous_head_id = self.head_id
+
+        compact_root: dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "parent_id": None,
+            "role": "system",
+            "content": summary_text,
+            "compact": {
+                "kind": "auto_compact_summary",
+                "source_head_id": previous_head_id,
+            },
+        }
+        self.messages.append(compact_root)
+        new_head_id = str(compact_root["id"])
+
+        for original in keep_tail:
+            role = original.get("role")
+            if not isinstance(role, str):
+                continue
+
+            content = original.get("content")
+            if not isinstance(content, str):
+                content = ""
+
+            copied: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "parent_id": new_head_id,
+                "role": role,
+                "content": content,
+            }
+
+            tool_calls = original.get("tool_calls")
+            if isinstance(tool_calls, list):
+                copied["tool_calls"] = tool_calls
+
+            tool_call_id = original.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                copied["tool_call_id"] = tool_call_id
+
+            self.messages.append(copied)
+            new_head_id = str(copied["id"])
+
+        self.head_id = new_head_id
         self._append_message(
             "system",
-            "context budget threshold reached, compact hook triggered",
+            "context budget threshold reached, compact hook triggered with summary backfill",
         )
         self._refresh_context_window_tokens()
+
+    def _build_compact_summary(self, messages: list[dict[str, Any]]) -> str:
+        if not messages:
+            return "context summary: no prior messages to compact"
+
+        facts: list[str] = []
+        seen: set[tuple[str, str]] = set()
+
+        for item in messages:
+            role = item.get("role")
+            if not isinstance(role, str):
+                continue
+
+            content = item.get("content")
+            if not isinstance(content, str):
+                continue
+
+            normalized = " ".join(content.strip().split())
+            if not normalized:
+                continue
+
+            if len(normalized) > 180:
+                normalized = f"{normalized[:177]}..."
+
+            key = (role, normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            facts.append(f"- {role}: {normalized}")
+            if len(facts) >= 8:
+                break
+
+        if not facts:
+            facts.append("- no key facts extracted")
+
+        return "context summary (auto-compact):\n" + "\n".join(facts)
 
     def _maybe_trigger_compact(self) -> bool:
         if self.max_context_tokens <= 0:
@@ -151,6 +244,175 @@ class AgentSession:
         result["compact_triggered"] = compact_triggered
         result["context_window_tokens"] = self.context_window_tokens
         return result
+
+
+def _normalize_loaded_message(raw_message: dict[str, Any]) -> dict[str, Any]:
+    message_id = raw_message.get("id")
+    if not isinstance(message_id, str) or not message_id:
+        raise ValueError("invalid session message: id is required")
+
+    parent_id = raw_message.get("parent_id")
+    if parent_id is not None and not isinstance(parent_id, str):
+        raise ValueError("invalid session message: parent_id must be null or string")
+
+    role = raw_message.get("role")
+    if not isinstance(role, str) or not role:
+        raise ValueError("invalid session message: role is required")
+
+    content = raw_message.get("content")
+    if not isinstance(content, str):
+        content = ""
+
+    normalized: dict[str, Any] = {
+        "id": message_id,
+        "parent_id": parent_id,
+        "role": role,
+        "content": content,
+    }
+
+    tool_calls = raw_message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        normalized["tool_calls"] = tool_calls
+
+    tool_call_id = raw_message.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        normalized["tool_call_id"] = tool_call_id
+
+    compact = raw_message.get("compact")
+    if isinstance(compact, dict):
+        normalized["compact"] = compact
+
+    return normalized
+
+
+def save_session_jsonl(session: AgentSession, file_path: str) -> None:
+    target = Path(file_path)
+    try:
+        if target.parent != Path(""):
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+        with target.open("w", encoding="utf-8") as handle:
+            metadata = {
+                "kind": "session",
+                "agent_id": session.agent_id,
+                "head_id": session.head_id,
+                "max_context_tokens": session.max_context_tokens,
+                "tool_results_cache": session.tool_results_cache,
+            }
+            handle.write(json.dumps(metadata, ensure_ascii=False) + "\n")
+            for message in session.messages:
+                record = {"kind": "message", **message}
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as err:
+        raise ValueError(f"session save failed: {err}") from err
+
+
+def load_session_jsonl(
+    file_path: str,
+    *,
+    agent_id: str | None = None,
+    max_context_tokens: int = 0,
+) -> AgentSession:
+    source = Path(file_path)
+    try:
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except OSError as err:
+        raise ValueError(f"session load failed: {err}") from err
+
+    metadata: dict[str, Any] = {}
+    loaded_messages: list[dict[str, Any]] = []
+
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError as err:
+            raise ValueError(
+                f"session parse error at line {line_number}: {err.msg}"
+            ) from err
+
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"session parse error at line {line_number}: invalid object"
+            )
+
+        kind = record.get("kind")
+        if kind == "session":
+            metadata = record
+            continue
+        if kind == "message":
+            loaded_messages.append(_normalize_loaded_message(record))
+            continue
+
+        loaded_messages.append(_normalize_loaded_message(record))
+
+    loaded_agent_id = metadata.get("agent_id")
+    if not isinstance(loaded_agent_id, str) or not loaded_agent_id:
+        loaded_agent_id = agent_id
+    if not isinstance(loaded_agent_id, str) or not loaded_agent_id:
+        raise ValueError("session load failed: agent_id is required")
+
+    metadata_max_context = metadata.get("max_context_tokens")
+    if not isinstance(metadata_max_context, int) or metadata_max_context < 0:
+        metadata_max_context = 0
+
+    effective_max_context_tokens = metadata_max_context
+    if max_context_tokens > 0:
+        effective_max_context_tokens = max_context_tokens
+
+    session = AgentSession(
+        loaded_agent_id,
+        max_context_tokens=effective_max_context_tokens,
+    )
+    session.messages = loaded_messages
+
+    message_ids = {
+        item["id"] for item in loaded_messages if isinstance(item.get("id"), str)
+    }
+    metadata_head_id = metadata.get("head_id")
+    if (
+        isinstance(metadata_head_id, str)
+        and metadata_head_id
+        and metadata_head_id in message_ids
+    ):
+        session.head_id = metadata_head_id
+    elif loaded_messages:
+        session.head_id = loaded_messages[-1]["id"]
+
+    tool_results_cache = metadata.get("tool_results_cache")
+    if isinstance(tool_results_cache, dict):
+        session.tool_results_cache = tool_results_cache
+
+    session._refresh_context_window_tokens()
+    return session
+
+
+def run_session_command(
+    *,
+    command: str,
+    file_path: str,
+    session: AgentSession | None = None,
+    agent_id: str | None = None,
+    max_context_tokens: int = 0,
+) -> AgentSession:
+    normalized_command = command.strip().lower()
+    if normalized_command == "save":
+        if session is None:
+            raise ValueError("session save failed: session is required")
+        save_session_jsonl(session, file_path)
+        return session
+
+    if normalized_command == "load":
+        return load_session_jsonl(
+            file_path,
+            agent_id=agent_id,
+            max_context_tokens=max_context_tokens,
+        )
+
+    raise ValueError(f"unsupported session command: {command}")
 
 
 def call_rpc(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -881,6 +1143,16 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Session context token budget, 0 means disabled",
     )
+    parser.add_argument(
+        "--session-load",
+        default=None,
+        help="Load session JSONL before running the turn",
+    )
+    parser.add_argument(
+        "--session-save",
+        default=None,
+        help="Save session JSONL after completing the turn",
+    )
     return parser.parse_args()
 
 
@@ -933,6 +1205,37 @@ def run_once(args: argparse.Namespace) -> int:
             )
         )
         return 0
+
+    max_context_tokens = max(0, int(getattr(args, "max_context_tokens", 0)))
+
+    session: AgentSession
+    session_load_path = getattr(args, "session_load", None)
+    if isinstance(session_load_path, str) and session_load_path:
+        try:
+            session = run_session_command(
+                command="load",
+                file_path=session_load_path,
+                agent_id=args.agent_id,
+                max_context_tokens=max_context_tokens,
+            )
+        except ValueError as err:
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "session_load",
+                        "error": "invalid_session",
+                        "message": str(err),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+    else:
+        session = AgentSession(
+            args.agent_id,
+            max_context_tokens=max_context_tokens,
+        )
 
     try:
         authorization = call_rpc(
@@ -991,10 +1294,6 @@ def run_once(args: argparse.Namespace) -> int:
         return 2
 
     legacy_tool_output = run_builtin_tool(args.tool, args.prompt)
-    session = AgentSession(
-        args.agent_id,
-        max_context_tokens=max(0, int(getattr(args, "max_context_tokens", 0))),
-    )
 
     response_text = ""
     tool_call_records: list[dict[str, Any]] = []
@@ -1120,6 +1419,28 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
 
+    session_save_path = getattr(args, "session_save", None)
+    if isinstance(session_save_path, str) and session_save_path:
+        try:
+            run_session_command(
+                command="save",
+                file_path=session_save_path,
+                session=session,
+            )
+        except ValueError as err:
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "session_save",
+                        "error": "persist_failed",
+                        "message": str(err),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+
     cost_usd = round(total_tokens * 0.000001, 8)
 
     try:
@@ -1178,6 +1499,12 @@ def run_once(args: argparse.Namespace) -> int:
                     "context_window_tokens": session.context_window_tokens,
                     "max_context_tokens": session.max_context_tokens,
                     "compact_triggered": compact_triggered,
+                },
+                "session": {
+                    "head_id": session.head_id,
+                    "message_count": len(session.messages),
+                    "load_path": session_load_path,
+                    "save_path": session_save_path,
                 },
                 "usage": usage,
             },
