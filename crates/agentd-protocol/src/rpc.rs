@@ -2,6 +2,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const JSONRPC_VERSION: &str = "2.0";
+pub const METHOD_LIST_AVAILABLE_TOOLS: &str = "ListAvailableTools";
+pub const METHOD_INVOKE_SKILL: &str = "InvokeSkill";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListAvailableToolsParams {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvokeSkillParams {
+    pub agent_id: String,
+    pub server: String,
+    pub tool: String,
+    #[serde(default)]
+    pub args: Value,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
