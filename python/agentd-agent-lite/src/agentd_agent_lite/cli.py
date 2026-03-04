@@ -6,7 +6,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .config import load_config
 
@@ -110,6 +110,47 @@ class AgentSession:
             current_id = parent_id if isinstance(parent_id, str) else None
 
         return list(reversed(branch))
+
+    def _refresh_context_window_tokens(self) -> int:
+        total = 0
+        for message in self._get_active_branch():
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                total += estimate_tokens(content)
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                total += estimate_tokens(json.dumps(tool_calls, ensure_ascii=False))
+        self.context_window_tokens = total
+        return total
+
+    def _compact_context(self) -> None:
+        self._append_message(
+            "system",
+            "context budget threshold reached, compact hook triggered",
+        )
+        self._refresh_context_window_tokens()
+
+    def _maybe_trigger_compact(self) -> bool:
+        if self.max_context_tokens <= 0:
+            return False
+
+        self._refresh_context_window_tokens()
+        threshold = max(1, int(self.max_context_tokens * 0.8))
+        if self.context_window_tokens <= threshold:
+            return False
+
+        self._compact_context()
+        return True
+
+    def chat(
+        self, user_input: str, *, run_turn: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any]:
+        self._append_message("user", user_input)
+        compact_triggered = self._maybe_trigger_compact()
+        result = run_turn()
+        result["compact_triggered"] = compact_triggered
+        result["context_window_tokens"] = self.context_window_tokens
+        return result
 
 
 def call_rpc(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -582,6 +623,227 @@ def _classify_llm_error(err: Exception) -> tuple[str, str]:
     return "provider.unknown", "UNKNOWN"
 
 
+def _provider_messages_from_session(session: AgentSession) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in session._get_active_branch():
+        role = item.get("role")
+        content = item.get("content")
+        if not isinstance(role, str):
+            continue
+        if not isinstance(content, str):
+            content = ""
+
+        normalized: dict[str, Any] = {
+            "role": role,
+            "content": content,
+        }
+        tool_calls = item.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            normalized["tool_calls"] = tool_calls
+        tool_call_id = item.get("tool_call_id")
+        if role == "tool" and isinstance(tool_call_id, str) and tool_call_id:
+            normalized["tool_call_id"] = tool_call_id
+
+        messages.append(normalized)
+
+    return messages
+
+
+def _run_chat_turn(
+    *,
+    args: argparse.Namespace,
+    llm_config: Any,
+    session: AgentSession,
+    max_iterations: int,
+    max_retries: int,
+) -> dict[str, Any]:
+    tool_call_records: list[dict[str, Any]] = []
+    accumulated_input_tokens = 0
+    accumulated_output_tokens = 0
+    accumulated_total_tokens = 0
+    last_provider_request_id = ""
+    last_request_id_source = "unavailable"
+    last_provider_model = llm_config.model
+    last_usage_source = "estimated"
+    last_transport_mode = "real"
+    response_text = ""
+
+    for _ in range(max_iterations):
+        openai_tools = discover_openai_tools(
+            socket_path=args.socket_path,
+            agent_id=args.agent_id,
+            fallback_tool_name=args.tool,
+            session=session,
+        )
+        llm_result = _invoke_real_with_retry(
+            base_url=llm_config.base_url,
+            api_key=llm_config.api_key,
+            model=llm_config.model,
+            timeout=llm_config.timeout,
+            messages=_provider_messages_from_session(session),
+            tools=openai_tools,
+            max_retries=max_retries,
+        )
+
+        accumulated_input_tokens += int(llm_result["input_tokens"])
+        accumulated_output_tokens += int(llm_result["output_tokens"])
+        accumulated_total_tokens += int(llm_result["total_tokens"])
+
+        provider_request_id = llm_result.get("provider_request_id")
+        if isinstance(provider_request_id, str):
+            last_provider_request_id = provider_request_id
+        request_id_source = llm_result.get("request_id_source")
+        if isinstance(request_id_source, str):
+            last_request_id_source = request_id_source
+        provider_model = llm_result.get("provider_model")
+        if isinstance(provider_model, str):
+            last_provider_model = provider_model
+        usage_source = llm_result.get("usage_source")
+        if isinstance(usage_source, str):
+            last_usage_source = usage_source
+        transport_mode = llm_result.get("transport_mode")
+        if isinstance(transport_mode, str):
+            last_transport_mode = transport_mode
+
+        response_text = str(llm_result.get("output", ""))
+        tool_calls = llm_result.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            assistant_message = session._append_message("assistant", response_text)
+            assistant_message["tool_calls"] = []
+            session._refresh_context_window_tokens()
+            break
+
+        assistant_message = session._append_message("assistant", response_text)
+        assistant_message["tool_calls"] = []
+
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = tool_call.get("id")
+            tool_name = tool_call.get("name")
+            arguments_text = tool_call.get("arguments")
+
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or not isinstance(tool_name, str)
+                or not tool_name
+            ):
+                continue
+
+            parsed_prompt = ""
+            parsed_arguments: Any = {}
+            if isinstance(arguments_text, str) and arguments_text:
+                try:
+                    parsed_arguments = json.loads(arguments_text)
+                except json.JSONDecodeError:
+                    parsed_arguments = {}
+            if isinstance(parsed_arguments, dict):
+                prompt_from_args = parsed_arguments.get("prompt")
+                if isinstance(prompt_from_args, str) and prompt_from_args:
+                    parsed_prompt = prompt_from_args
+            if not parsed_prompt:
+                parsed_prompt = args.prompt
+
+            tool_authorization = call_rpc(
+                args.socket_path,
+                "AuthorizeTool",
+                {
+                    "tool": tool_name,
+                    "agent_id": args.agent_id,
+                },
+            )
+            tool_decision = str(tool_authorization.get("decision", "ask"))
+            if tool_decision == "deny":
+                raise RpcError(-32016, "policy.deny: tool blocked")
+
+            discovered_tool = _resolve_discovered_tool(session, tool_name)
+            if discovered_tool is not None:
+                invoke_result = call_rpc(
+                    args.socket_path,
+                    "InvokeSkill",
+                    {
+                        "agent_id": args.agent_id,
+                        "server": discovered_tool.server,
+                        "tool": discovered_tool.tool,
+                        "args": parsed_arguments,
+                    },
+                )
+                tool_output = _tool_output_to_text(invoke_result)
+                tool_output_record: Any = invoke_result
+            else:
+                tool_output = run_builtin_tool(tool_name, parsed_prompt)
+                tool_output_record = tool_output
+
+            tool_call_records.append(
+                {
+                    "id": call_id,
+                    "name": tool_name,
+                    "arguments": arguments_text
+                    if isinstance(arguments_text, str)
+                    else "{}",
+                    "decision": tool_decision,
+                    "input": parsed_prompt,
+                    "output": tool_output_record,
+                }
+            )
+
+            assistant_message["tool_calls"].append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_text
+                        if isinstance(arguments_text, str)
+                        else "{}",
+                    },
+                }
+            )
+
+            tool_message = session._append_message("tool", tool_output)
+            tool_message["tool_call_id"] = call_id
+            session.tool_results_cache[call_id] = tool_output_record
+
+        session._refresh_context_window_tokens()
+    else:
+        raise RuntimeError("MAX_ITERATIONS_REACHED")
+
+    return {
+        "output": response_text,
+        "tool_calls": tool_call_records,
+        "input_tokens": accumulated_input_tokens,
+        "output_tokens": accumulated_output_tokens,
+        "total_tokens": accumulated_total_tokens,
+        "provider_request_id": last_provider_request_id,
+        "request_id_source": last_request_id_source,
+        "provider_model": last_provider_model,
+        "usage_source": last_usage_source,
+        "transport_mode": last_transport_mode,
+    }
+
+
+def run_chat(
+    *,
+    args: argparse.Namespace,
+    llm_config: Any,
+    session: AgentSession,
+    user_input: str,
+    max_iterations: int,
+    max_retries: int,
+) -> dict[str, Any]:
+    return session.chat(
+        user_input,
+        run_turn=lambda: _run_chat_turn(
+            args=args,
+            llm_config=llm_config,
+            session=session,
+            max_iterations=max_iterations,
+            max_retries=max_retries,
+        ),
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="agentd-agent-lite")
     parser.add_argument("--socket-path", default="/tmp/agentd.sock")
@@ -612,6 +874,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Maximum retries for retryable provider errors",
+    )
+    parser.add_argument(
+        "--max-context-tokens",
+        type=int,
+        default=0,
+        help="Session context token budget, 0 means disabled",
     )
     return parser.parse_args()
 
@@ -723,246 +991,59 @@ def run_once(args: argparse.Namespace) -> int:
         return 2
 
     legacy_tool_output = run_builtin_tool(args.tool, args.prompt)
-    session = AgentSession(args.agent_id)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": args.prompt}]
-    tool_call_records: list[dict[str, Any]] = []
+    session = AgentSession(
+        args.agent_id,
+        max_context_tokens=max(0, int(getattr(args, "max_context_tokens", 0))),
+    )
 
-    accumulated_input_tokens = 0
-    accumulated_output_tokens = 0
-    accumulated_total_tokens = 0
+    response_text = ""
+    tool_call_records: list[dict[str, Any]] = []
+    input_tokens = 0
+    output_tokens = 0
+    total_tokens = 0
     last_provider_request_id = ""
     last_request_id_source = "unavailable"
     last_provider_model = llm_config.model
     last_usage_source = "estimated"
     last_transport_mode = "real"
-
-    response_text = ""
+    compact_triggered = False
     provider_call_attempted = False
 
     try:
-        for _ in range(max_iterations):
-            provider_call_attempted = True
-            openai_tools = discover_openai_tools(
-                socket_path=args.socket_path,
-                agent_id=args.agent_id,
-                fallback_tool_name=args.tool,
-                session=session,
-            )
-            llm_result = _invoke_real_with_retry(
-                base_url=llm_config.base_url,
-                api_key=llm_config.api_key,
-                model=llm_config.model,
-                timeout=llm_config.timeout,
-                messages=messages,
-                tools=openai_tools,
-                max_retries=max_retries,
-            )
-
-            accumulated_input_tokens += int(llm_result["input_tokens"])
-            accumulated_output_tokens += int(llm_result["output_tokens"])
-            accumulated_total_tokens += int(llm_result["total_tokens"])
-
-            provider_request_id = llm_result.get("provider_request_id")
-            if isinstance(provider_request_id, str):
-                last_provider_request_id = provider_request_id
-            request_id_source = llm_result.get("request_id_source")
-            if isinstance(request_id_source, str):
-                last_request_id_source = request_id_source
-            provider_model = llm_result.get("provider_model")
-            if isinstance(provider_model, str):
-                last_provider_model = provider_model
-            usage_source = llm_result.get("usage_source")
-            if isinstance(usage_source, str):
-                last_usage_source = usage_source
-            transport_mode = llm_result.get("transport_mode")
-            if isinstance(transport_mode, str):
-                last_transport_mode = transport_mode
-
-            response_text = str(llm_result.get("output", ""))
-            tool_calls = llm_result.get("tool_calls")
-            if not isinstance(tool_calls, list) or not tool_calls:
-                break
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": response_text,
-                "tool_calls": [],
-            }
-            tool_response_messages: list[dict[str, Any]] = []
-
-            for tool_call in tool_calls:
-                if not isinstance(tool_call, dict):
-                    continue
-                call_id = tool_call.get("id")
-                tool_name = tool_call.get("name")
-                arguments_text = tool_call.get("arguments")
-
-                if (
-                    not isinstance(call_id, str)
-                    or not call_id
-                    or not isinstance(tool_name, str)
-                    or not tool_name
-                ):
-                    continue
-
-                parsed_prompt = args.prompt
-                parsed_arguments: Any = {}
-                if isinstance(arguments_text, str) and arguments_text:
-                    try:
-                        parsed_arguments = json.loads(arguments_text)
-                        if isinstance(parsed_arguments, dict):
-                            prompt_from_args = parsed_arguments.get("prompt")
-                            if isinstance(prompt_from_args, str) and prompt_from_args:
-                                parsed_prompt = prompt_from_args
-                    except json.JSONDecodeError:
-                        parsed_prompt = args.prompt
-                        parsed_arguments = {}
-
-                try:
-                    tool_authorization = call_rpc(
-                        args.socket_path,
-                        "AuthorizeTool",
-                        {
-                            "tool": tool_name,
-                            "agent_id": args.agent_id,
-                        },
-                    )
-                except RpcError as err:
-                    if err.code == -32016:
-                        print(
-                            json.dumps(
-                                {
-                                    "status": "blocked",
-                                    "agent_id": args.agent_id,
-                                    "tool": tool_name,
-                                    "error": "policy.deny",
-                                    "code": err.code,
-                                    "message": err.message,
-                                    "provider_call_attempted": provider_call_attempted,
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
-                        return 2
-
-                    print(
-                        json.dumps(
-                            {
-                                "status": "failed",
-                                "stage": "authorize",
-                                "tool": tool_name,
-                                "code": err.code,
-                                "message": err.message,
-                                "provider_call_attempted": provider_call_attempted,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 1
-                tool_decision = str(tool_authorization.get("decision", "ask"))
-                if tool_decision == "deny":
-                    print(
-                        json.dumps(
-                            {
-                                "status": "blocked",
-                                "agent_id": args.agent_id,
-                                "tool": tool_name,
-                                "error": "policy.deny",
-                                "message": "tool denied by policy engine",
-                                "provider_call_attempted": provider_call_attempted,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-
-                discovered_tool = _resolve_discovered_tool(session, tool_name)
-                if discovered_tool is not None:
-                    try:
-                        invoke_result = call_rpc(
-                            args.socket_path,
-                            "InvokeSkill",
-                            {
-                                "agent_id": args.agent_id,
-                                "server": discovered_tool.server,
-                                "tool": discovered_tool.tool,
-                                "args": parsed_arguments,
-                            },
-                        )
-                    except RpcError as err:
-                        if err.code == -32016:
-                            print(
-                                json.dumps(
-                                    {
-                                        "status": "blocked",
-                                        "agent_id": args.agent_id,
-                                        "tool": tool_name,
-                                        "error": "policy.deny",
-                                        "code": err.code,
-                                        "message": err.message,
-                                        "provider_call_attempted": provider_call_attempted,
-                                    },
-                                    ensure_ascii=False,
-                                )
-                            )
-                            return 2
-
-                        print(
-                            json.dumps(
-                                {
-                                    "status": "failed",
-                                    "stage": "invoke_skill",
-                                    "tool": tool_name,
-                                    "code": err.code,
-                                    "message": err.message,
-                                    "provider_call_attempted": provider_call_attempted,
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
-                        return 1
-                    tool_output = _tool_output_to_text(invoke_result)
-                    tool_output_record: Any = invoke_result
-                else:
-                    tool_output = run_builtin_tool(tool_name, parsed_prompt)
-                    tool_output_record = tool_output
-
-                tool_call_records.append(
-                    {
-                        "id": call_id,
-                        "name": tool_name,
-                        "arguments": arguments_text
-                        if isinstance(arguments_text, str)
-                        else "{}",
-                        "decision": tool_decision,
-                        "input": parsed_prompt,
-                        "output": tool_output_record,
-                    }
-                )
-
-                assistant_message["tool_calls"].append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": arguments_text
-                            if isinstance(arguments_text, str)
-                            else "{}",
-                        },
-                    }
-                )
-                tool_response_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": tool_output,
-                    }
-                )
-
-            messages.append(assistant_message)
-            messages.extend(tool_response_messages)
-        else:
+        chat_result = run_chat(
+            args=args,
+            llm_config=llm_config,
+            session=session,
+            user_input=args.prompt,
+            max_iterations=max_iterations,
+            max_retries=max_retries,
+        )
+        provider_call_attempted = True
+        response_text = str(chat_result.get("output", ""))
+        tool_call_values = chat_result.get("tool_calls")
+        if isinstance(tool_call_values, list):
+            tool_call_records = tool_call_values
+        input_tokens = int(chat_result.get("input_tokens", 0))
+        output_tokens = int(chat_result.get("output_tokens", 0))
+        total_tokens = int(chat_result.get("total_tokens", 0))
+        provider_request_id = chat_result.get("provider_request_id")
+        if isinstance(provider_request_id, str):
+            last_provider_request_id = provider_request_id
+        request_id_source = chat_result.get("request_id_source")
+        if isinstance(request_id_source, str):
+            last_request_id_source = request_id_source
+        provider_model = chat_result.get("provider_model")
+        if isinstance(provider_model, str):
+            last_provider_model = provider_model
+        usage_source = chat_result.get("usage_source")
+        if isinstance(usage_source, str):
+            last_usage_source = usage_source
+        transport_mode = chat_result.get("transport_mode")
+        if isinstance(transport_mode, str):
+            last_transport_mode = transport_mode
+        compact_triggered = bool(chat_result.get("compact_triggered", False))
+    except RuntimeError as err:
+        if str(err) == "MAX_ITERATIONS_REACHED":
             print(
                 json.dumps(
                     {
@@ -971,12 +1052,45 @@ def run_once(args: argparse.Namespace) -> int:
                         "error": "MAX_ITERATIONS_REACHED",
                         "message": "tool-calling loop exceeded max_iterations",
                         "max_iterations": max_iterations,
-                        "provider_call_attempted": provider_call_attempted,
+                        "provider_call_attempted": True,
                     },
                     ensure_ascii=False,
                 )
             )
             return 1
+        raise
+    except RpcError as err:
+        if err.code == -32016:
+            print(
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "agent_id": args.agent_id,
+                        "tool": args.tool,
+                        "error": "policy.deny",
+                        "code": err.code,
+                        "message": err.message,
+                        "provider_call_attempted": provider_call_attempted,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": "authorize",
+                    "tool": args.tool,
+                    "code": err.code,
+                    "message": err.message,
+                    "provider_call_attempted": provider_call_attempted,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
     except Exception as err:
         attempts = 1
         classified_error = err
@@ -1006,9 +1120,6 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
 
-    input_tokens = accumulated_input_tokens
-    output_tokens = accumulated_output_tokens
-    total_tokens = accumulated_total_tokens
     cost_usd = round(total_tokens * 0.000001, 8)
 
     try:
@@ -1064,6 +1175,9 @@ def run_once(args: argparse.Namespace) -> int:
                     "provider_model": last_provider_model,
                     "usage_source": last_usage_source,
                     "transport_mode": last_transport_mode,
+                    "context_window_tokens": session.context_window_tokens,
+                    "max_context_tokens": session.max_context_tokens,
+                    "compact_triggered": compact_triggered,
                 },
                 "usage": usage,
             },
