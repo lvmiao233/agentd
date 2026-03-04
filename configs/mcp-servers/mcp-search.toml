@@ -1,0 +1,10 @@
+[server]
+name = "mcp-search"
+command = "python"
+args = ["-m", "agentd_mcp_search"]
+transport = "stdio"
+trust_level = "verified"
+
+[policy]
+allowed_domains = ["docs.rs", "pypi.org", "github.com"]
+max_results = 10

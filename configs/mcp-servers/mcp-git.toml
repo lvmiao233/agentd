@@ -1,0 +1,10 @@
+[server]
+name = "mcp-git"
+command = "python"
+args = ["-m", "agentd_mcp_git"]
+transport = "stdio"
+trust_level = "community"
+
+[policy]
+allow_write = false
+allowed_ops = ["status", "log", "show", "diff", "branch"]
