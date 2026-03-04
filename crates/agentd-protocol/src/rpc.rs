@@ -4,6 +4,9 @@ use serde_json::Value;
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const METHOD_LIST_AVAILABLE_TOOLS: &str = "ListAvailableTools";
 pub const METHOD_INVOKE_SKILL: &str = "InvokeSkill";
+pub const METHOD_A2A_CREATE_TASK: &str = "A2A.CreateTask";
+pub const METHOD_A2A_GET_TASK: &str = "A2A.GetTask";
+pub const METHOD_A2A_SUBSCRIBE_STREAM: &str = "A2A.SubscribeStream";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListAvailableToolsParams {
@@ -17,6 +20,26 @@ pub struct InvokeSkillParams {
     pub tool: String,
     #[serde(default)]
     pub args: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2ACreateTaskParams {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2AGetTaskParams {
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2AStreamParams {
+    pub task_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

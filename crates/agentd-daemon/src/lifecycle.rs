@@ -1,4 +1,8 @@
 use crate::cgroup::{CgroupManager, CgroupResourceLimits};
+use crate::firecracker::{
+    FirecrackerAgentLaunchSpec, FirecrackerExecutor, FirecrackerNetworkConfig, JailerConfig,
+    NetworkIsolationPolicy,
+};
 use agentd_core::AgentError;
 use chrono::Utc;
 use serde::Serialize;
@@ -21,6 +25,31 @@ pub struct ManagedAgentSpec {
     pub restart_max_attempts: u32,
     pub restart_backoff_secs: u64,
     pub limits: CgroupResourceLimits,
+    pub runtime: ManagedRuntimeSpec,
+}
+
+#[derive(Debug, Clone)]
+pub enum ManagedRuntimeSpec {
+    Cgroup,
+    Firecracker(FirecrackerRuntimeSpec),
+}
+
+#[derive(Debug, Clone)]
+pub struct FirecrackerRuntimeSpec {
+    pub executor: Arc<FirecrackerExecutor>,
+    pub vcpu_count: Option<u8>,
+    pub mem_size_mib: Option<u32>,
+    pub network: Option<FirecrackerNetworkConfig>,
+    pub network_policy: Option<NetworkIsolationPolicy>,
+    pub jailer: Option<JailerConfig>,
+    pub launch_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedRuntimeKind {
+    Cgroup,
+    Firecracker,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +66,7 @@ pub enum ManagedAgentState {
 pub struct ManagedAgentSnapshot {
     pub agent_id: Uuid,
     pub state: ManagedAgentState,
+    pub runtime: ManagedRuntimeKind,
     pub pid: Option<u32>,
     pub restart_count: u32,
     pub cgroup_path: String,
@@ -93,8 +123,17 @@ impl LifecycleManager {
         }
 
         let agent_id = spec.agent_id;
-        let cgroup_path = self.cgroup.ensure_agent_group(agent_id, &spec.limits)?;
-        let cgroup_path_display = cgroup_path.display().to_string();
+        let runtime = match spec.runtime {
+            ManagedRuntimeSpec::Cgroup => ManagedRuntimeKind::Cgroup,
+            ManagedRuntimeSpec::Firecracker(_) => ManagedRuntimeKind::Firecracker,
+        };
+
+        let cgroup_path_display = if matches!(runtime, ManagedRuntimeKind::Cgroup) {
+            let cgroup_path = self.cgroup.ensure_agent_group(agent_id, &spec.limits)?;
+            cgroup_path.display().to_string()
+        } else {
+            format!("firecracker://{agent_id}")
+        };
 
         let mut guard = self.agents.lock().await;
         if guard.contains_key(&agent_id) {
@@ -107,6 +146,7 @@ impl LifecycleManager {
         let snapshot = Arc::new(RwLock::new(ManagedAgentSnapshot {
             agent_id,
             state: ManagedAgentState::Starting,
+            runtime,
             pid: None,
             restart_count: 0,
             cgroup_path: cgroup_path_display,
@@ -119,9 +159,18 @@ impl LifecycleManager {
         let manager = self.clone();
         let snapshot_clone = snapshot.clone();
         let task = tokio::spawn(async move {
-            manager
-                .run_agent_supervisor(spec, snapshot_clone, stop_rx)
-                .await;
+            match spec.runtime.clone() {
+                ManagedRuntimeSpec::Cgroup => {
+                    manager
+                        .run_cgroup_supervisor(spec, snapshot_clone, stop_rx)
+                        .await;
+                }
+                ManagedRuntimeSpec::Firecracker(runtime_spec) => {
+                    manager
+                        .run_firecracker_supervisor(spec, runtime_spec, snapshot_clone, stop_rx)
+                        .await;
+                }
+            }
         });
 
         guard.insert(
@@ -221,7 +270,7 @@ impl LifecycleManager {
         let _ = self.event_tx.send(event);
     }
 
-    async fn run_agent_supervisor(
+    async fn run_cgroup_supervisor(
         &self,
         spec: ManagedAgentSpec,
         snapshot: Arc<RwLock<ManagedAgentSnapshot>>,
@@ -462,6 +511,131 @@ impl LifecycleManager {
             sleep(Duration::from_secs(spec.restart_backoff_secs)).await;
         }
     }
+
+    async fn run_firecracker_supervisor(
+        &self,
+        spec: ManagedAgentSpec,
+        runtime_spec: FirecrackerRuntimeSpec,
+        snapshot: Arc<RwLock<ManagedAgentSnapshot>>,
+        mut stop_rx: watch::Receiver<bool>,
+    ) {
+        let launch = runtime_spec
+            .executor
+            .launch_agent(FirecrackerAgentLaunchSpec {
+                agent_id: spec.agent_id,
+                command: spec.command.clone(),
+                args: spec.args.clone(),
+                env: spec.env.clone(),
+                vcpu_count: runtime_spec.vcpu_count,
+                mem_size_mib: runtime_spec.mem_size_mib,
+                network: runtime_spec.network.clone(),
+                network_policy: runtime_spec.network_policy.clone(),
+                jailer: runtime_spec.jailer.clone(),
+                launch_timeout: runtime_spec.launch_timeout,
+            })
+            .await;
+
+        let vm = match launch {
+            Ok(vm) => vm,
+            Err(err) => {
+                {
+                    let mut state = snapshot.write().await;
+                    state.state = ManagedAgentState::Failed;
+                    state.pid = None;
+                    state.restart_count = 0;
+                }
+                self.push_event(new_event(
+                    spec.agent_id,
+                    "agent.start_failed",
+                    "error",
+                    serde_json::json!({
+                        "runtime": "firecracker",
+                        "error": err.to_string(),
+                    }),
+                ))
+                .await;
+                return;
+            }
+        };
+
+        {
+            let mut state = snapshot.write().await;
+            state.state = ManagedAgentState::Running;
+            state.pid = vm.pid();
+            state.restart_count = 0;
+        }
+
+        self.push_event(new_event(
+            spec.agent_id,
+            "agent.started",
+            "info",
+            serde_json::json!({
+                "runtime": "firecracker",
+                "pid": vm.pid(),
+            }),
+        ))
+        .await;
+
+        loop {
+            tokio::select! {
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = sleep(Duration::from_millis(150)) => {
+                    if let Some(pid) = vm.pid() {
+                        if !std::path::PathBuf::from(format!("/proc/{pid}")).exists() {
+                                {
+                                    let mut state = snapshot.write().await;
+                                    state.state = ManagedAgentState::Stopped;
+                                    state.pid = None;
+                                }
+                                self.push_event(new_event(
+                                    spec.agent_id,
+                                    "agent.exited",
+                                    "info",
+                                    serde_json::json!({
+                                        "runtime": "firecracker",
+                                        "pid": pid,
+                                    }),
+                                ))
+                                .await;
+                                return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let shutdown_result = vm.shutdown().await;
+        {
+            let mut state = snapshot.write().await;
+            state.state = ManagedAgentState::Stopped;
+            state.pid = None;
+        }
+
+        match shutdown_result {
+            Ok(()) => {
+                self.push_event(new_event(
+                    spec.agent_id,
+                    "agent.stopped",
+                    "info",
+                    serde_json::json!({"runtime": "firecracker", "reason": "requested"}),
+                ))
+                .await;
+            }
+            Err(err) => {
+                self.push_event(new_event(
+                    spec.agent_id,
+                    "agent.stop_failed",
+                    "error",
+                    serde_json::json!({"runtime": "firecracker", "error": err.to_string()}),
+                ))
+                .await;
+            }
+        }
+    }
 }
 
 fn new_event(
@@ -509,6 +683,7 @@ mod tests {
                 restart_max_attempts: 0,
                 restart_backoff_secs: 0,
                 limits: CgroupResourceLimits::default(),
+                runtime: ManagedRuntimeSpec::Cgroup,
             })
             .await
             .expect("start managed agent should succeed");
@@ -549,6 +724,7 @@ mod tests {
                 restart_max_attempts: 1,
                 restart_backoff_secs: 0,
                 limits: CgroupResourceLimits::default(),
+                runtime: ManagedRuntimeSpec::Cgroup,
             })
             .await
             .expect("start should succeed");
@@ -589,6 +765,7 @@ mod tests {
                 restart_max_attempts: 0,
                 restart_backoff_secs: 0,
                 limits: CgroupResourceLimits::default(),
+                runtime: ManagedRuntimeSpec::Cgroup,
             })
             .await
             .expect("start managed agent should succeed");
@@ -629,6 +806,7 @@ mod tests {
                 restart_max_attempts: 3,
                 restart_backoff_secs: 0,
                 limits: CgroupResourceLimits::default(),
+                runtime: ManagedRuntimeSpec::Cgroup,
             })
             .await
             .expect("start should succeed");

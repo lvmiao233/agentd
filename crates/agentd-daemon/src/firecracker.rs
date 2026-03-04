@@ -31,12 +31,48 @@ impl Default for FirecrackerNetworkConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkIsolationPolicy {
+    AllowAll,
+    DenyAll,
+}
+
+impl Default for NetworkIsolationPolicy {
+    fn default() -> Self {
+        Self::AllowAll
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JailerConfig {
+    pub uid: u32,
+    pub gid: u32,
+    pub seccomp_level: u8,
+    pub chroot_base_dir: PathBuf,
+    pub netns_path: Option<PathBuf>,
+}
+
+impl Default for JailerConfig {
+    fn default() -> Self {
+        Self {
+            uid: 1000,
+            gid: 1000,
+            seccomp_level: 2,
+            chroot_base_dir: PathBuf::from("/run/agentd/jailer"),
+            netns_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirecrackerVmConfig {
     pub kernel_path: PathBuf,
     pub rootfs_path: PathBuf,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub network: Option<FirecrackerNetworkConfig>,
+    pub network_policy: NetworkIsolationPolicy,
+    pub jailer: Option<JailerConfig>,
     pub vsock_path: PathBuf,
 }
 
@@ -49,6 +85,8 @@ pub struct FirecrackerAgentLaunchSpec {
     pub vcpu_count: Option<u8>,
     pub mem_size_mib: Option<u32>,
     pub network: Option<FirecrackerNetworkConfig>,
+    pub network_policy: Option<NetworkIsolationPolicy>,
+    pub jailer: Option<JailerConfig>,
     pub launch_timeout: Duration,
 }
 
@@ -59,6 +97,8 @@ pub struct FirecrackerExecutor {
     default_vcpu_count: u8,
     default_mem_size_mib: u32,
     default_network: Option<FirecrackerNetworkConfig>,
+    default_network_policy: NetworkIsolationPolicy,
+    default_jailer: Option<JailerConfig>,
     vsock_root_dir: PathBuf,
 }
 
@@ -69,6 +109,8 @@ pub struct FirecrackerExecutorBuilder {
     default_vcpu_count: u8,
     default_mem_size_mib: u32,
     default_network: Option<FirecrackerNetworkConfig>,
+    default_network_policy: NetworkIsolationPolicy,
+    default_jailer: Option<JailerConfig>,
     vsock_root_dir: PathBuf,
 }
 
@@ -80,6 +122,8 @@ impl Default for FirecrackerExecutorBuilder {
             default_vcpu_count: 1,
             default_mem_size_mib: 512,
             default_network: Some(FirecrackerNetworkConfig::default()),
+            default_network_policy: NetworkIsolationPolicy::AllowAll,
+            default_jailer: Some(JailerConfig::default()),
             vsock_root_dir: std::env::temp_dir().join("agentd-firecracker"),
         }
     }
@@ -111,6 +155,16 @@ impl FirecrackerExecutorBuilder {
         self
     }
 
+    pub fn default_network_policy(mut self, policy: NetworkIsolationPolicy) -> Self {
+        self.default_network_policy = policy;
+        self
+    }
+
+    pub fn default_jailer(mut self, jailer: Option<JailerConfig>) -> Self {
+        self.default_jailer = jailer;
+        self
+    }
+
     pub fn build(self) -> Result<FirecrackerExecutor, AgentError> {
         let kernel_path = self
             .kernel_path
@@ -137,6 +191,8 @@ impl FirecrackerExecutorBuilder {
             default_vcpu_count: self.default_vcpu_count,
             default_mem_size_mib: self.default_mem_size_mib,
             default_network: self.default_network,
+            default_network_policy: self.default_network_policy,
+            default_jailer: self.default_jailer,
             vsock_root_dir: self.vsock_root_dir,
         })
     }
@@ -183,6 +239,11 @@ impl FirecrackerExecutor {
                 .network
                 .clone()
                 .or_else(|| self.default_network.clone()),
+            network_policy: spec
+                .network_policy
+                .clone()
+                .unwrap_or_else(|| self.default_network_policy.clone()),
+            jailer: spec.jailer.clone().or_else(|| self.default_jailer.clone()),
             vsock_path: self.vsock_path_for_agent(spec.agent_id),
         })
     }
@@ -198,6 +259,7 @@ impl FirecrackerExecutor {
         }
 
         let vm_config = self.build_vm_config(&spec)?;
+        enforce_network_isolation_policy(&vm_config)?;
         prepare_vsock_socket(&vm_config.vsock_path)?;
 
         let listener = UnixListener::bind(&vm_config.vsock_path).map_err(|err| {
@@ -224,12 +286,35 @@ impl FirecrackerExecutor {
             .env(
                 "AGENTD_FIRECRACKER_MEM_MIB",
                 vm_config.mem_size_mib.to_string(),
+            )
+            .env(
+                "AGENTD_FIRECRACKER_NETWORK_POLICY",
+                match vm_config.network_policy {
+                    NetworkIsolationPolicy::AllowAll => "allow_all",
+                    NetworkIsolationPolicy::DenyAll => "deny_all",
+                },
             );
         if let Some(network) = &vm_config.network {
             command
                 .env("AGENTD_FIRECRACKER_TAP", &network.tap_device)
                 .env("AGENTD_FIRECRACKER_HOST_IPV4", &network.host_ipv4)
                 .env("AGENTD_FIRECRACKER_GUEST_IPV4", &network.guest_ipv4);
+        }
+        if let Some(jailer) = &vm_config.jailer {
+            command
+                .env("AGENTD_JAILER_UID", jailer.uid.to_string())
+                .env("AGENTD_JAILER_GID", jailer.gid.to_string())
+                .env("AGENTD_JAILER_SECCOMP", jailer.seccomp_level.to_string())
+                .env(
+                    "AGENTD_JAILER_CHROOT_BASE",
+                    jailer.chroot_base_dir.to_string_lossy().to_string(),
+                );
+            if let Some(netns_path) = &jailer.netns_path {
+                command.env(
+                    "AGENTD_JAILER_NETNS",
+                    netns_path.to_string_lossy().to_string(),
+                );
+            }
         }
         for (key, value) in &spec.env {
             command.env(key, value);
@@ -295,6 +380,10 @@ impl FirecrackerVmHandle {
 
     pub fn config(&self) -> &FirecrackerVmConfig {
         &self.config
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
     }
 
     pub async fn roundtrip_json(&mut self, request: &Value) -> Result<Value, AgentError> {
@@ -409,6 +498,23 @@ async fn terminate_child(child: &mut Child) -> Result<(), AgentError> {
     child.wait().await.map_err(|err| {
         AgentError::Runtime(format!("wait firecracker vm process exit failed: {err}"))
     })?;
+
+    Ok(())
+}
+
+fn enforce_network_isolation_policy(config: &FirecrackerVmConfig) -> Result<(), AgentError> {
+    if matches!(config.network_policy, NetworkIsolationPolicy::DenyAll)
+        && config.network.is_some()
+    {
+        let tap_device = config
+            .network
+            .as_ref()
+            .map(|network| network.tap_device.as_str())
+            .unwrap_or("<unknown>");
+        return Err(AgentError::Permission(format!(
+            "jailer network policy denied outbound access: tap={tap_device} nftables=deny_all"
+        )));
+    }
 
     Ok(())
 }

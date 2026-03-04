@@ -1,0 +1,5 @@
+command: cargo test -p agentd-daemon untrusted_agent_uses_firecracker_runtime -- --exact
+result: PASS
+assertions:
+  - StartManagedAgent succeeds for trust_level=untrusted when firecracker executor is configured
+  - response.runtime == "firecracker"
