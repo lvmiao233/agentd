@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::error::AgentError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +76,97 @@ pub struct PolicyGatewayDecision {
     pub decision: PolicyDecision,
     pub reason: String,
     pub trace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyInputContext {
+    pub agent_id: Option<String>,
+    pub tool: String,
+    pub resource: Option<String>,
+    pub request_meta: BTreeMap<String, String>,
+    pub timestamp_rfc3339: Option<String>,
+}
+
+impl PolicyInputContext {
+    pub fn validate(&self) -> Result<(), AgentError> {
+        if self.tool.trim().is_empty() {
+            return Err(AgentError::InvalidInput(
+                "policy input missing required field tool".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub trait PolicyEngine {
+    fn evaluate(&self, input: &PolicyInputContext) -> PolicyEvaluation;
+    fn load_policy_layers(
+        &mut self,
+        global: PolicyLayer,
+        agent_profile: PolicyLayer,
+        session_override: PolicyLayer,
+    ) -> Result<(), AgentError>;
+    fn reload(&mut self) -> Result<(), AgentError>;
+    fn explain(&self, input: &PolicyInputContext) -> String;
+}
+
+#[derive(Debug, Clone)]
+pub struct LayeredPolicyEngine {
+    global: PolicyLayer,
+    agent_profile: PolicyLayer,
+    session_override: PolicyLayer,
+}
+
+impl LayeredPolicyEngine {
+    pub fn new(
+        global: PolicyLayer,
+        agent_profile: PolicyLayer,
+        session_override: PolicyLayer,
+    ) -> Self {
+        Self {
+            global,
+            agent_profile,
+            session_override,
+        }
+    }
+}
+
+impl PolicyEngine for LayeredPolicyEngine {
+    fn evaluate(&self, input: &PolicyInputContext) -> PolicyEvaluation {
+        PolicyLayer::evaluate_tool(
+            &self.global,
+            &self.agent_profile,
+            &self.session_override,
+            &input.tool,
+        )
+    }
+
+    fn load_policy_layers(
+        &mut self,
+        global: PolicyLayer,
+        agent_profile: PolicyLayer,
+        session_override: PolicyLayer,
+    ) -> Result<(), AgentError> {
+        self.global = global;
+        self.agent_profile = agent_profile;
+        self.session_override = session_override;
+        Ok(())
+    }
+
+    fn reload(&mut self) -> Result<(), AgentError> {
+        Ok(())
+    }
+
+    fn explain(&self, input: &PolicyInputContext) -> String {
+        let evaluation = self.evaluate(input);
+        format!(
+            "policy.explain: tool={} decision={:?} matched_rule={} source_layer={}",
+            evaluation.tool,
+            evaluation.decision,
+            evaluation.matched_rule.as_deref().unwrap_or("<none>"),
+            evaluation.source_layer.as_deref().unwrap_or("<none>")
+        )
+    }
 }
 
 impl PolicyEvaluation {
@@ -296,5 +391,89 @@ mod tests {
         assert!(gateway.reason.contains("policy.deny"));
         assert!(gateway.reason.contains("matched_rule=mcp.fs.*"));
         assert!(gateway.reason.contains("source_layer=agent_profile"));
+    }
+
+    #[test]
+    fn policy_engine_trait_contract() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "mcp.*".to_string(),
+                decision: PolicyDecision::Ask,
+            }],
+        };
+        let profile = PolicyLayer {
+            name: "agent_profile".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "mcp.fs.read_file".to_string(),
+                decision: PolicyDecision::Deny,
+            }],
+        };
+        let session = PolicyLayer {
+            name: "session_override".to_string(),
+            rules: vec![],
+        };
+
+        let mut engine: Box<dyn PolicyEngine> = Box::new(LayeredPolicyEngine::new(
+            global.clone(),
+            profile.clone(),
+            session.clone(),
+        ));
+        let input = PolicyInputContext {
+            agent_id: Some("agent-1".to_string()),
+            tool: "mcp.fs.read_file".to_string(),
+            resource: Some(".env".to_string()),
+            request_meta: BTreeMap::new(),
+            timestamp_rfc3339: None,
+        };
+
+        let evaluation = engine.evaluate(&input);
+        assert_eq!(evaluation.decision, PolicyDecision::Deny);
+
+        engine
+            .load_policy_layers(global, profile, session)
+            .expect("load should succeed");
+        engine.reload().expect("reload should succeed");
+
+        let explain = engine.explain(&input);
+        assert!(explain.contains("policy.explain"));
+        assert!(explain.contains("decision=Deny"));
+    }
+
+    #[test]
+    fn policy_input_context_roundtrip() {
+        let mut request_meta = BTreeMap::new();
+        request_meta.insert("trace_id".to_string(), "trace-101".to_string());
+        request_meta.insert("request_id".to_string(), "rpc-7".to_string());
+
+        let input = PolicyInputContext {
+            agent_id: Some("agent-7".to_string()),
+            tool: "mcp.git.status".to_string(),
+            resource: Some("repo:/work".to_string()),
+            request_meta,
+            timestamp_rfc3339: Some("2026-03-04T17:00:00Z".to_string()),
+        };
+
+        let encoded = serde_json::to_string(&input).expect("serialize input should succeed");
+        let decoded: PolicyInputContext =
+            serde_json::from_str(&encoded).expect("deserialize input should succeed");
+
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn policy_input_context_missing_tool_rejected() {
+        let input = PolicyInputContext {
+            agent_id: Some("agent-9".to_string()),
+            tool: "   ".to_string(),
+            resource: None,
+            request_meta: BTreeMap::new(),
+            timestamp_rfc3339: None,
+        };
+
+        let err = input
+            .validate()
+            .expect_err("missing tool should be rejected");
+        assert!(err.to_string().contains("missing required field tool"));
     }
 }

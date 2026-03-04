@@ -13,7 +13,7 @@ pub mod profile;
 pub use audit::{AuditContext, AuditEvent, EventSeverity};
 pub use error::AgentError;
 pub use policy::{
-    PolicyDecision, PolicyEvaluation, PolicyGatewayDecision, PolicyLayer, PolicyRule,
-    SessionPolicyOverrides,
+    LayeredPolicyEngine, PolicyDecision, PolicyEngine, PolicyEvaluation, PolicyGatewayDecision,
+    PolicyInputContext, PolicyLayer, PolicyRule, SessionPolicyOverrides,
 };
 pub use profile::{AgentLifecycleState, AgentProfile};

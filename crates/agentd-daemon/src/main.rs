@@ -7,8 +7,9 @@ use agentd_core::audit::{
 };
 use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
-    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision,
-    PolicyGatewayDecision, PolicyLayer, PolicyRule, SessionPolicyOverrides,
+    AgentError, AgentLifecycleState, AgentProfile, AuditEvent, LayeredPolicyEngine,
+    PolicyDecision, PolicyEngine, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
+    PolicyRule, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -2780,7 +2781,18 @@ where
     }
     .into_layer();
 
-    let evaluation = PolicyLayer::evaluate_tool(&global_layer, &profile_layer, &session_layer, tool);
+    let mut request_meta = BTreeMap::new();
+    request_meta.insert("trace_id".to_string(), audit_context.trace_id.clone());
+    let policy_input = PolicyInputContext {
+        agent_id: Some(agent_id.to_string()),
+        tool: tool.to_string(),
+        resource: None,
+        request_meta,
+        timestamp_rfc3339: None,
+    };
+    policy_input.validate()?;
+    let engine = LayeredPolicyEngine::new(global_layer, profile_layer, session_layer);
+    let evaluation = engine.evaluate(&policy_input);
     let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
 
     let mut metadata = json!({
@@ -3113,12 +3125,21 @@ async fn handle_rpc_request(
                 })
                 .into_layer();
 
-            let evaluation = PolicyLayer::evaluate_tool(
-                &global_layer,
-                &profile_layer,
-                &session_layer,
-                &params.tool,
-            );
+            let mut request_meta = BTreeMap::new();
+            request_meta.insert("trace_id".to_string(), audit_context.trace_id.clone());
+            let policy_input = PolicyInputContext {
+                agent_id: params.agent_id.clone(),
+                tool: params.tool.clone(),
+                resource: None,
+                request_meta,
+                timestamp_rfc3339: None,
+            };
+            if let Err(err) = policy_input.validate() {
+                return JsonRpcResponse::error(request.id, -32602, err.to_string());
+            }
+
+            let engine = LayeredPolicyEngine::new(global_layer, profile_layer, session_layer);
+            let evaluation = engine.evaluate(&policy_input);
             let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
 
             if evaluation.decision == PolicyDecision::Deny {
