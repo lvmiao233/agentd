@@ -36,6 +36,14 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Discover {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        registry_url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Agent {
         #[command(subcommand)]
         command: Box<AgentCommands>,
@@ -281,6 +289,24 @@ fn normalize_base_url(input: &str) -> Result<String, DynError> {
     Ok(trimmed.to_string())
 }
 
+async fn fetch_discovery_report(
+    daemon_url: &str,
+    registry_url: Option<&str>,
+) -> Result<Value, DynError> {
+    let daemon = normalize_base_url(daemon_url)?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let mut endpoint = reqwest::Url::parse(&format!("{daemon}/discover"))?;
+    if let Some(registry) = registry_url {
+        endpoint
+            .query_pairs_mut()
+            .append_pair("registry_url", &normalize_base_url(registry)?);
+    }
+
+    let response = client.get(endpoint).send().await?;
+    let response = response.error_for_status()?;
+    Ok(response.json::<Value>().await?)
+}
+
 async fn call_rpc(
     socket_path: &str,
     method: &str,
@@ -507,6 +533,18 @@ async fn run_cli(
             )
             .await?;
             print_response(response, json)?;
+        }
+        Commands::Discover {
+            url,
+            registry_url,
+            json,
+        } => {
+            let result = fetch_discovery_report(&url, registry_url.as_deref()).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", result);
+            }
         }
         Commands::A2a { command } => {
             let client = AgentctlA2AClient::new();
@@ -954,4 +992,87 @@ async fn a2a_discover_handles_unreachable_remote() {
         result.is_err(),
         "discover should fail for unreachable remote"
     );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn discover_lists_lan_and_registry_sources() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind discover mock server");
+    let addr = listener
+        .local_addr()
+        .expect("resolve discover mock address");
+
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept discover request");
+            let mut buf = [0_u8; 8192];
+            let read = stream.read(&mut buf).await.expect("read discover request");
+            let request = String::from_utf8_lossy(&buf[..read]).to_string();
+            let request_line = request.lines().next().unwrap_or_default().to_string();
+            assert!(request_line.contains("/discover"));
+
+            let response = test_json_http_response(
+                "200 OK",
+                &json!({
+                    "lan": [{
+                        "agent_id": "lan-a",
+                        "name": "lan-node",
+                        "model": "claude-4-sonnet",
+                        "provider": "one-api",
+                        "endpoint": "http://10.0.0.2:8080",
+                        "source": "lan",
+                        "health": "ready"
+                    }],
+                    "registry": [{
+                        "agent_id": "reg-b",
+                        "name": "registry-node",
+                        "model": "claude-4-sonnet",
+                        "provider": "one-api",
+                        "endpoint": "https://registry.example.com/agents/reg-b",
+                        "source": "registry",
+                        "health": "ready"
+                    }],
+                    "errors": []
+                }),
+            );
+            stream
+                .write_all(&response)
+                .await
+                .expect("write discover response");
+            let _ = stream.shutdown().await;
+        }
+    });
+
+    let base = format!("http://{addr}");
+    let report = fetch_discovery_report(&base, Some(&base))
+        .await
+        .expect("fetch discovery report");
+    assert_eq!(
+        report["lan"][0]["source"],
+        json!("lan"),
+        "lan source should be present"
+    );
+    assert_eq!(
+        report["registry"][0]["source"],
+        json!("registry"),
+        "registry source should be present"
+    );
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "discover",
+        "--url",
+        &base,
+        "--registry-url",
+        &base,
+        "--json",
+    ])
+    .expect("discover args should parse");
+    run_cli(cli, || Ok(()))
+        .await
+        .expect("discover command should succeed");
+
+    server.await.expect("discover mock server should finish");
 }
