@@ -1,5 +1,7 @@
+use agentd_core::profile::TrustLevel;
 use agentd_core::AgentError;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use tracing::info;
 
@@ -8,12 +10,12 @@ pub(crate) enum McpTransport {
     Stdio,
 }
 
+pub(crate) type McpTrustLevel = TrustLevel;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpTrustLevel {
-    Builtin,
-    Verified,
-    Community,
-    Untrusted,
+pub(crate) enum McpServerHealth {
+    Unknown,
+    Healthy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +25,41 @@ pub(crate) struct McpServerConfig {
     pub(crate) args: Vec<String>,
     pub(crate) transport: McpTransport,
     pub(crate) trust_level: McpTrustLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpRegistryEntry {
+    pub(crate) server_id: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) trust_level: McpTrustLevel,
+    pub(crate) health: McpServerHealth,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct McpRegistry {
+    entries: BTreeMap<String, McpRegistryEntry>,
+}
+
+impl McpRegistry {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn upsert(&mut self, entry: McpRegistryEntry) {
+        self.entries.insert(entry.server_id.clone(), entry);
+    }
+
+    pub(crate) fn get(&self, server_id: &str) -> Option<&McpRegistryEntry> {
+        self.entries.get(server_id)
+    }
+
+    pub(crate) fn remove(&mut self, server_id: &str) -> Option<McpRegistryEntry> {
+        self.entries.remove(server_id)
+    }
+
+    pub(crate) fn list(&self) -> Vec<&McpRegistryEntry> {
+        self.entries.values().collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,21 +109,16 @@ fn parse_transport(value: Option<String>, config_path: &Path) -> Result<McpTrans
     }
 }
 
-fn parse_trust_level(
+pub(crate) fn parse_trust_level(raw: &str) -> Result<McpTrustLevel, AgentError> {
+    McpTrustLevel::parse(raw)
+}
+
+fn parse_trust_level_from_config(
     value: Option<String>,
     config_path: &Path,
 ) -> Result<McpTrustLevel, AgentError> {
     let raw = require_non_empty_string(value, "server.trust_level", config_path)?;
-    match raw.as_str() {
-        "builtin" => Ok(McpTrustLevel::Builtin),
-        "verified" => Ok(McpTrustLevel::Verified),
-        "community" => Ok(McpTrustLevel::Community),
-        "untrusted" => Ok(McpTrustLevel::Untrusted),
-        _ => Err(AgentError::InvalidInput(format!(
-            "mcp config {} invalid trust_level `{raw}` (expected: builtin|verified|community|untrusted)",
-            config_path.display()
-        ))),
-    }
+    parse_trust_level(&raw)
 }
 
 fn parse_mcp_server_config_file(
@@ -119,7 +151,7 @@ fn parse_mcp_server_config_file(
         command: require_non_empty_string(server.command, "server.command", config_path)?,
         args,
         transport: parse_transport(server.transport, config_path)?,
-        trust_level: parse_trust_level(server.trust_level, config_path)?,
+        trust_level: parse_trust_level_from_config(server.trust_level, config_path)?,
     })
 }
 
@@ -163,4 +195,47 @@ pub(crate) fn load_mcp_server_configs(
     }
 
     Ok(configs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_registry_roundtrip_entry() {
+        let mut registry = McpRegistry::new();
+        registry.upsert(McpRegistryEntry {
+            server_id: "mcp-search".to_string(),
+            capabilities: vec!["search.query".to_string(), "search.fetch".to_string()],
+            trust_level: McpTrustLevel::Verified,
+            health: McpServerHealth::Healthy,
+        });
+
+        let entry = registry.get("mcp-search").expect("entry should exist");
+        assert_eq!(entry.server_id, "mcp-search");
+        assert_eq!(entry.trust_level, McpTrustLevel::Verified);
+        assert_eq!(registry.list().len(), 1);
+
+        let digest = entry.capabilities.join(",");
+        assert_eq!(digest, "search.query,search.fetch");
+
+        let removed = registry.remove("mcp-search");
+        assert!(removed.is_some());
+        assert!(registry.get("mcp-search").is_none());
+
+        registry.upsert(McpRegistryEntry {
+            server_id: "mcp-git".to_string(),
+            capabilities: vec!["git.status".to_string()],
+            trust_level: McpTrustLevel::Community,
+            health: McpServerHealth::Unknown,
+        });
+        assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn mcp_registry_rejects_unknown_trust() {
+        let err = parse_trust_level("unknown").expect_err("unknown trust level should fail");
+        let message = err.to_string();
+        assert!(message.contains("invalid trust_level"));
+    }
 }
