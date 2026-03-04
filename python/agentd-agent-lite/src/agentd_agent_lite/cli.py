@@ -415,6 +415,82 @@ def run_session_command(
     raise ValueError(f"unsupported session command: {command}")
 
 
+def build_migration_summary(
+    session: AgentSession, *, key_files: list[str] | None = None
+) -> dict[str, Any]:
+    branch = session._get_active_branch()
+    summary_text = session._build_compact_summary(branch)
+    normalized_key_files = [
+        item for item in (key_files or []) if isinstance(item, str) and item
+    ]
+    return {
+        "text": summary_text,
+        "key_files": normalized_key_files,
+        "message_count": len(branch),
+        "source_head_id": session.head_id,
+    }
+
+
+def export_session_snapshot(
+    session: AgentSession, *, working_directory: dict[str, str] | None = None
+) -> dict[str, Any]:
+    normalized_working_directory: dict[str, str] = {}
+    if isinstance(working_directory, dict):
+        for key, value in working_directory.items():
+            if isinstance(key, str) and key and isinstance(value, str):
+                normalized_working_directory[key] = value
+
+    return {
+        "agent_id": session.agent_id,
+        "head_id": session.head_id,
+        "messages": [dict(message) for message in session.messages],
+        "tool_results_cache": dict(session.tool_results_cache),
+        "working_directory": normalized_working_directory,
+    }
+
+
+def restore_session_from_snapshot(
+    snapshot: dict[str, Any], *, max_context_tokens: int = 0
+) -> AgentSession:
+    if not isinstance(snapshot, dict):
+        raise ValueError("snapshot restore failed: snapshot must be an object")
+
+    loaded_agent_id = snapshot.get("agent_id")
+    if not isinstance(loaded_agent_id, str) or not loaded_agent_id:
+        raise ValueError("snapshot restore failed: agent_id is required")
+
+    session = AgentSession(
+        loaded_agent_id, max_context_tokens=max(0, max_context_tokens)
+    )
+
+    raw_messages = snapshot.get("messages")
+    if not isinstance(raw_messages, list):
+        raise ValueError("snapshot restore failed: messages must be an array")
+
+    loaded_messages: list[dict[str, Any]] = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            raise ValueError("snapshot restore failed: invalid message entry")
+        loaded_messages.append(_normalize_loaded_message(item))
+    session.messages = loaded_messages
+
+    loaded_head_id = snapshot.get("head_id")
+    valid_ids = {
+        item["id"] for item in loaded_messages if isinstance(item.get("id"), str)
+    }
+    if isinstance(loaded_head_id, str) and loaded_head_id in valid_ids:
+        session.head_id = loaded_head_id
+    elif loaded_messages:
+        session.head_id = loaded_messages[-1]["id"]
+
+    tool_results_cache = snapshot.get("tool_results_cache")
+    if isinstance(tool_results_cache, dict):
+        session.tool_results_cache = tool_results_cache
+
+    session._refresh_context_window_tokens()
+    return session
+
+
 def call_rpc(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "jsonrpc": "2.0",

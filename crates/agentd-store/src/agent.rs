@@ -2,6 +2,8 @@ use agentd_core::profile::{BudgetConfig, ModelConfig, PermissionConfig, Permissi
 use agentd_core::{AgentError, AgentLifecycleState, AgentProfile};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Error as SqlError};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -44,6 +46,26 @@ pub struct DelegationAgentSummary {
     pub health: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ContextSessionSnapshot {
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub head_id: Option<String>,
+    #[serde(default)]
+    pub messages: Vec<Value>,
+    #[serde(default)]
+    pub tool_results_cache: Value,
+    #[serde(default)]
+    pub working_directory: BTreeMap<String, String>,
+    pub summary: String,
+    #[serde(default)]
+    pub key_files: Vec<String>,
+    pub migration_state: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub fn delegation_candidates_from_profiles(
     profiles: &[AgentProfile],
 ) -> Vec<DelegationAgentSummary> {
@@ -81,6 +103,208 @@ pub fn to_registry_agent_entry(
         health,
         updated_at: Utc::now().to_rfc3339(),
     }
+}
+
+pub fn upsert_context_session_snapshot(
+    conn: &Connection,
+    snapshot: &ContextSessionSnapshot,
+) -> Result<(), AgentError> {
+    let migration_state = normalize_migration_state(&snapshot.migration_state)?;
+
+    let messages_json = serde_json::to_string(&snapshot.messages)
+        .map_err(|err| AgentError::Storage(format!("serialize session messages failed: {err}")))?;
+    let tool_results_cache_json =
+        serde_json::to_string(&snapshot.tool_results_cache).map_err(|err| {
+            AgentError::Storage(format!(
+                "serialize session tool_results_cache failed: {err}"
+            ))
+        })?;
+    let working_directory_json =
+        serde_json::to_string(&snapshot.working_directory).map_err(|err| {
+            AgentError::Storage(format!("serialize session working_directory failed: {err}"))
+        })?;
+    let key_files_json = serde_json::to_string(&snapshot.key_files)
+        .map_err(|err| AgentError::Storage(format!("serialize session key_files failed: {err}")))?;
+
+    conn.execute(
+        r#"
+        INSERT INTO context_session_snapshots (
+            session_id,
+            agent_id,
+            head_id,
+            messages_json,
+            tool_results_cache_json,
+            working_directory_json,
+            summary,
+            key_files_json,
+            migration_state,
+            created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(session_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            head_id = excluded.head_id,
+            messages_json = excluded.messages_json,
+            tool_results_cache_json = excluded.tool_results_cache_json,
+            working_directory_json = excluded.working_directory_json,
+            summary = excluded.summary,
+            key_files_json = excluded.key_files_json,
+            migration_state = excluded.migration_state,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at;
+        "#,
+        params![
+            snapshot.session_id.as_str(),
+            snapshot.agent_id.as_str(),
+            snapshot.head_id.as_deref(),
+            messages_json,
+            tool_results_cache_json,
+            working_directory_json,
+            snapshot.summary.as_str(),
+            key_files_json,
+            migration_state,
+            snapshot.created_at.as_str(),
+            snapshot.updated_at.as_str(),
+        ],
+    )
+    .map_err(|err| AgentError::Storage(format!("upsert context session snapshot failed: {err}")))?;
+
+    Ok(())
+}
+
+pub fn fetch_context_session_snapshot(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<ContextSessionSnapshot>, AgentError> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                session_id,
+                agent_id,
+                head_id,
+                messages_json,
+                tool_results_cache_json,
+                working_directory_json,
+                summary,
+                key_files_json,
+                migration_state,
+                created_at,
+                updated_at
+            FROM context_session_snapshots
+            WHERE session_id = ?1
+            LIMIT 1;
+            "#,
+        )
+        .map_err(|err| {
+            AgentError::Storage(format!(
+                "prepare fetch context session snapshot failed: {err}"
+            ))
+        })?;
+
+    let row = stmt.query_row(params![session_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+        ))
+    });
+
+    match row {
+        Ok((
+            loaded_session_id,
+            agent_id,
+            head_id,
+            messages_json,
+            tool_results_cache_json,
+            working_directory_json,
+            summary,
+            key_files_json,
+            migration_state,
+            created_at,
+            updated_at,
+        )) => {
+            normalize_migration_state(&migration_state)?;
+            let messages = serde_json::from_str::<Vec<Value>>(&messages_json).map_err(|err| {
+                AgentError::Storage(format!("parse context session messages failed: {err}"))
+            })?;
+            let tool_results_cache = serde_json::from_str::<Value>(&tool_results_cache_json)
+                .map_err(|err| {
+                    AgentError::Storage(format!(
+                        "parse context session tool_results_cache failed: {err}"
+                    ))
+                })?;
+            let working_directory = serde_json::from_str::<BTreeMap<String, String>>(
+                &working_directory_json,
+            )
+            .map_err(|err| {
+                AgentError::Storage(format!(
+                    "parse context session working_directory failed: {err}"
+                ))
+            })?;
+            let key_files =
+                serde_json::from_str::<Vec<String>>(&key_files_json).map_err(|err| {
+                    AgentError::Storage(format!("parse context session key_files failed: {err}"))
+                })?;
+
+            Ok(Some(ContextSessionSnapshot {
+                session_id: loaded_session_id,
+                agent_id,
+                head_id,
+                messages,
+                tool_results_cache,
+                working_directory,
+                summary,
+                key_files,
+                migration_state,
+                created_at,
+                updated_at,
+            }))
+        }
+        Err(SqlError::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(AgentError::Storage(format!(
+            "query context session snapshot failed: {err}"
+        ))),
+    }
+}
+
+pub fn update_context_session_migration_state(
+    conn: &Connection,
+    session_id: &str,
+    migration_state: &str,
+) -> Result<(), AgentError> {
+    let normalized_state = normalize_migration_state(migration_state)?;
+    let updated_at = Utc::now().to_rfc3339();
+    let rows_affected = conn
+        .execute(
+            r#"
+            UPDATE context_session_snapshots
+            SET migration_state = ?2, updated_at = ?3
+            WHERE session_id = ?1;
+            "#,
+            params![session_id, normalized_state, updated_at],
+        )
+        .map_err(|err| {
+            AgentError::Storage(format!(
+                "update context session migration state failed: {err}"
+            ))
+        })?;
+
+    if rows_affected == 0 {
+        return Err(AgentError::NotFound(format!(
+            "context session snapshot not found: {session_id}"
+        )));
+    }
+
+    Ok(())
 }
 
 pub fn insert_agent(conn: &Connection, profile: &AgentProfile) -> Result<(), AgentError> {
@@ -537,6 +761,16 @@ fn parse_permission_policy(value: &str) -> Result<PermissionPolicy, AgentError> 
     }
 }
 
+fn normalize_migration_state(value: &str) -> Result<String, AgentError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "active" | "migrated" => Ok(normalized),
+        other => Err(AgentError::Storage(format!(
+            "invalid context migration state: {other}"
+        ))),
+    }
+}
+
 fn parse_utc_datetime(value: &str, field: &str) -> Result<DateTime<Utc>, AgentError> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
@@ -548,6 +782,7 @@ mod tests {
     use super::*;
     use crate::db;
     use rusqlite::Connection;
+    use serde_json::json;
 
     fn test_db_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("agentd-store-agent-{}.sqlite", Uuid::new_v4()))
@@ -624,5 +859,89 @@ mod tests {
                 .all(|candidate| candidate.health == "ready"),
             "delegation candidates should carry ready health"
         );
+    }
+
+    #[test]
+    fn context_session_snapshot_roundtrip() {
+        let db_path = test_db_path();
+        db::initialize_database(&db_path).expect("initialize db");
+        let conn = Connection::open(&db_path).expect("open db");
+
+        let now = Utc::now().to_rfc3339();
+        let snapshot = ContextSessionSnapshot {
+            session_id: "session-26-roundtrip".to_string(),
+            agent_id: "agent-26".to_string(),
+            head_id: Some("msg-2".to_string()),
+            messages: vec![
+                json!({
+                    "id": "msg-1",
+                    "parent_id": Value::Null,
+                    "role": "user",
+                    "content": "remember alpha",
+                }),
+                json!({
+                    "id": "msg-2",
+                    "parent_id": "msg-1",
+                    "role": "assistant",
+                    "content": "alpha acknowledged",
+                }),
+            ],
+            tool_results_cache: json!({"call-1": {"status": "ok"}}),
+            working_directory: BTreeMap::from([(
+                "README.md".to_string(),
+                "# migrated".to_string(),
+            )]),
+            summary: "context summary: remember alpha".to_string(),
+            key_files: vec!["README.md".to_string()],
+            migration_state: "active".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        upsert_context_session_snapshot(&conn, &snapshot).expect("persist context snapshot");
+        let loaded = fetch_context_session_snapshot(&conn, &snapshot.session_id)
+            .expect("fetch context snapshot")
+            .expect("context snapshot should exist");
+        assert_eq!(loaded, snapshot);
+
+        update_context_session_migration_state(&conn, &snapshot.session_id, "migrated")
+            .expect("mark context snapshot migrated");
+        let migrated = fetch_context_session_snapshot(&conn, &snapshot.session_id)
+            .expect("fetch migrated snapshot")
+            .expect("migrated context snapshot should exist");
+        assert_eq!(migrated.migration_state, "migrated");
+
+        std::fs::remove_file(&db_path).expect("cleanup temp db");
+    }
+
+    #[test]
+    fn context_session_snapshot_rejects_unknown_state() {
+        let db_path = test_db_path();
+        db::initialize_database(&db_path).expect("initialize db");
+        let conn = Connection::open(&db_path).expect("open db");
+
+        let now = Utc::now().to_rfc3339();
+        let snapshot = ContextSessionSnapshot {
+            session_id: "session-26-invalid-state".to_string(),
+            agent_id: "agent-26".to_string(),
+            head_id: None,
+            messages: Vec::new(),
+            tool_results_cache: json!({}),
+            working_directory: BTreeMap::new(),
+            summary: "summary".to_string(),
+            key_files: Vec::new(),
+            migration_state: "unknown".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        let err = upsert_context_session_snapshot(&conn, &snapshot)
+            .expect_err("unknown state should be rejected");
+        assert!(
+            err.to_string().contains("invalid context migration state"),
+            "unexpected error: {err}"
+        );
+
+        std::fs::remove_file(&db_path).expect("cleanup temp db");
     }
 }
