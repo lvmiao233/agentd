@@ -6,6 +6,8 @@ requires-python = ">=3.12"
 members = [
     "agentd",
     "agentd-agent-lite",
+    "agentd-mcp-git",
+    "agentd-mcp-search",
 ]
 
 [[package]]
@@ -33,6 +35,16 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "openai", specifier = ">=1.0.0" }]
+
+[[package]]
+name = "agentd-mcp-git"
+version = "0.1.0"
+source = { editable = "python/agentd-mcp-git" }
+
+[[package]]
+name = "agentd-mcp-search"
+version = "0.1.0"
+source = { editable = "python/agentd-mcp-search" }
 
 [[package]]
 name = "annotated-types"

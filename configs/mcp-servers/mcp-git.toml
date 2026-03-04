@@ -3,7 +3,7 @@ name = "mcp-git"
 command = "python"
 args = ["-m", "agentd_mcp_git"]
 transport = "stdio"
-trust_level = "community"
+trust_level = "builtin"
 
 [policy]
 allow_write = false
