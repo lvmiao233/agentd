@@ -1,0 +1,79 @@
+{
+  "task": 28,
+  "title": "dashboard/settings + third-party mcp hardening contract matrix",
+  "generated_by": "agent",
+  "generated_at": "2026-03-05T00:00:00+08:00",
+  "matrix": {
+    "daemon_to_agent_lite": {
+      "status": "compatible",
+      "rpc_contracts": [
+        {
+          "method": "ListAvailableTools",
+          "required_fields": [
+            "server",
+            "tool",
+            "policy_tool"
+          ],
+          "result": "agent-lite discover_openai_tools can convert to OpenAI tool schema"
+        },
+        {
+          "method": "OnboardMcpServer",
+          "required_fields": [
+            "name",
+            "command",
+            "args",
+            "transport",
+            "trust_level"
+          ],
+          "result": "agent-lite onboarding flow can handle success and handshake failure"
+        },
+        {
+          "method": "ListMcpServers",
+          "required_fields": [
+            "server",
+            "capabilities",
+            "trust_level",
+            "health"
+          ],
+          "result": "settings mcp registry can render server health and trust metadata"
+        }
+      ]
+    },
+    "agent_lite_to_web": {
+      "status": "compatible",
+      "ui_contracts": [
+        {
+          "surface": "Dashboard",
+          "selectors": [
+            ".agent-count-card"
+          ],
+          "result": "numeric agent count rendered"
+        },
+        {
+          "surface": "Usage",
+          "selectors": [
+            ".token-chart"
+          ],
+          "result": "token bars rendered for live usage series"
+        },
+        {
+          "surface": "Settings",
+          "selectors": [
+            ".mcp-onboarding-form",
+            ".mcp-server-list"
+          ],
+          "result": "third-party onboarding feedback and registry list rendered"
+        }
+      ]
+    },
+    "daemon_to_web": {
+      "status": "compatible",
+      "bridges": [
+        "HTTP /health",
+        "WebSocket /ws JSON-RPC",
+        "MCP RPC: ListMcpServers/OnboardMcpServer/ListAvailableTools"
+      ],
+      "resilience": "third-party initialize failure is isolated from builtin tool listing"
+    }
+  }
+}

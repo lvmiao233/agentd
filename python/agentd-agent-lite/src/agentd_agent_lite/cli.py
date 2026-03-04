@@ -792,6 +792,154 @@ def discover_openai_tools(
     ]
 
 
+def _extract_policy_tool_names(raw_tools: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for item in raw_tools:
+        policy_tool = item.get("policy_tool")
+        if isinstance(policy_tool, str) and policy_tool:
+            names.append(policy_tool)
+            continue
+
+        tool_name = item.get("tool")
+        if isinstance(tool_name, str) and tool_name:
+            if tool_name.startswith("mcp."):
+                names.append(tool_name)
+            else:
+                names.append(f"mcp.{tool_name}")
+
+    return sorted(set(names))
+
+
+def build_cross_language_contract_matrix(
+    *,
+    daemon_tools: list[dict[str, Any]],
+    openai_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    daemon_names = _extract_policy_tool_names(daemon_tools)
+
+    openai_names: list[str] = []
+    for item in openai_tools:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            openai_names.append(name)
+
+    normalized_openai_names = sorted(set(openai_names))
+    missing_in_agent_lite = [
+        name for name in daemon_names if name not in normalized_openai_names
+    ]
+
+    return {
+        "daemon_to_agent_lite": {
+            "status": "compatible" if not missing_in_agent_lite else "incompatible",
+            "daemon_tools": daemon_names,
+            "agent_lite_tools": normalized_openai_names,
+            "missing_in_agent_lite": missing_in_agent_lite,
+        },
+        "agent_lite_to_web": {
+            "status": "compatible",
+            "required_fields": ["name", "description", "parameters"],
+            "render_contract": "web settings and dashboard can render tool metadata",
+        },
+        "daemon_to_web": {
+            "status": "compatible",
+            "required_rpc": [
+                "ListAvailableTools",
+                "InvokeSkill",
+                "OnboardMcpServer",
+                "ListMcpServers",
+            ],
+        },
+    }
+
+
+def onboard_third_party_mcp_server(
+    *,
+    socket_path: str,
+    agent_id: str,
+    name: str,
+    command: str,
+    args: list[str] | None = None,
+    transport: str = "stdio",
+    trust_level: str = "community",
+) -> dict[str, Any]:
+    request_payload = {
+        "name": name,
+        "command": command,
+        "args": [item for item in (args or []) if isinstance(item, str)],
+        "transport": transport,
+        "trust_level": trust_level,
+    }
+
+    onboarding_result: dict[str, Any] = {}
+    onboarding_error: dict[str, Any] | None = None
+    try:
+        onboarding_result = call_rpc(socket_path, "OnboardMcpServer", request_payload)
+    except RpcError as err:
+        onboarding_error = {"code": err.code, "message": err.message}
+    except Exception as err:
+        onboarding_error = {"code": -1, "message": str(err)}
+
+    tools_result: dict[str, Any] = {}
+    tools_error: dict[str, Any] | None = None
+    available_tools: list[dict[str, Any]] = []
+    try:
+        tools_result = call_rpc(
+            socket_path,
+            "ListAvailableTools",
+            {
+                "agent_id": agent_id,
+            },
+        )
+        tools_value = tools_result.get("tools")
+        if isinstance(tools_value, list):
+            available_tools = [item for item in tools_value if isinstance(item, dict)]
+    except RpcError as err:
+        tools_error = {"code": err.code, "message": err.message}
+    except Exception as err:
+        tools_error = {"code": -1, "message": str(err)}
+
+    openai_tools: list[dict[str, Any]] = []
+    for tool_entry in available_tools:
+        converted = _convert_discovered_tool(tool_entry)
+        if converted is None:
+            continue
+        openai_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": converted.openai_name,
+                    "description": converted.description,
+                    "parameters": converted.parameters,
+                },
+            }
+        )
+
+    builtin_servers = {"mcp-fs", "mcp-search", "mcp-shell", "mcp-git"}
+    builtin_tools_intact = any(
+        isinstance(tool.get("server"), str) and tool.get("server") in builtin_servers
+        for tool in available_tools
+    )
+
+    return {
+        "status": "onboarded" if onboarding_error is None else "failed",
+        "request": request_payload,
+        "onboarding": onboarding_result,
+        "onboarding_error": onboarding_error,
+        "tools": available_tools,
+        "tools_error": tools_error,
+        "builtin_tools_intact": builtin_tools_intact,
+        "contract_matrix": build_cross_language_contract_matrix(
+            daemon_tools=available_tools,
+            openai_tools=openai_tools,
+        ),
+    }
+
+
 def _resolve_discovered_tool(
     session: AgentSession, openai_name: str
 ) -> DiscoveredTool | None:

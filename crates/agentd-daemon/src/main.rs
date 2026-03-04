@@ -1956,6 +1956,221 @@ async fn list_available_tools_filters_by_policy() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn onboard_mcp_server_registers_server_for_settings_management() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task28-onboard-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let mut host = mcp::McpHost::new();
+    host.start_declared_servers(&[mcp_valid_stdio_server("mcp-fs", "fs.read_file")])
+        .await
+        .expect("mcp host should start builtin server");
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(host)),
+    );
+
+    let onboard_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(28801),
+            "OnboardMcpServer",
+            json!({
+                "name": "mcp-figma",
+                "command": "/bin/sh",
+                "args": [
+                    "-c",
+                    "read _line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"tools\":[\"figma.export_frame\"]}}}'; sleep 30"
+                ],
+                "transport": "stdio",
+                "trust_level": "community"
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        onboard_response.error.is_none(),
+        "onboard should succeed: {onboard_response:?}"
+    );
+    let onboarded = onboard_response
+        .result
+        .expect("onboard result should exist")
+        .get("server")
+        .expect("server field should exist")
+        .clone();
+    assert_eq!(onboarded["server"], json!("mcp-figma"));
+    assert_eq!(onboarded["trust_level"], json!("community"));
+
+    let list_response = handle_rpc_request(
+        JsonRpcRequest::new(json!(28802), "ListMcpServers", json!({})),
+        store,
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        list_response.error.is_none(),
+        "list mcp servers should succeed: {list_response:?}"
+    );
+    let servers = list_response
+        .result
+        .expect("list result should exist")
+        .get("servers")
+        .expect("servers field should exist")
+        .as_array()
+        .expect("servers should be array")
+        .clone();
+    assert!(
+        servers
+            .iter()
+            .any(|server| server["server"] == json!("mcp-fs")),
+        "builtin server should remain listed"
+    );
+    assert!(
+        servers
+            .iter()
+            .any(|server| server["server"] == json!("mcp-figma")),
+        "onboarded third-party server should be listed"
+    );
+
+    let mcp_host = state.mcp_host();
+    mcp_host
+        .lock()
+        .await
+        .stop_all()
+        .await
+        .expect("mcp host stop should succeed");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn onboard_third_party_mcp_handshake_failure_isolated() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task28-isolation-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let mut host = mcp::McpHost::new();
+    host.start_declared_servers(&[mcp_valid_stdio_server("mcp-fs", "fs.read_file")])
+        .await
+        .expect("mcp host should start configured server");
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(host)),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(28803),
+            "CreateAgent",
+            json!({
+                "name": "task28-third-party-isolation",
+                "model": "claude-4-sonnet",
+                "permission_policy": "ask"
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+
+    let onboard_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(28804),
+            "OnboardMcpServer",
+            json!({
+                "name": "mcp-bad-third-party",
+                "command": "/bin/sh",
+                "args": ["-c", "read _line; printf '%s\\n' 'not-json'; sleep 30"],
+                "transport": "stdio",
+                "trust_level": "community"
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    let onboarding_error = onboard_response
+        .error
+        .expect("invalid third-party handshake should fail");
+    assert_eq!(onboarding_error.code, -32027);
+
+    let list_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(28805),
+            "ListAvailableTools",
+            json!({
+                "agent_id": agent_id,
+            }),
+        ),
+        store,
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        list_response.error.is_none(),
+        "list available tools should still succeed: {list_response:?}"
+    );
+    let tools = list_response
+        .result
+        .expect("list result should exist")
+        .get("tools")
+        .expect("tools field should exist")
+        .as_array()
+        .expect("tools should be array")
+        .clone();
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["policy_tool"] == json!("mcp.fs.read_file")),
+        "builtin tool listing should remain available after third-party failure"
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool["server"] == json!("mcp-bad-third-party")),
+        "failed third-party server should not leak into available tools"
+    );
+
+    let mcp_host = state.mcp_host();
+    mcp_host
+        .lock()
+        .await
+        .stop_all()
+        .await
+        .expect("mcp host stop should succeed");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn firecracker_vsock_roundtrip() {
     let root = temp_firecracker_runtime_dir();
     let script = firecracker_echo_script_path();
@@ -2545,9 +2760,13 @@ async fn ws_bridge_forwards_rpc_and_stream() {
         let Message::Text(payload) = message else {
             continue;
         };
-        let decoded: Value = serde_json::from_str(payload.as_ref()).expect("decode ws json response");
+        let decoded: Value =
+            serde_json::from_str(payload.as_ref()).expect("decode ws json response");
         if decoded.get("id") == Some(&json!(9001)) {
-            assert!(decoded.get("error").is_none(), "rpc should succeed: {decoded}");
+            assert!(
+                decoded.get("error").is_none(),
+                "rpc should succeed: {decoded}"
+            );
             assert!(
                 decoded["result"].get("status").is_some(),
                 "health result should include status"
@@ -2556,7 +2775,10 @@ async fn ws_bridge_forwards_rpc_and_stream() {
             break;
         }
     }
-    assert!(health_result_seen, "expected health rpc response over websocket");
+    assert!(
+        health_result_seen,
+        "expected health rpc response over websocket"
+    );
 
     let created = state
         .create_a2a_task(CreateA2ATaskRequest {
@@ -5512,6 +5734,18 @@ struct InvokeSkillParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct OnboardMcpServerParams {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    trust_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct MigrateContextRpcParams {
     source_agent_id: String,
     target_base_url: String,
@@ -6637,6 +6871,27 @@ fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
     Ok(format!("mcp.{normalized}"))
 }
 
+fn parse_onboard_mcp_transport(value: Option<&str>) -> Result<mcp::McpTransport, AgentError> {
+    let Some(raw) = value else {
+        return Ok(mcp::McpTransport::Stdio);
+    };
+
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "stdio" => Ok(mcp::McpTransport::Stdio),
+        _ => Err(AgentError::InvalidInput(format!(
+            "invalid mcp transport `{raw}` (expected stdio)"
+        ))),
+    }
+}
+
+fn parse_onboard_mcp_trust_level(value: Option<&str>) -> Result<mcp::McpTrustLevel, AgentError> {
+    match value {
+        Some(raw) => mcp::parse_trust_level(raw),
+        None => Ok(mcp::McpTrustLevel::Community),
+    }
+}
+
 async fn evaluate_mcp_tool_policy(
     store: &Arc<SqliteStore>,
     audit_context: &AuditContext,
@@ -7469,6 +7724,122 @@ async fn handle_rpc_request(
             }
 
             JsonRpcResponse::success(request.id, json!(outcome))
+        }
+        "ListMcpServers" | "management.ListMcpServers" => {
+            let servers = {
+                let mcp_host = state.mcp_host();
+                let mut host = mcp_host.lock().await;
+                if let Err(err) = host.refresh_health() {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!("refresh mcp health failed: {err}"),
+                    );
+                }
+                host.list_servers()
+            };
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "servers": servers
+                        .into_iter()
+                        .map(|entry| {
+                            json!({
+                                "server": entry.server_id,
+                                "capabilities": entry.capabilities,
+                                "trust_level": format!("{:?}", entry.trust_level).to_ascii_lowercase(),
+                                "health": format!("{:?}", entry.health).to_ascii_lowercase(),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                }),
+            )
+        }
+        "OnboardMcpServer" | "management.OnboardMcpServer" => {
+            let params = match serde_json::from_value::<OnboardMcpServerParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid onboard mcp server params: {err}"),
+                    )
+                }
+            };
+
+            let name = params.name.trim();
+            let command = params.command.trim();
+            if name.is_empty() || command.is_empty() {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32602,
+                    "name and command must be non-empty",
+                );
+            }
+
+            let transport = match parse_onboard_mcp_transport(params.transport.as_deref()) {
+                Ok(transport) => transport,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32027,
+                        format!("resolve onboard transport failed: {err}"),
+                    )
+                }
+            };
+            let trust_level = match parse_onboard_mcp_trust_level(params.trust_level.as_deref()) {
+                Ok(level) => level,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32027,
+                        format!("resolve onboard trust level failed: {err}"),
+                    )
+                }
+            };
+
+            let onboarded = {
+                let mcp_host = state.mcp_host();
+                let mut host = mcp_host.lock().await;
+                host.onboard_server(mcp::McpServerConfig {
+                    name: name.to_string(),
+                    command: command.to_string(),
+                    args: params.args,
+                    transport,
+                    trust_level,
+                })
+                .await
+            };
+
+            match onboarded {
+                Ok(entry) => JsonRpcResponse::success(
+                    request.id,
+                    json!({
+                        "status": "onboarded",
+                        "server": {
+                            "server": entry.server_id,
+                            "capabilities": entry.capabilities,
+                            "trust_level": format!("{:?}", entry.trust_level).to_ascii_lowercase(),
+                            "health": format!("{:?}", entry.health).to_ascii_lowercase(),
+                        }
+                    }),
+                ),
+                Err(AgentError::InvalidInput(message)) => {
+                    JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32027,
+                    format!("onboard mcp server failed: {err}"),
+                ),
+            }
         }
         "OrchestrateTask" | "management.OrchestrateTask" => {
             let params = match serde_json::from_value::<OrchestrateTaskParams>(request.params) {

@@ -251,9 +251,7 @@ impl McpHost {
                 match health {
                     McpServerHealth::Healthy => healthy = healthy.saturating_add(1),
                     McpServerHealth::Degraded => degraded = degraded.saturating_add(1),
-                    McpServerHealth::Unreachable => {
-                        unreachable = unreachable.saturating_add(1)
-                    }
+                    McpServerHealth::Unreachable => unreachable = unreachable.saturating_add(1),
                 }
             }
         }
@@ -272,14 +270,63 @@ impl McpHost {
             .values()
             .filter(|entry| entry.health == McpServerHealth::Healthy)
             .flat_map(|entry| {
-                entry.capabilities.iter().map(move |capability| McpAvailableTool {
-                    server_id: entry.server_id.clone(),
-                    tool_name: capability.clone(),
-                    trust_level: entry.trust_level,
-                    health: entry.health,
-                })
+                entry
+                    .capabilities
+                    .iter()
+                    .map(move |capability| McpAvailableTool {
+                        server_id: entry.server_id.clone(),
+                        tool_name: capability.clone(),
+                        trust_level: entry.trust_level,
+                        health: entry.health,
+                    })
             })
             .collect()
+    }
+
+    pub(crate) fn list_servers(&self) -> Vec<McpRegistryEntry> {
+        self.registry.entries.values().cloned().collect()
+    }
+
+    pub(crate) async fn onboard_server(
+        &mut self,
+        config: McpServerConfig,
+    ) -> Result<McpRegistryEntry, AgentError> {
+        if self.servers.contains_key(&config.name) {
+            return Err(AgentError::InvalidInput(format!(
+                "mcp server already exists: {}",
+                config.name
+            )));
+        }
+
+        let server_id = config.name.clone();
+        match self.start_single_server(&config).await {
+            Ok(()) => {
+                self.record_audit(
+                    &server_id,
+                    "onboarding",
+                    true,
+                    "third-party mcp server onboarded",
+                );
+                self.registry
+                    .entries
+                    .get(&server_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AgentError::Runtime(format!(
+                            "onboarded mcp server missing from registry: {server_id}"
+                        ))
+                    })
+            }
+            Err(err) => {
+                self.record_audit(
+                    &server_id,
+                    "onboarding",
+                    false,
+                    &format!("third-party onboarding failed: {err}"),
+                );
+                Err(err)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -408,7 +455,10 @@ impl McpHost {
             ))
         })?;
         stdin.flush().await.map_err(|err| {
-            AgentError::Runtime(format!("flush initialize request to {} failed: {err}", config.name))
+            AgentError::Runtime(format!(
+                "flush initialize request to {} failed: {err}",
+                config.name
+            ))
         })?;
 
         let stdout = child.stdout.as_mut().ok_or_else(|| {
@@ -416,20 +466,23 @@ impl McpHost {
         })?;
         let mut reader = BufReader::new(stdout);
         let mut response_line = String::new();
-        let bytes = timeout(self.initialize_timeout, reader.read_line(&mut response_line))
-            .await
-            .map_err(|_| {
-                AgentError::Runtime(format!(
-                    "initialize handshake timed out for {}",
-                    config.name
-                ))
-            })?
-            .map_err(|err| {
-                AgentError::Runtime(format!(
-                    "read initialize response from {} failed: {err}",
-                    config.name
-                ))
-            })?;
+        let bytes = timeout(
+            self.initialize_timeout,
+            reader.read_line(&mut response_line),
+        )
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "initialize handshake timed out for {}",
+                config.name
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read initialize response from {} failed: {err}",
+                config.name
+            ))
+        })?;
         if bytes == 0 {
             return Err(AgentError::Runtime(format!(
                 "initialize handshake returned empty response for {}",
@@ -796,9 +849,7 @@ mod tests {
         assert_eq!(fs_handle.transport, McpTransport::Stdio);
         assert_eq!(fs_handle.trust_level, McpTrustLevel::Builtin);
 
-        host.stop_all()
-            .await
-            .expect("mcp host stop should succeed");
+        host.stop_all().await.expect("mcp host stop should succeed");
         assert_eq!(host.server_count(), 0);
         assert!(host.registry().is_empty());
     }
@@ -821,22 +872,24 @@ mod tests {
             "unexpected error text: {error_text}"
         );
 
-        assert_eq!(host.server_count(), 0, "started servers must be rolled back");
+        assert_eq!(
+            host.server_count(),
+            0,
+            "started servers must be rolled back"
+        );
         assert!(
             host.registry().is_empty(),
             "registry entries must be rolled back"
         );
 
-        let startup_failure = host
-            .audit_events()
-            .iter()
-            .any(|event| event.action == "startup" && !event.success && event.server_id == "mcp-bad");
+        let startup_failure = host.audit_events().iter().any(|event| {
+            event.action == "startup" && !event.success && event.server_id == "mcp-bad"
+        });
         assert!(startup_failure, "startup failure must be audited");
 
-        let rollback_event = host
-            .audit_events()
-            .iter()
-            .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
+        let rollback_event = host.audit_events().iter().any(|event| {
+            event.action == "rollback" && event.success && event.server_id == "mcp-bad"
+        });
         assert!(rollback_event, "rollback completion must be audited");
     }
 
@@ -861,9 +914,7 @@ mod tests {
             .iter()
             .any(|tool| tool.server_id == "mcp-search" && tool.tool_name == "search.query"));
 
-        host.stop_all()
-            .await
-            .expect("mcp host stop should succeed");
+        host.stop_all().await.expect("mcp host stop should succeed");
     }
 
     #[tokio::test]
@@ -894,8 +945,87 @@ mod tests {
             .iter()
             .any(|tool| tool.server_id == "mcp-transient" && tool.tool_name == "transient.echo"));
 
-        host.stop_all()
+        host.stop_all().await.expect("mcp host stop should succeed");
+    }
+
+    #[tokio::test]
+    async fn mcp_onboard_server_registers_third_party_capability() {
+        let mut host = McpHost::new();
+        host.start_declared_servers(&[valid_stdio_server("mcp-fs", "fs.read_file")])
             .await
-            .expect("mcp host stop should succeed");
+            .expect("builtin server should start");
+
+        let onboarded = host
+            .onboard_server(McpServerConfig {
+                name: "mcp-figma".to_string(),
+                command: "/bin/sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "read _line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"tools\":[\"figma.export_frame\"]}}}'; sleep 30"
+                        .to_string(),
+                ],
+                transport: McpTransport::Stdio,
+                trust_level: McpTrustLevel::Community,
+            })
+            .await
+            .expect("third-party server should onboard successfully");
+
+        assert_eq!(onboarded.server_id, "mcp-figma");
+        assert_eq!(
+            onboarded.capabilities,
+            vec!["figma.export_frame".to_string()]
+        );
+        assert_eq!(onboarded.trust_level, McpTrustLevel::Community);
+
+        let servers = host.list_servers();
+        assert!(servers.iter().any(|entry| entry.server_id == "mcp-fs"));
+        assert!(servers.iter().any(|entry| entry.server_id == "mcp-figma"));
+
+        host.stop_all().await.expect("mcp host stop should succeed");
+    }
+
+    #[tokio::test]
+    async fn third_party_onboarding_failure_isolated_from_builtin_tools() {
+        let mut host = McpHost::new();
+        host.start_declared_servers(&[valid_stdio_server("mcp-fs", "fs.read_file")])
+            .await
+            .expect("builtin server should start");
+
+        let err = host
+            .onboard_server(invalid_initialize_stdio_server("mcp-figma"))
+            .await
+            .expect_err("invalid third-party handshake should fail");
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("initialize") || err_text.contains("parse"),
+            "unexpected onboarding error: {err_text}"
+        );
+
+        let health = host
+            .refresh_health()
+            .expect("refresh mcp health should succeed");
+        assert_eq!(
+            health.total, 1,
+            "failed onboarding should not purge builtin"
+        );
+        assert_eq!(health.healthy, 1);
+
+        let available_tools = host.list_available_tools();
+        assert!(available_tools
+            .iter()
+            .any(|tool| tool.server_id == "mcp-fs" && tool.tool_name == "fs.read_file"));
+        assert!(!available_tools
+            .iter()
+            .any(|tool| tool.server_id == "mcp-figma"));
+
+        let failure_audited = host.audit_events().iter().any(|event| {
+            event.action == "onboarding" && !event.success && event.server_id == "mcp-figma"
+        });
+        assert!(
+            failure_audited,
+            "onboarding handshake failure should be captured in audit"
+        );
+
+        host.stop_all().await.expect("mcp host stop should succeed");
     }
 }
