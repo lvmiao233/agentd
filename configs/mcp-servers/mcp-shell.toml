@@ -1,0 +1,10 @@
+[server]
+name = "mcp-shell"
+command = "python"
+args = ["-m", "agentd_mcp_shell"]
+transport = "stdio"
+trust_level = "verified"
+
+[policy]
+allowed_commands = ["ls", "cat", "grep", "python", "git"]
+denied_patterns = ["rm -rf", "shutdown", "reboot"]
