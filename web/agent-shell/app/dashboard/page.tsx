@@ -1,114 +1,203 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import {
+  Activity,
+  Server,
+  AlertTriangle,
+  CheckCircle,
+  Cpu,
+  MemoryStick,
+} from 'lucide-react';
 
 type AgentSummary = {
-  id: string;
-  status: 'running' | 'idle' | 'degraded';
+  agent_id: string;
+  name: string;
   model: string;
-  cpuPercent: number;
-  memoryMiB: number;
+  status: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+  session_count: number;
+  created_at: string;
 };
 
-const BASE_AGENTS: AgentSummary[] = [
-  {
-    id: 'agent-dev-01',
-    status: 'running',
-    model: 'claude-4-sonnet',
-    cpuPercent: 14,
-    memoryMiB: 512,
-  },
-  {
-    id: 'agent-review-02',
-    status: 'running',
-    model: 'gpt-5.3-codex',
-    cpuPercent: 11,
-    memoryMiB: 640,
-  },
-  {
-    id: 'agent-search-03',
-    status: 'idle',
-    model: 'claude-4-sonnet',
-    cpuPercent: 4,
-    memoryMiB: 296,
-  },
-];
+type HealthStatus = {
+  status: string;
+  subsystems: Record<string, string>;
+};
+
+function statusVariant(status: string) {
+  switch (status) {
+    case 'running':
+    case 'ok':
+    case 'ready':
+      return 'default' as const;
+    case 'idle':
+      return 'secondary' as const;
+    case 'degraded':
+      return 'outline' as const;
+    default:
+      return 'destructive' as const;
+  }
+}
 
 export default function DashboardPage() {
-  const [tick, setTick] = useState(0);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setTick((current) => current + 1);
-    }, 2500);
-    return () => window.clearInterval(timer);
+  const fetchData = useCallback(async () => {
+    try {
+      const [agentsRes, healthRes] = await Promise.all([
+        fetch('/api/agents'),
+        fetch('/api/health'),
+      ]);
+      if (agentsRes.ok) {
+        const data = await agentsRes.json();
+        setAgents(data.agents ?? []);
+      }
+      if (healthRes.ok) {
+        setHealth(await healthRes.json());
+      }
+      setError(null);
+    } catch {
+      setError('无法连接到 agentd daemon');
+    }
   }, []);
 
-  const agents = useMemo(() => {
-    return BASE_AGENTS.map((agent, index) => {
-      const cpuJitter = (tick * (index + 2)) % 7;
-      const memoryJitter = (tick * (index + 1) * 8) % 48;
-      const status =
-        index === 2 && tick % 4 === 3
-          ? ('degraded' as const)
-          : agent.status;
-      return {
-        ...agent,
-        status,
-        cpuPercent: Math.min(95, agent.cpuPercent + cpuJitter),
-        memoryMiB: agent.memoryMiB + memoryJitter,
-      };
-    });
-  }, [tick]);
+  useEffect(() => {
+    fetchData();
+    const timer = setInterval(fetchData, 5000);
+    return () => clearInterval(timer);
+  }, [fetchData]);
 
-  const runningCount = agents.filter((agent) => agent.status === 'running').length;
-  const degradedCount = agents.filter((agent) => agent.status === 'degraded').length;
-  const pendingApprovals = (tick % 3) + 1;
+  const runningCount = agents.filter((a) => a.status === 'running').length;
+  const totalTokens = agents.reduce(
+    (s, a) => s + a.total_input_tokens + a.total_output_tokens,
+    0,
+  );
 
   return (
-    <main className="shell-page">
+    <div className="space-y-6">
       <header>
-        <h1>Agent Dashboard</h1>
-        <p className="page-hint">Live runtime overview for registered agents.</p>
+        <h1 className="text-2xl font-bold">Agent Dashboard</h1>
+        <p className="text-sm text-muted-foreground">
+          来自 agentd daemon 的实时运行概览
+        </p>
       </header>
 
-      <section className="metric-grid" aria-label="dashboard-metrics">
-        <article className="metric-card">
-          <h2>Registered Agents</h2>
-          <p className="metric-value agent-count-card">{agents.length}</p>
-        </article>
-        <article className="metric-card">
-          <h2>Running</h2>
-          <p className="metric-value">{runningCount}</p>
-        </article>
-        <article className="metric-card">
-          <h2>Pending Approvals</h2>
-          <p className="metric-value">{pendingApprovals}</p>
-        </article>
-        <article className="metric-card">
-          <h2>Degraded</h2>
-          <p className="metric-value">{degradedCount}</p>
-        </article>
-      </section>
+      {error && (
+        <div className="rounded-lg border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertTriangle className="mr-2 inline size-4" />
+          {error}
+        </div>
+      )}
 
-      <section>
-        <h2>Agent Status</h2>
-        <ul className="status-list">
-          {agents.map((agent) => (
-            <li key={agent.id}>
-              <div>
-                <strong>{agent.id}</strong>
-                <small>{agent.model}</small>
-              </div>
-              <div className="status-meta">
-                <span className={`status-pill ${agent.status}`}>{agent.status}</span>
-                <span>CPU {agent.cpuPercent}%</span>
-                <span>MEM {agent.memoryMiB} MiB</span>
-              </div>
-            </li>
-          ))}
-        </ul>
+      {/* Metrics */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <MetricCard
+          icon={<Server className="size-4 text-blue-400" />}
+          label="注册 Agents"
+          value={agents.length}
+        />
+        <MetricCard
+          icon={<Activity className="size-4 text-green-400" />}
+          label="运行中"
+          value={runningCount}
+        />
+        <MetricCard
+          icon={<Cpu className="size-4 text-purple-400" />}
+          label="总 Tokens"
+          value={totalTokens.toLocaleString()}
+        />
+        <MetricCard
+          icon={<CheckCircle className="size-4 text-cyan-400" />}
+          label="Daemon"
+          value={health?.status ?? '—'}
+        />
+      </div>
+
+      {/* Health subsystems */}
+      {health?.subsystems && (
+        <section className="rounded-xl border border-border bg-card p-4">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            子系统
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(health.subsystems).map(([k, v]) => (
+              <Badge key={k} variant={statusVariant(v)}>
+                {k}: {v}
+              </Badge>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Agent list */}
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          Agent 列表
+        </h2>
+        {agents.length === 0 ? (
+          <p className="py-8 text-center text-muted-foreground">
+            暂无注册 Agent — 通过 CLI 或 API 创建
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {agents.map((agent) => (
+              <li
+                key={agent.agent_id}
+                className="flex items-center justify-between rounded-lg border border-border bg-background p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium">{agent.name}</span>
+                    <Badge variant={statusVariant(agent.status)}>
+                      {agent.status}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
+                    <span>{agent.model}</span>
+                    <span>
+                      <MemoryStick className="mr-0.5 inline size-3" />
+                      {(
+                        agent.total_input_tokens + agent.total_output_tokens
+                      ).toLocaleString()}{' '}
+                      tokens
+                    </span>
+                    <span>Sessions: {agent.session_count}</span>
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {agent.agent_id.slice(0, 8)}…
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
-    </main>
+    </div>
+  );
+}
+
+function MetricCard({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {icon}
+        {label}
+      </div>
+      <p className="mt-2 text-2xl font-bold">{value}</p>
+    </div>
   );
 }
