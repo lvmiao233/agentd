@@ -42,6 +42,17 @@ pub struct PendingApproval {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MultiAgentDelegationStatus {
+    pub key: String,
+    pub task_id: String,
+    pub child_index: u64,
+    pub agent_id: String,
+    pub phase: String,
+    pub attempt: u64,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ToolCallFold {
     id: u64,
@@ -68,6 +79,7 @@ pub struct AgentShellApp {
     status_bar: StatusBar,
     event_panel: EventPanel,
     approval_queue: Vec<PendingApproval>,
+    multi_agent_status: Vec<MultiAgentDelegationStatus>,
     tool_calls: Vec<ToolCallFold>,
     saved_sessions: BTreeMap<String, SessionSnapshot>,
     active_model: String,
@@ -87,10 +99,11 @@ impl AgentShellApp {
             messages: Vec::new(),
             status_bar: StatusBar {
                 mode: "idle".to_string(),
-                hint: "enter=submit | /usage /events /tools /compact /model /approve /deny /session | q/esc/ctrl-c=quit".to_string(),
+                hint: "enter=submit | /usage /events /tools /compact /model /approve /deny /session /delegations | q/esc/ctrl-c=quit".to_string(),
             },
             event_panel: EventPanel::default(),
             approval_queue: Vec::new(),
+            multi_agent_status: Vec::new(),
             tool_calls: Vec::new(),
             saved_sessions: BTreeMap::new(),
             active_model: "claude-4-sonnet".to_string(),
@@ -101,7 +114,15 @@ impl AgentShellApp {
 
     pub fn supported_slash_commands() -> &'static [&'static str] {
         &[
-            "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
+            "/usage",
+            "/events",
+            "/tools",
+            "/compact",
+            "/model",
+            "/approve",
+            "/deny",
+            "/session",
+            "/delegations",
         ]
     }
 
@@ -255,6 +276,72 @@ impl AgentShellApp {
         Ok(())
     }
 
+    fn apply_multi_agent_event(&mut self, event: &Value) {
+        let payload = event.get("payload").unwrap_or(event);
+        if payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != "orchestrator"
+        {
+            return;
+        }
+
+        let task_id = payload
+            .get("task_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown-task")
+            .to_string();
+        let child_index = payload
+            .get("child_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown-agent")
+            .to_string();
+        let phase = payload
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let attempt = payload.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+        let error = payload.get("error").and_then(Value::as_str);
+        let summary = if let Some(error) = error {
+            format!("{phase} (attempt {attempt}) - {error}")
+        } else {
+            format!("{phase} (attempt {attempt})")
+        };
+
+        let key = format!("{task_id}#{child_index}");
+        if let Some(existing) = self
+            .multi_agent_status
+            .iter_mut()
+            .find(|status| status.key == key)
+        {
+            existing.agent_id = agent_id.clone();
+            existing.phase = phase.clone();
+            existing.attempt = attempt;
+            existing.summary = summary.clone();
+        } else {
+            self.multi_agent_status.push(MultiAgentDelegationStatus {
+                key,
+                task_id: task_id.clone(),
+                child_index,
+                agent_id: agent_id.clone(),
+                phase: phase.clone(),
+                attempt,
+                summary: summary.clone(),
+            });
+        }
+
+        self.event_panel.entries.push(format!(
+            "delegation task={} child={} agent={} {}",
+            task_id, child_index, agent_id, summary
+        ));
+    }
+
     fn save_session(&mut self, name: &str) {
         let snapshot = SessionSnapshot {
             messages: self.messages.clone(),
@@ -323,6 +410,11 @@ impl AgentShellApp {
                     .and_then(|raw| raw.parse::<usize>().ok())
                     .unwrap_or(10);
                 rpc("ListLifecycleEvents", json!({ "limit": limit })).map(|value| {
+                    if let Some(events) = value.get("events").and_then(Value::as_array) {
+                        for event in events {
+                            self.apply_multi_agent_event(event);
+                        }
+                    }
                     self.push_system_message(format!(
                         "events: {}",
                         serde_json::to_string(&value)
@@ -413,6 +505,14 @@ impl AgentShellApp {
                     _ => Err("usage: /session save <name> | /session load <name>".to_string()),
                 }
             }
+            "/delegations" => {
+                self.push_system_message(format!(
+                    "delegations: {}",
+                    serde_json::to_string(&self.multi_agent_status)
+                        .unwrap_or_else(|_| "<invalid delegations payload>".to_string())
+                ));
+                Ok(())
+            }
             _ => Err(format!("unknown slash command: {head}")),
         };
 
@@ -487,7 +587,11 @@ impl AgentShellApp {
 
         let side_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+            ])
             .split(body_chunks[1]);
 
         let mut message_lines: Vec<Line<'_>> = if self.messages.is_empty() {
@@ -552,6 +656,29 @@ impl AgentShellApp {
             )
             .wrap(Wrap { trim: false });
 
+        let multi_agent_lines: Vec<Line<'_>> = if self.multi_agent_status.is_empty() {
+            vec![Line::from("No delegations")]
+        } else {
+            self.multi_agent_status
+                .iter()
+                .rev()
+                .take(8)
+                .map(|status| {
+                    Line::from(format!(
+                        "task={} child={} agent={} {}",
+                        status.task_id, status.child_index, status.agent_id, status.summary
+                    ))
+                })
+                .collect()
+        };
+        let multi_agent_panel = Paragraph::new(Text::from(multi_agent_lines))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Multi-Agent Delegations"),
+            )
+            .wrap(Wrap { trim: false });
+
         let input_panel = Paragraph::new(format!("> {}", self.input_buffer))
             .block(Block::default().borders(Borders::ALL).title("Input"));
 
@@ -561,12 +688,13 @@ impl AgentShellApp {
             .map(|approval| format!("next_approval={} ({})", approval.id, approval.summary))
             .unwrap_or_else(|| "next_approval=none".to_string());
         let status_line = format!(
-            "mode={} | model={} | agent_id={} | pending_events={} | pending_approvals={} | {} | {}",
+            "mode={} | model={} | agent_id={} | pending_events={} | pending_approvals={} | delegations={} | {} | {}",
             self.status_bar.mode,
             self.active_model,
             self.active_agent_id.as_deref().unwrap_or("<none>"),
             self.event_panel.entries.len(),
             self.approval_queue.len(),
+            self.multi_agent_status.len(),
             approval_preview,
             self.status_bar.hint
         );
@@ -575,6 +703,7 @@ impl AgentShellApp {
         frame.render_widget(message_panel, body_chunks[0]);
         frame.render_widget(event_panel, side_chunks[0]);
         frame.render_widget(approvals_panel, side_chunks[1]);
+        frame.render_widget(multi_agent_panel, side_chunks[2]);
         frame.render_widget(input_panel, vertical_chunks[1]);
         frame.render_widget(status_bar, vertical_chunks[2]);
     }
@@ -672,6 +801,81 @@ fn slash_commands_core_set_available() {
 #[test]
 fn approval_queue_roundtrip() {
     assert!(approval_queue_roundtrip_probe());
+}
+
+#[cfg(test)]
+#[test]
+fn tui_multi_agent_panel_updates_on_events() {
+    assert!(multi_agent_panel_updates_on_events_probe());
+}
+
+#[cfg(test)]
+pub(crate) fn multi_agent_panel_updates_on_events_probe() -> bool {
+    let mut app = AgentShellApp::new();
+
+    let mut rpc = |method: &str, _params: Value| -> Result<Value, String> {
+        match method {
+            "ListLifecycleEvents" => Ok(json!({
+                "events": [
+                    {
+                        "event_type": "orchestrator",
+                        "payload": {
+                            "kind": "orchestrator",
+                            "phase": "delegated",
+                            "task_id": "task-24",
+                            "child_index": 1,
+                            "agent_id": "agent-a",
+                            "attempt": 1
+                        }
+                    },
+                    {
+                        "event_type": "orchestrator",
+                        "payload": {
+                            "kind": "orchestrator",
+                            "phase": "retrying",
+                            "task_id": "task-24",
+                            "child_index": 1,
+                            "agent_id": "agent-a",
+                            "attempt": 1,
+                            "error": "temporary failure"
+                        }
+                    },
+                    {
+                        "event_type": "orchestrator",
+                        "payload": {
+                            "kind": "orchestrator",
+                            "phase": "completed",
+                            "task_id": "task-24",
+                            "child_index": 1,
+                            "agent_id": "agent-a",
+                            "attempt": 2
+                        }
+                    }
+                ]
+            })),
+            _ => Err(format!("unexpected method: {method}")),
+        }
+    };
+
+    app.execute_slash_command_with_rpc("/events 10", &mut rpc);
+
+    if app.multi_agent_status.len() != 1 {
+        return false;
+    }
+    let status = &app.multi_agent_status[0];
+    if status.task_id != "task-24"
+        || status.child_index != 1
+        || status.agent_id != "agent-a"
+        || status.phase != "completed"
+        || status.attempt != 2
+    {
+        return false;
+    }
+
+    app.event_panel
+        .entries
+        .iter()
+        .any(|entry| entry.contains("delegation task=task-24 child=1"))
 }
 
 #[cfg(test)]

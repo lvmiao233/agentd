@@ -35,6 +35,38 @@ pub struct RegistryAgentEntry {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DelegationAgentSummary {
+    pub agent_id: String,
+    pub name: String,
+    pub model: String,
+    pub provider: String,
+    pub health: String,
+}
+
+pub fn delegation_candidates_from_profiles(
+    profiles: &[AgentProfile],
+) -> Vec<DelegationAgentSummary> {
+    let mut candidates = profiles
+        .iter()
+        .filter(|profile| matches!(profile.status, AgentLifecycleState::Ready))
+        .map(|profile| DelegationAgentSummary {
+            agent_id: profile.id.to_string(),
+            name: profile.name.clone(),
+            model: profile.model.model_name.clone(),
+            provider: profile.model.provider.clone(),
+            health: "ready".to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.agent_id.cmp(&right.agent_id))
+    });
+    candidates
+}
+
 pub fn to_registry_agent_entry(
     profile: &AgentProfile,
     endpoint: String,
@@ -562,5 +594,35 @@ mod tests {
         assert_eq!(by_identity.status, AgentLifecycleState::Ready);
 
         std::fs::remove_file(&db_path).expect("cleanup temp db");
+    }
+
+    #[test]
+    fn delegation_candidates_only_include_ready_agents() {
+        let model = ModelConfig {
+            provider: "one-api".to_string(),
+            model_name: "claude-4-sonnet".to_string(),
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let mut ready_a = AgentProfile::new("ready-a".to_string(), model.clone());
+        ready_a.status = AgentLifecycleState::Ready;
+
+        let mut creating = AgentProfile::new("creating".to_string(), model.clone());
+        creating.status = AgentLifecycleState::Creating;
+
+        let mut ready_b = AgentProfile::new("ready-b".to_string(), model);
+        ready_b.status = AgentLifecycleState::Ready;
+
+        let candidates = delegation_candidates_from_profiles(&[ready_b, creating, ready_a]);
+        assert_eq!(candidates.len(), 2, "only ready agents should be delegated");
+        assert_eq!(candidates[0].name, "ready-a");
+        assert_eq!(candidates[1].name, "ready-b");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.health == "ready"),
+            "delegation candidates should carry ready health"
+        );
     }
 }

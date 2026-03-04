@@ -19,6 +19,7 @@ use agentd_protocol::{
     A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
     JsonRpcRequest, JsonRpcResponse,
 };
+use agentd_store::agent::delegation_candidates_from_profiles;
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
@@ -700,6 +701,319 @@ impl A2AHttpClient {
 
         Ok(events)
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OrchestrateTaskParams {
+    #[serde(default)]
+    parent_agent_id: Option<String>,
+    #[serde(default)]
+    input: Value,
+    #[serde(default)]
+    subtasks: Option<Vec<Value>>,
+    #[serde(default)]
+    delegate_agent_ids: Vec<String>,
+    #[serde(default)]
+    retry_limit: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OrchestratorChildResult {
+    index: usize,
+    agent_id: String,
+    input: Value,
+    attempts: u8,
+    state: A2ATaskState,
+    output: Option<Value>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OrchestratorRunResult {
+    task_id: uuid::Uuid,
+    state: A2ATaskState,
+    retry_limit: u8,
+    merge_strategy: String,
+    children: Vec<OrchestratorChildResult>,
+    aggregated_output: Value,
+}
+
+fn split_orchestrator_subtasks(input: &Value, explicit_subtasks: Option<Vec<Value>>) -> Vec<Value> {
+    if let Some(subtasks) = explicit_subtasks {
+        return subtasks;
+    }
+
+    if let Some(items) = input
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+    {
+        return items.clone();
+    }
+
+    if let Some(items) = input.as_array().filter(|items| !items.is_empty()) {
+        return items.clone();
+    }
+
+    vec![input.clone()]
+}
+
+fn resolve_orchestrator_agents(
+    explicit_agents: &[String],
+    local_candidates: &[agentd_store::agent::DelegationAgentSummary],
+    parent_agent_id: Option<uuid::Uuid>,
+) -> Vec<String> {
+    let mut resolved = explicit_agents
+        .iter()
+        .map(|agent_id| agent_id.trim())
+        .filter(|agent_id| !agent_id.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if resolved.is_empty() {
+        resolved = local_candidates
+            .iter()
+            .map(|candidate| candidate.agent_id.clone())
+            .collect();
+    }
+
+    if resolved.is_empty() {
+        if let Some(parent_agent_id) = parent_agent_id {
+            resolved.push(parent_agent_id.to_string());
+        } else {
+            resolved.push("local-orchestrator".to_string());
+        }
+    }
+
+    resolved
+}
+
+fn aggregate_orchestrator_results(children: &[OrchestratorChildResult]) -> Value {
+    let mut ordered = children.to_vec();
+    ordered.sort_by_key(|child| child.index);
+
+    let retried_children = ordered.iter().filter(|child| child.attempts > 1).count();
+    let failed_children = ordered
+        .iter()
+        .filter(|child| child.state == A2ATaskState::Failed)
+        .count();
+    let succeeded_children = ordered
+        .iter()
+        .filter(|child| child.state == A2ATaskState::Completed)
+        .count();
+
+    json!({
+        "results": ordered
+            .iter()
+            .map(|child| {
+                json!({
+                    "index": child.index,
+                    "agent_id": child.agent_id,
+                    "attempts": child.attempts,
+                    "state": child.state,
+                    "output": child.output,
+                    "error": child.error,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "summary": {
+            "total_children": ordered.len(),
+            "succeeded_children": succeeded_children,
+            "failed_children": failed_children,
+            "retried_children": retried_children,
+        }
+    })
+}
+
+async fn orchestrate_task_with_delegate<F>(
+    state: &RuntimeState,
+    store: &SqliteStore,
+    params: OrchestrateTaskParams,
+    mut delegate: F,
+) -> Result<OrchestratorRunResult, AgentError>
+where
+    F: FnMut(&str, &Value, usize, u8) -> Result<Value, AgentError>,
+{
+    let parent_agent_id = params
+        .parent_agent_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|err| AgentError::InvalidInput(format!("invalid parent_agent_id: {err}")))?;
+
+    let parent_task = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: parent_agent_id,
+            input: params.input.clone(),
+        })
+        .await;
+
+    let _ = state
+        .transition_a2a_task(
+            parent_task.id,
+            A2ATaskState::Working,
+            None,
+            None,
+            json!({
+                "kind": "orchestrator",
+                "phase": "started",
+                "task_id": parent_task.id,
+            }),
+        )
+        .await;
+
+    let local_profiles = store.list_agents().await?;
+    let local_candidates = delegation_candidates_from_profiles(&local_profiles);
+    let delegation_agents =
+        resolve_orchestrator_agents(&params.delegate_agent_ids, &local_candidates, parent_agent_id);
+
+    let subtasks = split_orchestrator_subtasks(&params.input, params.subtasks);
+    let retry_limit = params.retry_limit.unwrap_or(1);
+    let max_attempts = retry_limit.saturating_add(1);
+
+    let mut children = Vec::with_capacity(subtasks.len());
+    for (index, subtask) in subtasks.into_iter().enumerate() {
+        let agent_id = delegation_agents[index % delegation_agents.len()].clone();
+        let mut attempts = 0_u8;
+
+        let child = loop {
+            attempts = attempts.saturating_add(1);
+            state
+                .publish_a2a_event(
+                    parent_task.id,
+                    A2ATaskState::Working,
+                    json!({
+                        "kind": "orchestrator",
+                        "phase": "delegated",
+                        "task_id": parent_task.id,
+                        "child_index": index,
+                        "agent_id": agent_id,
+                        "attempt": attempts,
+                        "input": subtask,
+                    }),
+                )
+                .await;
+
+            match delegate(&agent_id, &subtask, index, attempts) {
+                Ok(output) => {
+                    state
+                        .publish_a2a_event(
+                            parent_task.id,
+                            A2ATaskState::Working,
+                            json!({
+                                "kind": "orchestrator",
+                                "phase": "completed",
+                                "task_id": parent_task.id,
+                                "child_index": index,
+                                "agent_id": agent_id,
+                                "attempt": attempts,
+                                "output": output,
+                            }),
+                        )
+                        .await;
+                    break OrchestratorChildResult {
+                        index,
+                        agent_id: agent_id.clone(),
+                        input: subtask.clone(),
+                        attempts,
+                        state: A2ATaskState::Completed,
+                        output: Some(output),
+                        error: None,
+                    };
+                }
+                Err(err) if attempts < max_attempts => {
+                    state
+                        .publish_a2a_event(
+                            parent_task.id,
+                            A2ATaskState::Working,
+                            json!({
+                                "kind": "orchestrator",
+                                "phase": "retrying",
+                                "task_id": parent_task.id,
+                                "child_index": index,
+                                "agent_id": agent_id,
+                                "attempt": attempts,
+                                "error": err.to_string(),
+                            }),
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    let error_message = err.to_string();
+                    state
+                        .publish_a2a_event(
+                            parent_task.id,
+                            A2ATaskState::Working,
+                            json!({
+                                "kind": "orchestrator",
+                                "phase": "failed",
+                                "task_id": parent_task.id,
+                                "child_index": index,
+                                "agent_id": agent_id,
+                                "attempt": attempts,
+                                "error": error_message,
+                            }),
+                        )
+                        .await;
+                    break OrchestratorChildResult {
+                        index,
+                        agent_id: agent_id.clone(),
+                        input: subtask.clone(),
+                        attempts,
+                        state: A2ATaskState::Failed,
+                        output: None,
+                        error: Some(error_message),
+                    };
+                }
+            }
+        };
+
+        children.push(child);
+    }
+
+    let aggregated_output = aggregate_orchestrator_results(&children);
+    let failed_children = children
+        .iter()
+        .filter(|child| child.state == A2ATaskState::Failed)
+        .count();
+
+    let final_state = if failed_children == 0 {
+        A2ATaskState::Completed
+    } else {
+        A2ATaskState::Failed
+    };
+    let final_error = if failed_children == 0 {
+        None
+    } else {
+        Some(format!(
+            "orchestrator failed with {failed_children} child task(s)"
+        ))
+    };
+
+    let _ = state
+        .transition_a2a_task(
+            parent_task.id,
+            final_state,
+            Some(aggregated_output.clone()),
+            final_error,
+            json!({
+                "kind": "orchestrator",
+                "phase": "aggregated",
+                "task_id": parent_task.id,
+                "state": final_state,
+                "aggregated_output": aggregated_output,
+            }),
+        )
+        .await;
+
+    Ok(OrchestratorRunResult {
+        task_id: parent_task.id,
+        state: final_state,
+        retry_limit,
+        merge_strategy: "deterministic_list".to_string(),
+        children,
+        aggregated_output,
+    })
 }
 
 fn normalize_http_base_url(base_url: &str) -> Result<String, AgentError> {
@@ -1888,6 +2202,112 @@ async fn a2a_client_discovers_remote_card() {
 
     let _ = shutdown_tx.send(true);
     let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn orchestrator_splits_and_aggregates_tasks() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task24-orchestrator-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let result = orchestrate_task_with_delegate(
+        &state,
+        store.as_ref(),
+        OrchestrateTaskParams {
+            parent_agent_id: None,
+            input: json!({ "goal": "ship task 24" }),
+            subtasks: Some(vec![
+                json!({"work": "decompose"}),
+                json!({"work": "delegate"}),
+                json!({"work": "aggregate"}),
+            ]),
+            delegate_agent_ids: vec!["agent-a".to_string(), "agent-b".to_string()],
+            retry_limit: Some(1),
+        },
+        |agent_id, child_input, child_index, _attempt| {
+            Ok(json!({
+                "agent_id": agent_id,
+                "child_index": child_index,
+                "work": child_input["work"],
+            }))
+        },
+    )
+    .await
+    .expect("orchestrate task should succeed");
+
+    assert_eq!(result.state, A2ATaskState::Completed);
+    assert_eq!(result.children.len(), 3);
+    assert_eq!(result.children[0].agent_id, "agent-a");
+    assert_eq!(result.children[1].agent_id, "agent-b");
+    assert_eq!(result.children[2].agent_id, "agent-a");
+
+    let aggregated = result
+        .aggregated_output
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("aggregated results should be an array");
+    assert_eq!(aggregated.len(), 3);
+    assert_eq!(aggregated[0]["agent_id"], json!("agent-a"));
+    assert_eq!(aggregated[1]["agent_id"], json!("agent-b"));
+    assert_eq!(aggregated[2]["agent_id"], json!("agent-a"));
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn orchestrator_retries_failed_child_once() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task24-orchestrator-retry-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let mut attempts_by_child: HashMap<usize, u8> = HashMap::new();
+    let result = orchestrate_task_with_delegate(
+        &state,
+        store.as_ref(),
+        OrchestrateTaskParams {
+            parent_agent_id: None,
+            input: json!({ "subtasks": [{"work": "ok"}, {"work": "flaky"}] }),
+            subtasks: None,
+            delegate_agent_ids: vec!["agent-a".to_string(), "agent-b".to_string()],
+            retry_limit: Some(1),
+        },
+        |_agent_id, child_input, child_index, _attempt| {
+            let entry = attempts_by_child.entry(child_index).or_insert(0);
+            *entry = entry.saturating_add(1);
+
+            if child_input["work"] == json!("flaky") && *entry == 1 {
+                return Err(AgentError::Runtime(
+                    "temporary child execution failure".to_string(),
+                ));
+            }
+
+            Ok(json!({
+                "work": child_input["work"],
+                "attempts_seen": *entry,
+            }))
+        },
+    )
+    .await
+    .expect("orchestrator should recover from one retryable failure");
+
+    assert_eq!(result.state, A2ATaskState::Completed);
+    assert_eq!(result.children.len(), 2);
+    assert_eq!(result.children[1].state, A2ATaskState::Completed);
+    assert_eq!(result.children[1].attempts, 2);
+    assert_eq!(
+        result.aggregated_output["summary"]["retried_children"],
+        json!(1)
+    );
+
     cleanup_sqlite_files(&db_path);
 }
 
@@ -6117,6 +6537,51 @@ async fn handle_rpc_request(
             }
 
             JsonRpcResponse::success(request.id, json!(outcome))
+        }
+        "OrchestrateTask" | "management.OrchestrateTask" => {
+            let params = match serde_json::from_value::<OrchestrateTaskParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid orchestrate task params: {err}"),
+                    )
+                }
+            };
+
+            let orchestrated = match orchestrate_task_with_delegate(
+                &state,
+                store.as_ref(),
+                params,
+                |agent_id, child_input, child_index, attempt| {
+                    Ok(json!({
+                        "agent_id": agent_id,
+                        "child_index": child_index,
+                        "attempt": attempt,
+                        "result": child_input,
+                    }))
+                },
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(AgentError::NotFound(message)) => {
+                    return JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32024,
+                        format!("orchestrate task failed: {err}"),
+                    )
+                }
+            };
+
+            JsonRpcResponse::success(request.id, json!(orchestrated))
         }
         "StartManagedAgent" | "management.StartManagedAgent" => {
             let params = match serde_json::from_value::<StartManagedAgentParams>(request.params) {

@@ -880,6 +880,12 @@ fn approval_queue_roundtrip() {
     assert!(tui::approval_queue_roundtrip_probe());
 }
 
+#[cfg(test)]
+#[test]
+fn tui_multi_agent_panel_updates_on_events() {
+    assert!(tui::multi_agent_panel_updates_on_events_probe());
+}
+
 fn test_json_http_response(status_line: &str, body: &Value) -> Vec<u8> {
     let encoded = serde_json::to_string(body).expect("encode response body");
     format!(
@@ -970,7 +976,7 @@ async fn a2a_cli_discover_send_status_flow() {
 
     let discover = Cli::try_parse_from(["agentctl", "a2a", "discover", "--url", &base, "--json"])
         .expect("discover args should parse");
-    run_cli(discover, || Ok(()))
+    run_cli(discover, |_socket_path| Ok(()))
         .await
         .expect("discover should succeed");
 
@@ -978,7 +984,9 @@ async fn a2a_cli_discover_send_status_flow() {
         "agentctl", "a2a", "send", "--target", &base, "--input", "ping", "--json",
     ])
     .expect("send args should parse");
-    run_cli(send, || Ok(())).await.expect("send should succeed");
+    run_cli(send, |_socket_path| Ok(()))
+        .await
+        .expect("send should succeed");
 
     let status = Cli::try_parse_from([
         "agentctl",
@@ -991,7 +999,7 @@ async fn a2a_cli_discover_send_status_flow() {
         "--json",
     ])
     .expect("status args should parse");
-    run_cli(status, || Ok(()))
+    run_cli(status, |_socket_path| Ok(()))
         .await
         .expect("status should succeed");
 
@@ -1010,7 +1018,7 @@ async fn a2a_discover_handles_unreachable_remote() {
         "--json",
     ])
     .expect("cli args should parse");
-    let result = run_cli(cli, || Ok(())).await;
+    let result = run_cli(cli, |_socket_path| Ok(())).await;
     assert!(
         result.is_err(),
         "discover should fail for unreachable remote"
@@ -1093,7 +1101,7 @@ async fn discover_lists_lan_and_registry_sources() {
         "--json",
     ])
     .expect("discover args should parse");
-    run_cli(cli, || Ok(()))
+    run_cli(cli, |_socket_path| Ok(()))
         .await
         .expect("discover command should succeed");
 
