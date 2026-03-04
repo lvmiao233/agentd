@@ -12,8 +12,7 @@ use agentd_core::profile::{ModelConfig, PermissionPolicy};
 use agentd_core::{
     AgentError, AgentLifecycleState, AgentProfile, AuditEvent, PolicyDecision, PolicyEngine,
     PolicyEngineLayers, PolicyEvaluation, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
-    PolicyRule, RegorusPolicyEngine,
-    SessionPolicyOverrides,
+    PolicyRule, RegorusPolicyEngine, SessionPolicyOverrides,
 };
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -258,6 +257,7 @@ struct RuntimeState {
     create_agent_lock: Arc<Mutex<()>>,
     lifecycle_manager: LifecycleManager,
     agent_card_root: Arc<PathBuf>,
+    mcp_host: Arc<Mutex<McpHost>>,
 }
 
 impl RuntimeState {
@@ -278,16 +278,32 @@ impl RuntimeState {
         )
     }
 
+    #[cfg(test)]
     fn with_lifecycle_and_agent_card_root(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
         agent_card_root: PathBuf,
+    ) -> Self {
+        Self::with_lifecycle_and_agent_card_root_and_mcp(
+            initial_status,
+            lifecycle_manager,
+            agent_card_root,
+            Arc::new(Mutex::new(McpHost::new())),
+        )
+    }
+
+    fn with_lifecycle_and_agent_card_root_and_mcp(
+        initial_status: &str,
+        lifecycle_manager: LifecycleManager,
+        agent_card_root: PathBuf,
+        mcp_host: Arc<Mutex<McpHost>>,
     ) -> Self {
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
             lifecycle_manager,
             agent_card_root: Arc::new(agent_card_root),
+            mcp_host,
         }
     }
 
@@ -302,6 +318,10 @@ impl RuntimeState {
 
     fn lifecycle(&self) -> LifecycleManager {
         self.lifecycle_manager.clone()
+    }
+
+    fn mcp_host(&self) -> Arc<Mutex<McpHost>> {
+        self.mcp_host.clone()
     }
 }
 
@@ -480,6 +500,22 @@ fn mcp_invalid_initialize_stdio_server(name: &str) -> mcp::McpServerConfig {
 }
 
 #[cfg(test)]
+fn mcp_short_lived_stdio_server(name: &str, capability: &str) -> mcp::McpServerConfig {
+    mcp::McpServerConfig {
+        name: name.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 0.1"
+            ),
+        ],
+        transport: mcp::McpTransport::Stdio,
+        trust_level: mcp::McpTrustLevel::Builtin,
+    }
+}
+
+#[cfg(test)]
 #[tokio::test]
 async fn mcp_host_starts_declared_servers() {
     let mut host = mcp::McpHost::new();
@@ -542,6 +578,277 @@ async fn mcp_host_rolls_back_on_init_failure() {
         .iter()
         .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
     assert!(rollback_event, "rollback completion should be audited");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn mcp_registry_syncs_capabilities_from_initialize() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![mcp_valid_stdio_server("mcp-search", "search.query")];
+
+    host.start_declared_servers(&configs)
+        .await
+        .expect("mcp host should start configured server");
+
+    let registry_entry = host
+        .registry()
+        .get("mcp-search")
+        .expect("registry entry should exist");
+    assert_eq!(
+        registry_entry.capabilities,
+        vec!["search.query".to_string()]
+    );
+    assert_eq!(registry_entry.health, mcp::McpServerHealth::Healthy);
+
+    let available_tools = host.list_available_tools();
+    assert!(available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-search" && tool.tool_name == "search.query"));
+
+    host.stop_all().await.expect("mcp host stop should succeed");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn unhealthy_server_removed_from_available_tools() {
+    let mut host = mcp::McpHost::new();
+    let configs = vec![
+        mcp_valid_stdio_server("mcp-fs", "fs.read_file"),
+        mcp_short_lived_stdio_server("mcp-transient", "transient.echo"),
+    ];
+
+    host.start_declared_servers(&configs)
+        .await
+        .expect("mcp host should start configured servers");
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let health = host
+        .refresh_health()
+        .expect("mcp host health refresh should succeed");
+    assert_eq!(health.total, 2);
+    assert_eq!(health.healthy, 1);
+    assert_eq!(health.unreachable, 1);
+
+    let available_tools = host.list_available_tools();
+    assert!(available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-fs" && tool.tool_name == "fs.read_file"));
+    assert!(!available_tools
+        .iter()
+        .any(|tool| tool.server_id == "mcp-transient" && tool.tool_name == "transient.echo"));
+
+    host.stop_all().await.expect("mcp host stop should succeed");
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn list_available_tools_filters_by_policy() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let mut host = mcp::McpHost::new();
+    host.start_declared_servers(&[
+        mcp_valid_stdio_server("mcp-fs", "fs.read_file"),
+        mcp_valid_stdio_server("mcp-shell", "shell.execute"),
+    ])
+    .await
+    .expect("mcp host should start configured servers");
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(host)),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8801),
+            "CreateAgent",
+            json!({
+                "name": "list-tools-policy-agent",
+                "model": "claude-4-sonnet",
+                "permission_policy": "ask",
+                "denied_tools": ["mcp.fs.read_file"],
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+
+    let list_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8802),
+            "ListAvailableTools",
+            json!({
+                "agent_id": agent_id,
+            }),
+        ),
+        store,
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        list_response.error.is_none(),
+        "list available tools should succeed: {list_response:?}"
+    );
+
+    let tools = list_response
+        .result
+        .expect("list result should exist")
+        .get("tools")
+        .expect("tools field should exist")
+        .as_array()
+        .expect("tools should be array")
+        .clone();
+
+    assert!(
+        tools.iter().any(|tool| {
+            tool["server"] == json!("mcp-shell")
+                && tool["tool"] == json!("shell.execute")
+                && tool["policy_tool"] == json!("mcp.shell.execute")
+        }),
+        "shell tool should be visible"
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool["policy_tool"] == json!("mcp.fs.read_file")),
+        "denied fs tool should be filtered out"
+    );
+
+    let mcp_host = state.mcp_host();
+    mcp_host
+        .lock()
+        .await
+        .stop_all()
+        .await
+        .expect("mcp host stop should succeed");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn invoke_skill_denied_writes_audit() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let mut host = mcp::McpHost::new();
+    host.start_declared_servers(&[mcp_valid_stdio_server("mcp-fs", "fs.read_file")])
+        .await
+        .expect("mcp host should start configured server");
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(host)),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8901),
+            "CreateAgent",
+            json!({
+                "name": "invoke-deny-agent",
+                "model": "claude-4-sonnet",
+                "permission_policy": "ask",
+                "denied_tools": ["mcp.fs.read_file"],
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+    let parsed_agent_id = uuid::Uuid::parse_str(&agent_id).expect("agent id should be valid uuid");
+
+    let invoke_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8902),
+            "InvokeSkill",
+            json!({
+                "agent_id": agent_id,
+                "server": "mcp-fs",
+                "tool": "fs.read_file",
+                "args": {
+                    "path": ".env"
+                }
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+
+    let denied_error = invoke_response
+        .error
+        .expect("invoke skill should be denied by policy");
+    assert_eq!(denied_error.code, -32016);
+    assert!(denied_error.message.contains("policy.deny"));
+
+    let events = store
+        .get_audit_events(parsed_agent_id)
+        .await
+        .expect("audit query should succeed");
+    let deny_event = events
+        .iter()
+        .find(|event| event.event_type == EventType::ToolDenied)
+        .expect("tool denied event should exist");
+    assert_eq!(deny_event.payload.message.as_deref(), Some("policy.deny"));
+    assert_eq!(
+        deny_event.payload.tool_name.as_deref(),
+        Some("mcp.fs.read_file")
+    );
+    assert_eq!(
+        deny_event.payload.metadata["replay"]["input"]["args"]["path"],
+        json!(".env")
+    );
+
+    let mcp_host = state.mcp_host();
+    mcp_host
+        .lock()
+        .await
+        .stop_all()
+        .await
+        .expect("mcp host stop should succeed");
+    cleanup_sqlite_files(&db_path);
 }
 
 async fn health_server(
@@ -2380,6 +2687,20 @@ struct AuthorizeMcpToolParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct ListAvailableToolsParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InvokeSkillParams {
+    agent_id: String,
+    server: String,
+    tool: String,
+    #[serde(default)]
+    args: Value,
+}
+
+#[derive(Debug, Deserialize)]
 struct StartManagedAgentParams {
     agent_id: String,
     command: String,
@@ -3022,23 +3343,27 @@ async fn record_audit_event(
     }
 }
 
-async fn authorize_mcp_tool_before_forward<F>(
-    store: &Arc<SqliteStore>,
-    audit_context: &AuditContext,
-    agent_id: uuid::Uuid,
-    tool: &str,
-    forward_payload: Value,
-    forward: F,
-) -> Result<McpGatewayForwardResult, AgentError>
-where
-    F: FnOnce(&Value) -> Value,
-{
-    if tool.trim().is_empty() {
+fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
+    let normalized = tool.trim();
+    if normalized.is_empty() {
         return Err(AgentError::InvalidInput(
             "tool must be non-empty".to_string(),
         ));
     }
 
+    if normalized.starts_with("mcp.") {
+        return Ok(normalized.to_string());
+    }
+
+    Ok(format!("mcp.{normalized}"))
+}
+
+async fn evaluate_mcp_tool_policy(
+    store: &Arc<SqliteStore>,
+    audit_context: &AuditContext,
+    agent_id: uuid::Uuid,
+    tool: &str,
+) -> Result<(PolicyEvaluation, PolicyGatewayDecision), AgentError> {
     let profile = store.get_agent(agent_id).await?;
     let global_layer = PolicyLayer {
         name: "global".to_string(),
@@ -3069,6 +3394,7 @@ where
         request_meta,
     };
     policy_input.validate()?;
+
     let evaluation = evaluate_policy_with_rego_dir(
         Path::new("policies"),
         global_layer,
@@ -3077,6 +3403,23 @@ where
         &policy_input,
     )?;
     let gateway_decision = evaluation.to_gateway_decision(audit_context.trace_id.clone());
+    Ok((evaluation, gateway_decision))
+}
+
+async fn authorize_mcp_tool_before_forward<F>(
+    store: &Arc<SqliteStore>,
+    audit_context: &AuditContext,
+    agent_id: uuid::Uuid,
+    tool: &str,
+    forward_payload: Value,
+    forward: F,
+) -> Result<McpGatewayForwardResult, AgentError>
+where
+    F: FnOnce(&Value) -> Value,
+{
+    let tool = canonical_mcp_tool_name(tool)?;
+    let (evaluation, gateway_decision) =
+        evaluate_mcp_tool_policy(store, audit_context, agent_id, &tool).await?;
 
     let mut metadata = json!({
         "matched_rule": evaluation.matched_rule.clone(),
@@ -3105,7 +3448,7 @@ where
         ),
         PolicyDecision::Deny => {
             let replay = serde_json::to_value(PolicyReplayReference::new(
-                tool,
+                &tool,
                 forward_payload,
                 gateway_decision.reason.clone(),
                 gateway_decision.trace_id.clone(),
@@ -3132,7 +3475,7 @@ where
         event_type,
         result,
         EventPayload {
-            tool_name: Some(tool.to_string()),
+            tool_name: Some(tool.clone()),
             message: Some(message.to_string()),
             metadata,
         },
@@ -3535,6 +3878,215 @@ async fn handle_rpc_request(
                     "source_layer": evaluation.source_layer,
                     "reason": gateway_decision.reason,
                     "trace_id": gateway_decision.trace_id,
+                }),
+            )
+        }
+        "ListAvailableTools" | "management.ListAvailableTools" => {
+            let params = match serde_json::from_value::<ListAvailableToolsParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid list available tools params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let available_tools = {
+                let mcp_host = state.mcp_host();
+                let mut host = mcp_host.lock().await;
+                if let Err(err) = host.refresh_health() {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!("refresh mcp health failed: {err}"),
+                    );
+                }
+                host.list_available_tools()
+            };
+
+            let mut tools = Vec::new();
+            for available_tool in available_tools {
+                let policy_tool_name = match canonical_mcp_tool_name(&available_tool.tool_name) {
+                    Ok(name) => name,
+                    Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
+                };
+
+                let (evaluation, gateway_decision) = match evaluate_mcp_tool_policy(
+                    &store,
+                    &audit_context,
+                    agent_id,
+                    &policy_tool_name,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(AgentError::NotFound(message)) => {
+                        return JsonRpcResponse::error(request.id, -32010, message)
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32021,
+                            format!("evaluate tool policy failed: {err}"),
+                        )
+                    }
+                };
+
+                if evaluation.decision == PolicyDecision::Deny {
+                    continue;
+                }
+
+                tools.push(json!({
+                    "server": available_tool.server_id,
+                    "tool": available_tool.tool_name,
+                    "policy_tool": policy_tool_name,
+                    "trust_level": format!("{:?}", available_tool.trust_level).to_ascii_lowercase(),
+                    "health": format!("{:?}", available_tool.health).to_ascii_lowercase(),
+                    "decision": evaluation.decision,
+                    "reason": gateway_decision.reason,
+                    "trace_id": gateway_decision.trace_id,
+                }));
+            }
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "agent_id": params.agent_id,
+                    "tools": tools,
+                }),
+            )
+        }
+        "InvokeSkill" | "management.InvokeSkill" => {
+            let params = match serde_json::from_value::<InvokeSkillParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid invoke skill params: {err}"),
+                    )
+                }
+            };
+
+            if params.server.trim().is_empty() || params.tool.trim().is_empty() {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32602,
+                    "server and tool must be non-empty",
+                );
+            }
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let resolved_tool = {
+                let mcp_host = state.mcp_host();
+                let mut host = mcp_host.lock().await;
+                if let Err(err) = host.refresh_health() {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!("refresh mcp health failed: {err}"),
+                    );
+                }
+                host.list_available_tools()
+                    .into_iter()
+                    .find(|tool| tool.server_id == params.server && tool.tool_name == params.tool)
+            };
+
+            let Some(resolved_tool) = resolved_tool else {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32023,
+                    format!(
+                        "requested skill not available: server={} tool={}",
+                        params.server, params.tool
+                    ),
+                );
+            };
+
+            let policy_tool_name = match canonical_mcp_tool_name(&resolved_tool.tool_name) {
+                Ok(name) => name,
+                Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
+            };
+            let payload = json!({
+                "server": resolved_tool.server_id,
+                "tool": resolved_tool.tool_name,
+                "args": params.args,
+            });
+
+            let forward_server = resolved_tool.server_id.clone();
+            let forward_tool = resolved_tool.tool_name.clone();
+            let outcome = match authorize_mcp_tool_before_forward(
+                &store,
+                &audit_context,
+                agent_id,
+                &policy_tool_name,
+                payload,
+                move |forward_payload| {
+                    json!({
+                        "status": "forwarded",
+                        "transport": "mcp-skill-gateway",
+                        "server": forward_server,
+                        "tool": forward_tool,
+                        "request": forward_payload,
+                    })
+                },
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(AgentError::NotFound(message)) => {
+                    return JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!("invoke skill failed: {err}"),
+                    )
+                }
+            };
+
+            if outcome.decision.decision == PolicyDecision::Deny {
+                return JsonRpcResponse::error(request.id, -32016, outcome.decision.reason);
+            }
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "server": resolved_tool.server_id,
+                    "tool": resolved_tool.tool_name,
+                    "policy_tool": policy_tool_name,
+                    "forwarded": outcome.forwarded,
+                    "decision": outcome.decision,
+                    "matched_rule": outcome.matched_rule,
+                    "source_layer": outcome.source_layer,
+                    "downstream": outcome.downstream,
                 }),
             )
         }
@@ -4901,7 +5453,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.daemon.cgroup_root.clone(),
         config.daemon.cgroup_parent.clone(),
     ));
-    let state = RuntimeState::with_lifecycle_and_agent_card_root(
+    let mcp_host = Arc::new(Mutex::new(McpHost::new()));
+    {
+        let mut host = mcp_host.lock().await;
+        host.start_declared_servers(&mcp_server_configs).await?;
+        let mcp_health = host.refresh_health()?;
+        let available_tools = host.list_available_tools();
+        info!(
+            total_servers = mcp_health.total,
+            healthy_servers = mcp_health.healthy,
+            degraded_servers = mcp_health.degraded,
+            unreachable_servers = mcp_health.unreachable,
+            available_tools = available_tools.len(),
+            "MCP host lifecycle initialized"
+        );
+    }
+
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
         if config.one_api.enabled {
             "starting"
         } else {
@@ -4909,15 +5477,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         lifecycle_manager,
         PathBuf::from(config.daemon.agent_card_root.clone()),
-    );
-
-    let mut mcp_host = McpHost::new();
-    mcp_host.start_declared_servers(&mcp_server_configs).await?;
-    let mcp_health = mcp_host.refresh_health()?;
-    info!(
-        total_servers = mcp_health.total,
-        healthy_servers = mcp_health.healthy,
-        "MCP host lifecycle initialized"
+        mcp_host.clone(),
     );
 
     let health_listener = TcpListener::bind(bind_addr).await?;
@@ -5024,7 +5584,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    match mcp_host.stop_all().await {
+    let mut host = mcp_host.lock().await;
+    match host.stop_all().await {
         Ok(()) => {
             info!("MCP host servers shut down gracefully");
         }

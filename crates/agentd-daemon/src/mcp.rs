@@ -19,8 +19,17 @@ pub(crate) type McpTrustLevel = TrustLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpServerHealth {
-    Unknown,
     Healthy,
+    Degraded,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpAvailableTool {
+    pub(crate) server_id: String,
+    pub(crate) tool_name: String,
+    pub(crate) trust_level: McpTrustLevel,
+    pub(crate) health: McpServerHealth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +112,8 @@ pub(crate) struct McpServerHandle {
 pub(crate) struct McpHostHealthSnapshot {
     pub(crate) total: usize,
     pub(crate) healthy: usize,
+    pub(crate) degraded: usize,
+    pub(crate) unreachable: usize,
 }
 
 #[derive(Debug)]
@@ -208,8 +219,11 @@ impl McpHost {
     pub(crate) fn refresh_health(&mut self) -> Result<McpHostHealthSnapshot, AgentError> {
         let server_ids = self.servers.keys().cloned().collect::<Vec<_>>();
         let mut healthy = 0usize;
+        let mut degraded = 0usize;
+        let mut unreachable = 0usize;
 
         for server_id in server_ids {
+            let mut computed_health: Option<McpServerHealth> = None;
             if let Some(handle) = self.servers.get_mut(&server_id) {
                 let is_running = match handle.process.try_wait() {
                     Ok(None) => true,
@@ -221,18 +235,25 @@ impl McpHost {
                     }
                 };
 
-                handle.health = if is_running {
+                handle.health = if is_running && handle.initialize_capabilities.is_empty() {
+                    McpServerHealth::Degraded
+                } else if is_running {
                     McpServerHealth::Healthy
                 } else {
-                    McpServerHealth::Unknown
+                    McpServerHealth::Unreachable
                 };
+                computed_health = Some(handle.health);
+            }
 
-                if let Some(entry) = self.registry.entries.get_mut(&server_id) {
-                    entry.health = handle.health;
-                }
+            self.sync_registry_entry_from_handle(&server_id);
 
-                if is_running {
-                    healthy = healthy.saturating_add(1);
+            if let Some(health) = computed_health {
+                match health {
+                    McpServerHealth::Healthy => healthy = healthy.saturating_add(1),
+                    McpServerHealth::Degraded => degraded = degraded.saturating_add(1),
+                    McpServerHealth::Unreachable => {
+                        unreachable = unreachable.saturating_add(1)
+                    }
                 }
             }
         }
@@ -240,7 +261,25 @@ impl McpHost {
         Ok(McpHostHealthSnapshot {
             total: self.servers.len(),
             healthy,
+            degraded,
+            unreachable,
         })
+    }
+
+    pub(crate) fn list_available_tools(&self) -> Vec<McpAvailableTool> {
+        self.registry
+            .entries
+            .values()
+            .filter(|entry| entry.health == McpServerHealth::Healthy)
+            .flat_map(|entry| {
+                entry.capabilities.iter().map(move |capability| McpAvailableTool {
+                    server_id: entry.server_id.clone(),
+                    tool_name: capability.clone(),
+                    trust_level: entry.trust_level,
+                    health: entry.health,
+                })
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -291,14 +330,6 @@ impl McpHost {
             )));
         }
 
-        let entry = McpRegistryEntry {
-            server_id: config.name.clone(),
-            capabilities: initialize_capabilities.clone(),
-            trust_level: config.trust_level,
-            health: McpServerHealth::Healthy,
-        };
-        self.registry.upsert(entry);
-
         self.servers.insert(
             config.name.clone(),
             McpServerHandle {
@@ -309,8 +340,29 @@ impl McpHost {
                 initialize_capabilities,
             },
         );
+        self.sync_registry_entry_from_handle(&config.name);
 
         Ok(())
+    }
+
+    fn sync_registry_entry_from_handle(&mut self, server_id: &str) {
+        let Some((capabilities, trust_level, health)) = self.servers.get(server_id).map(|handle| {
+            (
+                handle.initialize_capabilities.clone(),
+                handle.trust_level,
+                handle.health,
+            )
+        }) else {
+            return;
+        };
+
+        let entry = McpRegistryEntry {
+            server_id: server_id.to_string(),
+            capabilities,
+            trust_level,
+            health,
+        };
+        self.registry.upsert(entry);
     }
 
     async fn perform_initialize(
@@ -669,7 +721,7 @@ mod tests {
             server_id: "mcp-search".to_string(),
             capabilities: vec!["search.query".to_string()],
             trust_level: McpTrustLevel::Community,
-            health: McpServerHealth::Unknown,
+            health: McpServerHealth::Degraded,
         });
         assert!(replaced.is_some());
         assert_eq!(registry.len(), 1);
@@ -678,7 +730,7 @@ mod tests {
             .expect("updated entry should exist");
         assert_eq!(updated.capabilities.join(","), "search.query");
         assert_eq!(updated.trust_level, McpTrustLevel::Community);
-        assert_eq!(updated.health, McpServerHealth::Unknown);
+        assert_eq!(updated.health, McpServerHealth::Degraded);
 
         let removed = registry.remove("mcp-search");
         assert!(removed.is_some());
@@ -689,10 +741,25 @@ mod tests {
             server_id: "mcp-git".to_string(),
             capabilities: vec!["git.status".to_string()],
             trust_level: McpTrustLevel::Community,
-            health: McpServerHealth::Unknown,
+            health: McpServerHealth::Unreachable,
         });
         assert!(previous.is_none());
         assert_eq!(registry.list().len(), 1);
+    }
+
+    fn short_lived_stdio_server(name: &str, capability: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 0.1"
+                ),
+            ],
+            transport: McpTransport::Stdio,
+            trust_level: McpTrustLevel::Builtin,
+        }
     }
 
     #[test]
@@ -771,5 +838,64 @@ mod tests {
             .iter()
             .any(|event| event.action == "rollback" && event.success && event.server_id == "mcp-bad");
         assert!(rollback_event, "rollback completion must be audited");
+    }
+
+    #[tokio::test]
+    async fn mcp_registry_syncs_capabilities_from_initialize() {
+        let mut host = McpHost::new();
+        let configs = vec![valid_stdio_server("mcp-search", "search.query")];
+
+        host.start_declared_servers(&configs)
+            .await
+            .expect("mcp host should start configured server");
+
+        let entry = host
+            .registry()
+            .get("mcp-search")
+            .expect("registry entry should be present");
+        assert_eq!(entry.capabilities, vec!["search.query".to_string()]);
+        assert_eq!(entry.health, McpServerHealth::Healthy);
+
+        let available_tools = host.list_available_tools();
+        assert!(available_tools
+            .iter()
+            .any(|tool| tool.server_id == "mcp-search" && tool.tool_name == "search.query"));
+
+        host.stop_all()
+            .await
+            .expect("mcp host stop should succeed");
+    }
+
+    #[tokio::test]
+    async fn unhealthy_server_removed_from_available_tools() {
+        let mut host = McpHost::new();
+        let configs = vec![
+            valid_stdio_server("mcp-fs", "fs.read_file"),
+            short_lived_stdio_server("mcp-transient", "transient.echo"),
+        ];
+
+        host.start_declared_servers(&configs)
+            .await
+            .expect("mcp host should start configured servers");
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let health = host
+            .refresh_health()
+            .expect("mcp health refresh should succeed");
+        assert_eq!(health.total, 2);
+        assert_eq!(health.healthy, 1);
+        assert_eq!(health.unreachable, 1);
+
+        let available_tools = host.list_available_tools();
+        assert!(available_tools
+            .iter()
+            .any(|tool| tool.server_id == "mcp-fs" && tool.tool_name == "fs.read_file"));
+        assert!(!available_tools
+            .iter()
+            .any(|tool| tool.server_id == "mcp-transient" && tool.tool_name == "transient.echo"));
+
+        host.stop_all()
+            .await
+            .expect("mcp host stop should succeed");
     }
 }
