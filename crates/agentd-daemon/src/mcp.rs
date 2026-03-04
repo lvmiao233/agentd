@@ -45,8 +45,8 @@ impl McpRegistry {
         Self::default()
     }
 
-    pub(crate) fn upsert(&mut self, entry: McpRegistryEntry) {
-        self.entries.insert(entry.server_id.clone(), entry);
+    pub(crate) fn upsert(&mut self, entry: McpRegistryEntry) -> Option<McpRegistryEntry> {
+        self.entries.insert(entry.server_id.clone(), entry)
     }
 
     pub(crate) fn get(&self, server_id: &str) -> Option<&McpRegistryEntry> {
@@ -55,6 +55,14 @@ impl McpRegistry {
 
     pub(crate) fn remove(&mut self, server_id: &str) -> Option<McpRegistryEntry> {
         self.entries.remove(server_id)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub(crate) fn list(&self) -> Vec<&McpRegistryEntry> {
@@ -204,31 +212,49 @@ mod tests {
     #[test]
     fn mcp_registry_roundtrip_entry() {
         let mut registry = McpRegistry::new();
-        registry.upsert(McpRegistryEntry {
+        let previous = registry.upsert(McpRegistryEntry {
             server_id: "mcp-search".to_string(),
             capabilities: vec!["search.query".to_string(), "search.fetch".to_string()],
             trust_level: McpTrustLevel::Verified,
             health: McpServerHealth::Healthy,
         });
+        assert!(previous.is_none());
 
         let entry = registry.get("mcp-search").expect("entry should exist");
         assert_eq!(entry.server_id, "mcp-search");
         assert_eq!(entry.trust_level, McpTrustLevel::Verified);
-        assert_eq!(registry.list().len(), 1);
+        assert_eq!(registry.len(), 1);
 
         let digest = entry.capabilities.join(",");
         assert_eq!(digest, "search.query,search.fetch");
 
+        let replaced = registry.upsert(McpRegistryEntry {
+            server_id: "mcp-search".to_string(),
+            capabilities: vec!["search.query".to_string()],
+            trust_level: McpTrustLevel::Community,
+            health: McpServerHealth::Unknown,
+        });
+        assert!(replaced.is_some());
+        assert_eq!(registry.len(), 1);
+        let updated = registry
+            .get("mcp-search")
+            .expect("updated entry should exist");
+        assert_eq!(updated.capabilities.join(","), "search.query");
+        assert_eq!(updated.trust_level, McpTrustLevel::Community);
+        assert_eq!(updated.health, McpServerHealth::Unknown);
+
         let removed = registry.remove("mcp-search");
         assert!(removed.is_some());
         assert!(registry.get("mcp-search").is_none());
+        assert!(registry.is_empty());
 
-        registry.upsert(McpRegistryEntry {
+        let previous = registry.upsert(McpRegistryEntry {
             server_id: "mcp-git".to_string(),
             capabilities: vec!["git.status".to_string()],
             trust_level: McpTrustLevel::Community,
             health: McpServerHealth::Unknown,
         });
+        assert!(previous.is_none());
         assert_eq!(registry.list().len(), 1);
     }
 
