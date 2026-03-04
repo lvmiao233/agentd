@@ -55,6 +55,15 @@ class RetryExhaustedError(Exception):
         )
 
 
+@dataclass(slots=True)
+class DiscoveredTool:
+    openai_name: str
+    server: str
+    tool: str
+    description: str
+    parameters: dict[str, Any]
+
+
 class AgentSession:
     def __init__(self, agent_id: str, *, max_context_tokens: int = 0) -> None:
         self.agent_id = agent_id
@@ -63,6 +72,8 @@ class AgentSession:
         self.tool_results_cache: dict[str, Any] = {}
         self.context_window_tokens = 0
         self.max_context_tokens = max_context_tokens
+        self.discovered_tools: list[DiscoveredTool] = []
+        self.discovered_signature = ""
 
     def _append_message(self, role: str, content: str) -> dict[str, Any]:
         message = {
@@ -267,6 +278,156 @@ def _build_tool_schema(tool_name: str) -> list[dict[str, Any]]:
     ]
 
 
+def _normalize_parameters_schema(raw_schema: Any) -> dict[str, Any]:
+    if not isinstance(raw_schema, dict):
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+
+    normalized = dict(raw_schema)
+    if normalized.get("type") != "object":
+        normalized["type"] = "object"
+    if not isinstance(normalized.get("properties"), dict):
+        normalized["properties"] = {}
+
+    required = normalized.get("required")
+    if isinstance(required, list):
+        normalized["required"] = [item for item in required if isinstance(item, str)]
+
+    return normalized
+
+
+def _convert_discovered_tool(tool_entry: dict[str, Any]) -> DiscoveredTool | None:
+    server = tool_entry.get("server")
+    tool = tool_entry.get("tool")
+    if not isinstance(server, str) or not server:
+        return None
+    if not isinstance(tool, str) or not tool:
+        return None
+
+    openai_name = tool_entry.get("policy_tool")
+    if not isinstance(openai_name, str) or not openai_name:
+        openai_name = f"mcp.{server}.{tool}"
+
+    description = tool_entry.get("description")
+    if not isinstance(description, str) or not description:
+        description = f"Invoke MCP tool {server}:{tool}."
+
+    raw_schema = (
+        tool_entry.get("input_schema")
+        or tool_entry.get("parameters")
+        or tool_entry.get("json_schema")
+    )
+
+    return DiscoveredTool(
+        openai_name=openai_name,
+        server=server,
+        tool=tool,
+        description=description,
+        parameters=_normalize_parameters_schema(raw_schema),
+    )
+
+
+def _serialize_tool_discovery_signature(raw_tools: list[dict[str, Any]]) -> str:
+    normalized_items = sorted(
+        [
+            {
+                "server": item.get("server"),
+                "tool": item.get("tool"),
+                "policy_tool": item.get("policy_tool"),
+                "input_schema": item.get("input_schema"),
+                "parameters": item.get("parameters"),
+                "json_schema": item.get("json_schema"),
+            }
+            for item in raw_tools
+        ],
+        key=lambda item: (
+            str(item.get("server", "")),
+            str(item.get("tool", "")),
+            str(item.get("policy_tool", "")),
+        ),
+    )
+    return json.dumps(normalized_items, ensure_ascii=False, sort_keys=True)
+
+
+def discover_openai_tools(
+    *,
+    socket_path: str,
+    agent_id: str,
+    fallback_tool_name: str,
+    session: AgentSession,
+) -> list[dict[str, Any]]:
+    fallback_tools = _build_tool_schema(fallback_tool_name)
+    try:
+        result = call_rpc(
+            socket_path,
+            "ListAvailableTools",
+            {
+                "agent_id": agent_id,
+            },
+        )
+    except Exception:
+        return fallback_tools
+
+    tools_value = result.get("tools")
+    if not isinstance(tools_value, list) or not tools_value:
+        session.discovered_tools = []
+        session.discovered_signature = ""
+        return fallback_tools
+
+    raw_tools = [item for item in tools_value if isinstance(item, dict)]
+    signature = _serialize_tool_discovery_signature(raw_tools)
+    if signature != session.discovered_signature:
+        converted: list[DiscoveredTool] = []
+        unique_counter: dict[str, int] = {}
+        for raw_tool in raw_tools:
+            tool = _convert_discovered_tool(raw_tool)
+            if tool is None:
+                continue
+
+            duplicate_count = unique_counter.get(tool.openai_name, 0)
+            unique_counter[tool.openai_name] = duplicate_count + 1
+            if duplicate_count > 0:
+                tool.openai_name = f"{tool.openai_name}__{duplicate_count + 1}"
+
+            converted.append(tool)
+
+        session.discovered_tools = converted
+        session.discovered_signature = signature
+
+    if not session.discovered_tools:
+        return fallback_tools
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.openai_name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            },
+        }
+        for tool in session.discovered_tools
+    ]
+
+
+def _resolve_discovered_tool(
+    session: AgentSession, openai_name: str
+) -> DiscoveredTool | None:
+    for tool in session.discovered_tools:
+        if tool.openai_name == openai_name:
+            return tool
+    return None
+
+
+def _tool_output_to_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _invoke_real_chat_once(
     *,
     base_url: str,
@@ -274,17 +435,27 @@ def _invoke_real_chat_once(
     model: str,
     timeout: int,
     messages: list[dict[str, Any]],
-    tool_name: str,
+    tool_name: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     _ensure_openai_types()
     if OpenAI is None:
         raise RuntimeError("openai client unavailable")
 
+    request_tools = tools
+    if request_tools is None:
+        fallback_tool = (
+            tool_name
+            if isinstance(tool_name, str) and tool_name
+            else "builtin.lite.echo"
+        )
+        request_tools = _build_tool_schema(fallback_tool)
+
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
     raw_response = client.chat.completions.with_raw_response.create(
         model=model,
         messages=messages,
-        tools=_build_tool_schema(tool_name),
+        tools=request_tools,
     )
     completion = raw_response.parse()
     response_text = _extract_message_text(completion)
@@ -352,7 +523,8 @@ def _invoke_real_with_retry(
     model: str,
     timeout: int,
     messages: list[dict[str, Any]],
-    tool_name: str,
+    tool_name: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
     max_retries: int,
 ) -> dict[str, Any]:
     attempt = 0
@@ -365,6 +537,7 @@ def _invoke_real_with_retry(
                 timeout=timeout,
                 messages=messages,
                 tool_name=tool_name,
+                tools=tools,
             )
         except Exception as err:
             if not _is_retryable_error(err):
@@ -550,6 +723,7 @@ def run_once(args: argparse.Namespace) -> int:
         return 2
 
     legacy_tool_output = run_builtin_tool(args.tool, args.prompt)
+    session = AgentSession(args.agent_id)
     messages: list[dict[str, Any]] = [{"role": "user", "content": args.prompt}]
     tool_call_records: list[dict[str, Any]] = []
 
@@ -568,13 +742,19 @@ def run_once(args: argparse.Namespace) -> int:
     try:
         for _ in range(max_iterations):
             provider_call_attempted = True
+            openai_tools = discover_openai_tools(
+                socket_path=args.socket_path,
+                agent_id=args.agent_id,
+                fallback_tool_name=args.tool,
+                session=session,
+            )
             llm_result = _invoke_real_with_retry(
                 base_url=llm_config.base_url,
                 api_key=llm_config.api_key,
                 model=llm_config.model,
                 timeout=llm_config.timeout,
                 messages=messages,
-                tool_name=args.tool,
+                tools=openai_tools,
                 max_retries=max_retries,
             )
 
@@ -626,14 +806,17 @@ def run_once(args: argparse.Namespace) -> int:
                     continue
 
                 parsed_prompt = args.prompt
+                parsed_arguments: Any = {}
                 if isinstance(arguments_text, str) and arguments_text:
                     try:
                         parsed_arguments = json.loads(arguments_text)
-                        prompt_from_args = parsed_arguments.get("prompt")
-                        if isinstance(prompt_from_args, str) and prompt_from_args:
-                            parsed_prompt = prompt_from_args
+                        if isinstance(parsed_arguments, dict):
+                            prompt_from_args = parsed_arguments.get("prompt")
+                            if isinstance(prompt_from_args, str) and prompt_from_args:
+                                parsed_prompt = prompt_from_args
                     except json.JSONDecodeError:
                         parsed_prompt = args.prompt
+                        parsed_arguments = {}
 
                 try:
                     tool_authorization = call_rpc(
@@ -693,7 +876,57 @@ def run_once(args: argparse.Namespace) -> int:
                     )
                     return 2
 
-                tool_output = run_builtin_tool(tool_name, parsed_prompt)
+                discovered_tool = _resolve_discovered_tool(session, tool_name)
+                if discovered_tool is not None:
+                    try:
+                        invoke_result = call_rpc(
+                            args.socket_path,
+                            "InvokeSkill",
+                            {
+                                "agent_id": args.agent_id,
+                                "server": discovered_tool.server,
+                                "tool": discovered_tool.tool,
+                                "args": parsed_arguments,
+                            },
+                        )
+                    except RpcError as err:
+                        if err.code == -32016:
+                            print(
+                                json.dumps(
+                                    {
+                                        "status": "blocked",
+                                        "agent_id": args.agent_id,
+                                        "tool": tool_name,
+                                        "error": "policy.deny",
+                                        "code": err.code,
+                                        "message": err.message,
+                                        "provider_call_attempted": provider_call_attempted,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                            return 2
+
+                        print(
+                            json.dumps(
+                                {
+                                    "status": "failed",
+                                    "stage": "invoke_skill",
+                                    "tool": tool_name,
+                                    "code": err.code,
+                                    "message": err.message,
+                                    "provider_call_attempted": provider_call_attempted,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        return 1
+                    tool_output = _tool_output_to_text(invoke_result)
+                    tool_output_record: Any = invoke_result
+                else:
+                    tool_output = run_builtin_tool(tool_name, parsed_prompt)
+                    tool_output_record = tool_output
+
                 tool_call_records.append(
                     {
                         "id": call_id,
@@ -703,7 +936,7 @@ def run_once(args: argparse.Namespace) -> int:
                         else "{}",
                         "decision": tool_decision,
                         "input": parsed_prompt,
-                        "output": tool_output,
+                        "output": tool_output_record,
                     }
                 )
 
