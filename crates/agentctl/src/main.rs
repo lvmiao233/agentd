@@ -347,7 +347,7 @@ struct BuiltinLiteRequest<'a> {
 
 async fn run_cli(
     cli: Cli,
-    mut shell_runner: impl FnMut() -> Result<(), DynError>,
+    mut shell_runner: impl FnMut(&str) -> Result<(), DynError>,
 ) -> Result<(), DynError> {
     match cli.command {
         Commands::Health { json } => {
@@ -380,7 +380,7 @@ async fn run_cli(
             }
             AgentCommands::Shell => {
                 info!("Launching interactive agent shell TUI");
-                shell_runner()?;
+                shell_runner(&cli.socket_path)?;
             }
             AgentCommands::Create {
                 name,
@@ -587,7 +587,7 @@ async fn main() -> Result<(), DynError> {
         .with_writer(std::io::stderr)
         .init();
 
-    run_cli(cli, || tui::run()).await
+    run_cli(cli, |socket_path| tui::run(socket_path)).await
 }
 
 #[cfg(test)]
@@ -600,7 +600,7 @@ async fn shell_command_routes_to_tui() {
     let shell_called = Arc::new(AtomicBool::new(false));
     let shell_called_for_closure = Arc::clone(&shell_called);
 
-    let result = run_cli(cli, move || {
+    let result = run_cli(cli, move |_socket_path| {
         shell_called_for_closure.store(true, Ordering::SeqCst);
         Ok(())
     })
@@ -619,4 +619,28 @@ fn tui_app_handles_quit_key() {
     let should_continue =
         app.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(!should_continue);
+}
+
+#[cfg(test)]
+#[test]
+fn slash_commands_core_set_available() {
+    let commands = tui::AgentShellApp::supported_slash_commands();
+    for required in [
+        "/usage",
+        "/events",
+        "/tools",
+        "/compact",
+        "/model",
+        "/approve",
+        "/deny",
+        "/session",
+    ] {
+        assert!(commands.contains(&required));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn approval_queue_roundtrip() {
+    assert!(tui::approval_queue_roundtrip_probe());
 }

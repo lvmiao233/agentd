@@ -26,7 +26,7 @@ use lifecycle::{FirecrackerRuntimeSpec, LifecycleManager, ManagedAgentSpec, Mana
 use mcp::{load_mcp_server_configs, McpHost};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -2990,6 +2990,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approval_queue_resolve_roundtrip() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9901),
+                "CreateAgent",
+                json!({
+                    "name": "approval-queue-agent",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "ask",
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let agent_id = create
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let ask = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9902),
+                "AuthorizeMcpTool",
+                json!({
+                    "agent_id": agent_id,
+                    "tool": "mcp.fs.read_file",
+                    "payload": {"path": "README.md"},
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            ask.error.is_none(),
+            "authorize mcp tool should return pending outcome: {ask:?}"
+        );
+        assert_eq!(
+            ask.result
+                .as_ref()
+                .expect("authorize result should exist")["decision"]["decision"],
+            json!(PolicyDecision::Ask)
+        );
+
+        let list = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9903),
+                "ListApprovalQueue",
+                json!({"agent_id": agent_id}),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(list.error.is_none(), "list approval queue should succeed: {list:?}");
+        let approvals = list.result.expect("list result should exist")["approvals"]
+            .as_array()
+            .expect("approvals should be array")
+            .clone();
+        assert_eq!(approvals.len(), 1);
+        let approval_id = approvals[0]["id"]
+            .as_str()
+            .expect("approval id should be string")
+            .to_string();
+
+        let resolve = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9904),
+                "ResolveApproval",
+                json!({
+                    "agent_id": agent_id,
+                    "approval_id": approval_id,
+                    "decision": "deny",
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            resolve.error.is_none(),
+            "resolve approval should succeed: {resolve:?}"
+        );
+        assert_eq!(
+            resolve.result.expect("resolve result should exist")["decision"],
+            json!("deny")
+        );
+
+        let list_after = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9905),
+                "ListApprovalQueue",
+                json!({"agent_id": agent_id}),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            list_after.error.is_none(),
+            "list approval queue after resolve should succeed: {list_after:?}"
+        );
+        assert!(
+            list_after
+                .result
+                .expect("list after result should exist")["approvals"]
+                .as_array()
+                .expect("approvals should be array")
+                .is_empty(),
+            "approval queue should be empty after resolve"
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn managed_agent_lifecycle_rpc_start_list_stop() {
         let db_path = test_db_path();
         let cgroup_root =
@@ -3472,6 +3605,18 @@ struct InvokeSkillParams {
     tool: String,
     #[serde(default)]
     args: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListApprovalQueueParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveApprovalParams {
+    agent_id: String,
+    approval_id: String,
+    decision: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4484,6 +4629,67 @@ async fn record_audit_event(
             "persist audit event failed"
         );
     }
+}
+
+fn is_pending_approval_event(event: &AuditEvent) -> bool {
+    event.event_type == EventType::ToolInvoked
+        && event.result == EventResult::Pending
+        && event.payload.message.as_deref() == Some("policy.ask")
+}
+
+fn is_approval_resolution_event(event: &AuditEvent) -> bool {
+    matches!(event.event_type, EventType::ToolApproved | EventType::ToolDenied)
+        && event
+            .payload
+            .metadata
+            .get("approval_id")
+            .and_then(Value::as_str)
+            .is_some()
+}
+
+fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
+    let mut resolved_ids = HashSet::new();
+    for event in events {
+        if is_approval_resolution_event(event) {
+            if let Some(approval_id) = event
+                .payload
+                .metadata
+                .get("approval_id")
+                .and_then(Value::as_str)
+            {
+                resolved_ids.insert(approval_id.to_string());
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut approvals = Vec::new();
+    for event in events.iter().rev() {
+        if !is_pending_approval_event(event) {
+            continue;
+        }
+
+        let approval_id = event.id.to_string();
+        if resolved_ids.contains(&approval_id) || seen.contains(&approval_id) {
+            continue;
+        }
+        seen.insert(approval_id.clone());
+
+        approvals.push(json!({
+            "id": approval_id,
+            "tool": event.payload.tool_name.clone().unwrap_or_else(|| "<unknown>".to_string()),
+            "reason": event
+                .payload
+                .metadata
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("policy.ask"),
+            "trace_id": event.trace_id,
+            "requested_at": event.timestamp,
+        }));
+    }
+
+    approvals
 }
 
 fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
@@ -5684,6 +5890,165 @@ async fn handle_rpc_request(
                     format!("list audit events failed: {err}"),
                 ),
             }
+        }
+        "ListApprovalQueue" | "management.ListApprovalQueue" => {
+            let params = match serde_json::from_value::<ListApprovalQueueParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid list approval queue params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            match store.get_audit_events(agent_id).await {
+                Ok(events) => {
+                    let approvals = pending_approval_items(&events);
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "agent_id": params.agent_id,
+                            "approvals": approvals,
+                        }),
+                    )
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32019,
+                    format!("list approval queue failed: {err}"),
+                ),
+            }
+        }
+        "ResolveApproval" | "management.ResolveApproval" => {
+            let params = match serde_json::from_value::<ResolveApprovalParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid resolve approval params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let decision = params.decision.trim().to_ascii_lowercase();
+            if !matches!(decision.as_str(), "approve" | "deny") {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32602,
+                    "decision must be approve or deny",
+                );
+            }
+
+            let events = match store.get_audit_events(agent_id).await {
+                Ok(events) => events,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32019,
+                        format!("resolve approval query failed: {err}"),
+                    )
+                }
+            };
+
+            let already_resolved = events.iter().any(|event| {
+                is_approval_resolution_event(event)
+                    && event
+                        .payload
+                        .metadata
+                        .get("approval_id")
+                        .and_then(Value::as_str)
+                        == Some(params.approval_id.as_str())
+            });
+            if already_resolved {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32025,
+                    format!("approval already resolved: {}", params.approval_id),
+                );
+            }
+
+            let pending = events
+                .iter()
+                .find(|event| {
+                    event.id.to_string() == params.approval_id && is_pending_approval_event(event)
+                })
+                .cloned();
+
+            let Some(pending) = pending else {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32024,
+                    format!("approval not found: {}", params.approval_id),
+                );
+            };
+
+            let (event_type, result, message) = match decision.as_str() {
+                "approve" => (
+                    EventType::ToolApproved,
+                    EventResult::Success,
+                    "approval.approve",
+                ),
+                "deny" => (
+                    EventType::ToolDenied,
+                    EventResult::Failure,
+                    "approval.deny",
+                ),
+                _ => unreachable!("decision validated above"),
+            };
+
+            record_audit_event(
+                &store,
+                &audit_context,
+                agent_id,
+                event_type,
+                result,
+                EventPayload {
+                    tool_name: pending.payload.tool_name.clone(),
+                    message: Some(message.to_string()),
+                    metadata: json!({
+                        "approval_id": params.approval_id,
+                        "requested_trace_id": pending.trace_id,
+                        "requested_event_id": pending.id,
+                        "requested_reason": pending.payload.metadata.get("reason").cloned().unwrap_or(json!("policy.ask")),
+                    }),
+                },
+            )
+            .await;
+
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "agent_id": agent_id,
+                    "approval_id": params.approval_id,
+                    "decision": decision,
+                    "resolved": true,
+                }),
+            )
         }
         "GetAgent" | "management.GetAgent" => {
             let params = match serde_json::from_value::<GetAgentParams>(request.params) {
