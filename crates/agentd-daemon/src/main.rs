@@ -15,7 +15,9 @@ use agentd_core::{
     PolicyEngineLayers, PolicyEvaluation, PolicyGatewayDecision, PolicyInputContext, PolicyLayer,
     PolicyRule, RegorusPolicyEngine, SessionPolicyOverrides,
 };
-use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
+use agentd_protocol::{
+    A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse,
+};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
 use cgroup::{CgroupManager, CgroupResourceLimits};
 use chrono::Utc;
@@ -33,7 +35,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::process::{Child, Command};
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
 
@@ -260,6 +262,8 @@ struct RuntimeState {
     agent_card_root: Arc<PathBuf>,
     mcp_host: Arc<Mutex<McpHost>>,
     firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
+    a2a_tasks: Arc<RwLock<HashMap<uuid::Uuid, A2ATask>>>,
+    a2a_stream_tx: broadcast::Sender<A2ATaskEvent>,
 }
 
 impl RuntimeState {
@@ -316,6 +320,7 @@ impl RuntimeState {
         mcp_host: Arc<Mutex<McpHost>>,
         firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
     ) -> Self {
+        let (a2a_stream_tx, _) = broadcast::channel(1024);
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
@@ -323,6 +328,8 @@ impl RuntimeState {
             agent_card_root: Arc::new(agent_card_root),
             mcp_host,
             firecracker_executor,
+            a2a_tasks: Arc::new(RwLock::new(HashMap::new())),
+            a2a_stream_tx,
         }
     }
 
@@ -345,6 +352,84 @@ impl RuntimeState {
 
     fn firecracker_executor(&self) -> Option<Arc<firecracker::FirecrackerExecutor>> {
         self.firecracker_executor.clone()
+    }
+
+    fn subscribe_a2a_stream(&self) -> broadcast::Receiver<A2ATaskEvent> {
+        self.a2a_stream_tx.subscribe()
+    }
+
+    async fn create_a2a_task(&self, request: CreateA2ATaskRequest) -> A2ATask {
+        let now = Utc::now();
+        let task = A2ATask {
+            id: uuid::Uuid::new_v4(),
+            agent_id: request.agent_id,
+            state: A2ATaskState::Submitted,
+            input: request.input,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        {
+            let mut tasks = self.a2a_tasks.write().await;
+            tasks.insert(task.id, task.clone());
+        }
+        self.publish_a2a_event(task.id, A2ATaskState::Submitted, json!({}))
+            .await;
+
+        task
+    }
+
+    async fn get_a2a_task(&self, task_id: uuid::Uuid) -> Option<A2ATask> {
+        self.a2a_tasks.read().await.get(&task_id).cloned()
+    }
+
+    async fn transition_a2a_task(
+        &self,
+        task_id: uuid::Uuid,
+        next_state: A2ATaskState,
+        output: Option<Value>,
+        error: Option<String>,
+        payload: Value,
+    ) -> Result<A2ATask, AgentError> {
+        let mut tasks = self.a2a_tasks.write().await;
+        let task = tasks
+            .get_mut(&task_id)
+            .ok_or_else(|| AgentError::NotFound(format!("a2a task not found: {task_id}")))?;
+
+        if !task.state.can_transition_to(next_state) {
+            return Err(AgentError::InvalidInput(format!(
+                "invalid a2a state transition: {} -> {}",
+                serde_json::to_string(&task.state).unwrap_or_else(|_| "\"unknown\"".to_string()),
+                serde_json::to_string(&next_state).unwrap_or_else(|_| "\"unknown\"".to_string())
+            )));
+        }
+
+        task.state = next_state;
+        task.updated_at = Utc::now();
+        if let Some(output) = output {
+            task.output = Some(output);
+        }
+        if let Some(error) = error {
+            task.error = Some(error);
+        }
+        let updated = task.clone();
+        drop(tasks);
+
+        self.publish_a2a_event(task_id, next_state, payload).await;
+        Ok(updated)
+    }
+
+    async fn publish_a2a_event(&self, task_id: uuid::Uuid, state: A2ATaskState, payload: Value) {
+        let event = A2ATaskEvent {
+            task_id,
+            state,
+            lifecycle_state: state.to_agent_lifecycle_state(),
+            timestamp: Utc::now(),
+            payload,
+        };
+        let _ = self.a2a_stream_tx.send(event);
     }
 }
 
@@ -1207,6 +1292,193 @@ async fn jailer_policy_blocks_forbidden_network() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_state_machine_valid_transitions() {
+    let state = RuntimeState::new("disabled");
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({"prompt": "hello"}),
+        })
+        .await;
+
+    let working = state
+        .transition_a2a_task(created.id, A2ATaskState::Working, None, None, json!({}))
+        .await
+        .expect("submitted -> working should be valid");
+    assert_eq!(working.state, A2ATaskState::Working);
+
+    let waiting = state
+        .transition_a2a_task(
+            created.id,
+            A2ATaskState::InputRequired,
+            None,
+            None,
+            json!({"hint": "need user input"}),
+        )
+        .await
+        .expect("working -> input-required should be valid");
+    assert_eq!(waiting.state, A2ATaskState::InputRequired);
+
+    let resumed = state
+        .transition_a2a_task(created.id, A2ATaskState::Working, None, None, json!({}))
+        .await
+        .expect("input-required -> working should be valid");
+    assert_eq!(resumed.state, A2ATaskState::Working);
+
+    let completed = state
+        .transition_a2a_task(
+            created.id,
+            A2ATaskState::Completed,
+            Some(json!({"result": "done"})),
+            None,
+            json!({}),
+        )
+        .await
+        .expect("working -> completed should be valid");
+    assert_eq!(completed.state, A2ATaskState::Completed);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_state_machine_rejects_completed_to_working() {
+    let state = RuntimeState::new("disabled");
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({"prompt": "hello"}),
+        })
+        .await;
+
+    let _ = state
+        .transition_a2a_task(created.id, A2ATaskState::Working, None, None, json!({}))
+        .await
+        .expect("submitted -> working should be valid");
+    let _ = state
+        .transition_a2a_task(
+            created.id,
+            A2ATaskState::Completed,
+            Some(json!({"result": "done"})),
+            None,
+            json!({}),
+        )
+        .await
+        .expect("working -> completed should be valid");
+
+    let err = state
+        .transition_a2a_task(created.id, A2ATaskState::Working, None, None, json!({}))
+        .await
+        .expect_err("completed -> working should be rejected");
+    assert!(
+        err.to_string().contains("invalid a2a state transition"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_server_task_crud_and_stream() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task22-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind health server listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve health server local address");
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let mut create_conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect a2a create endpoint");
+    let create_body = json!({
+        "input": {"prompt": "ping"}
+    })
+    .to_string();
+    let create_req = format!(
+        "POST /a2a/tasks HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        create_body.len(),
+        create_body
+    );
+    create_conn
+        .write_all(create_req.as_bytes())
+        .await
+        .expect("send create request");
+    let mut create_resp = Vec::new();
+    create_conn
+        .read_to_end(&mut create_resp)
+        .await
+        .expect("read create response");
+    let create_text = String::from_utf8(create_resp).expect("create response should be utf8");
+    assert!(create_text.starts_with("HTTP/1.1 201 Created"));
+    let create_payload = create_text
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("create response body should exist");
+    let created_json: Value =
+        serde_json::from_str(create_payload).expect("create response body should be valid json");
+    let task_id = created_json["task"]["id"]
+        .as_str()
+        .expect("task id should be present")
+        .to_string();
+
+    let mut get_conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect a2a get endpoint");
+    let get_req = format!(
+        "GET /a2a/tasks/{task_id} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    get_conn
+        .write_all(get_req.as_bytes())
+        .await
+        .expect("send get request");
+    let mut get_resp = Vec::new();
+    get_conn
+        .read_to_end(&mut get_resp)
+        .await
+        .expect("read get response");
+    let get_text = String::from_utf8(get_resp).expect("get response should be utf8");
+    assert!(get_text.starts_with("HTTP/1.1 200 OK"));
+
+    let mut stream_conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect a2a stream endpoint");
+    let stream_req = format!(
+        "GET /a2a/stream?task_id={task_id} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    stream_conn
+        .write_all(stream_req.as_bytes())
+        .await
+        .expect("send stream request");
+    let mut stream_resp = Vec::new();
+    stream_conn
+        .read_to_end(&mut stream_resp)
+        .await
+        .expect("read stream response");
+    let stream_text = String::from_utf8(stream_resp).expect("stream response should be utf8");
+    assert!(stream_text.starts_with("HTTP/1.1 200 OK"));
+    assert!(stream_text.contains("\"state\":\"submitted\""));
+    assert!(stream_text.contains("\"state\":\"working\""));
+    assert!(stream_text.contains("\"state\":\"completed\""));
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
 async fn health_server(
     listener: TcpListener,
     bind_addr: SocketAddr,
@@ -1227,12 +1499,87 @@ async fn health_server(
             accepted = listener.accept() => {
                 let (mut stream, _) = accepted?;
 
-                let mut buf = [0_u8; 1024];
+                let mut buf = [0_u8; 8192];
                 let read = stream.read(&mut buf).await?;
-                let request = String::from_utf8_lossy(&buf[..read]);
-                let is_health = request.starts_with("GET /health ") || request.starts_with("GET /health?");
+                let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                let request_line = request.lines().next().unwrap_or("");
+                let mut request_parts = request_line.split_whitespace();
+                let method = request_parts.next().unwrap_or("");
+                let raw_path = request_parts.next().unwrap_or("/");
+                let (path, query) = split_path_and_query(raw_path);
 
-                let response = if is_health {
+                if method == "GET" && path == "/a2a/stream" {
+                    let Some(task_id_raw) = query_param(query, "task_id") else {
+                        let response = json_http_response(
+                            "400 Bad Request",
+                            &json!({"error": "missing task_id"}),
+                        )?;
+                        stream.write_all(response.as_bytes()).await?;
+                        let _ = stream.shutdown().await;
+                        continue;
+                    };
+                    let task_id = match uuid::Uuid::parse_str(&task_id_raw) {
+                        Ok(task_id) => task_id,
+                        Err(err) => {
+                            let response = json_http_response(
+                                "400 Bad Request",
+                                &json!({"error": format!("invalid task_id: {err}")}),
+                            )?;
+                            stream.write_all(response.as_bytes()).await?;
+                            let _ = stream.shutdown().await;
+                            continue;
+                        }
+                    };
+
+                    let Some(task) = state.get_a2a_task(task_id).await else {
+                        let response = json_http_response(
+                            "404 Not Found",
+                            &json!({"error": "a2a task not found"}),
+                        )?;
+                        stream.write_all(response.as_bytes()).await?;
+                        let _ = stream.shutdown().await;
+                        continue;
+                    };
+
+                    let sse_headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+                    stream.write_all(sse_headers.as_bytes()).await?;
+
+                    let initial = A2ATaskEvent {
+                        task_id: task.id,
+                        state: task.state,
+                        lifecycle_state: task.state.to_agent_lifecycle_state(),
+                        timestamp: Utc::now(),
+                        payload: json!({"task": task}),
+                    };
+                    let encoded_initial = serde_json::to_string(&initial)?;
+                    stream
+                        .write_all(format!("event: task\ndata: {encoded_initial}\n\n").as_bytes())
+                        .await?;
+
+                    let mut subscription = state.subscribe_a2a_stream();
+                    let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                    while tokio::time::Instant::now() < stream_deadline {
+                        match tokio::time::timeout(Duration::from_millis(800), subscription.recv()).await {
+                            Ok(Ok(event)) if event.task_id == task_id => {
+                                let encoded = serde_json::to_string(&event)?;
+                                stream
+                                    .write_all(format!("event: task\ndata: {encoded}\n\n").as_bytes())
+                                    .await?;
+                                if matches!(event.state, A2ATaskState::Completed | A2ATaskState::Failed | A2ATaskState::Canceled) {
+                                    break;
+                                }
+                            }
+                            Ok(Ok(_)) => {}
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
+                        }
+                    }
+
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
+
+                let response = if method == "GET" && (path == "/health") {
                     let storage_status = if store.health_check().is_ok() {
                         "ready"
                     } else {
@@ -1247,7 +1594,7 @@ async fn health_server(
                         "degraded"
                     };
 
-                    let body = serde_json::to_string(&json!({
+                    json_http_response("200 OK", &json!({
                         "status": overall_status,
                         "subsystems": {
                             "daemon": "ready",
@@ -1255,20 +1602,45 @@ async fn health_server(
                             "storage": storage_status,
                             "one_api": one_api_status,
                         }
-                    }))?;
+                    }))?
+                } else if method == "POST" && path == "/a2a/tasks" {
+                    let parsed = serde_json::from_str::<CreateA2ATaskRequest>(request_body(&request));
+                    let payload = match parsed {
+                        Ok(payload) => payload,
+                        Err(err) => {
+                            let response = json_http_response(
+                                "400 Bad Request",
+                                &json!({"error": format!("invalid a2a task payload: {err}")}),
+                            )?;
+                            stream.write_all(response.as_bytes()).await?;
+                            let _ = stream.shutdown().await;
+                            continue;
+                        }
+                    };
+                    let created = state.create_a2a_task(payload).await;
+                    tokio::spawn(drive_a2a_task_lifecycle(state.clone(), created.id));
+                    json_http_response("201 Created", &json!({"task": created}))?
+                } else if method == "GET" && path.starts_with("/a2a/tasks/") {
+                    let task_id_raw = path.trim_start_matches("/a2a/tasks/");
+                    let task_id = match uuid::Uuid::parse_str(task_id_raw) {
+                        Ok(task_id) => task_id,
+                        Err(err) => {
+                            let response = json_http_response(
+                                "400 Bad Request",
+                                &json!({"error": format!("invalid task_id: {err}")}),
+                            )?;
+                            stream.write_all(response.as_bytes()).await?;
+                            let _ = stream.shutdown().await;
+                            continue;
+                        }
+                    };
 
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
+                    match state.get_a2a_task(task_id).await {
+                        Some(task) => json_http_response("200 OK", &json!({"task": task}))?,
+                        None => json_http_response("404 Not Found", &json!({"error": "a2a task not found"}))?,
+                    }
                 } else {
-                    let body = "{\"error\":\"not found\"}";
-                    format!(
-                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
+                    json_http_response("404 Not Found", &json!({"error":"not found"}))?
                 };
 
                 stream.write_all(response.as_bytes()).await?;
@@ -1278,6 +1650,52 @@ async fn health_server(
     }
 
     Ok(())
+}
+
+fn json_http_response(status_line: &str, body: &Value) -> Result<String, serde_json::Error> {
+    let encoded = serde_json::to_string(body)?;
+    Ok(format!(
+        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        encoded.len(),
+        encoded
+    ))
+}
+
+fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
+    match path.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (path, None),
+    }
+}
+
+fn query_param(query: Option<&str>, key: &str) -> Option<String> {
+    let query = query?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v.to_string())
+}
+
+fn request_body(request: &str) -> &str {
+    request.split("\r\n\r\n").nth(1).unwrap_or("")
+}
+
+async fn drive_a2a_task_lifecycle(state: RuntimeState, task_id: uuid::Uuid) {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = state
+        .transition_a2a_task(task_id, A2ATaskState::Working, None, None, json!({}))
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = state
+        .transition_a2a_task(
+            task_id,
+            A2ATaskState::Completed,
+            Some(json!({"result": "ok"})),
+            None,
+            json!({}),
+        )
+        .await;
 }
 
 #[cfg(test)]

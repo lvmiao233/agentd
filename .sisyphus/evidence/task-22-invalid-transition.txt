@@ -1,0 +1,5 @@
+command: cargo test -p agentd-daemon a2a_state_machine_rejects_completed_to_working -- --exact
+result: PASS
+assertions:
+  - completed -> working transition is rejected
+  - error message contains "invalid a2a state transition"
