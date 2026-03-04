@@ -6,6 +6,10 @@ use tokio::net::UnixStream;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
+mod tui;
+
+type DynError = Box<dyn std::error::Error>;
+
 #[derive(Parser, Debug)]
 #[command(name = "agentctl")]
 #[command(about = "CLI for agentd daemon")]
@@ -64,6 +68,7 @@ enum AgentCommands {
         #[arg(long)]
         json: bool,
     },
+    Shell,
     Inspect {
         #[arg(long)]
         agent_id: String,
@@ -144,7 +149,7 @@ async fn call_rpc(
     socket_path: &str,
     method: &str,
     params: Value,
-) -> Result<JsonRpcResponse, Box<dyn std::error::Error>> {
+) -> Result<JsonRpcResponse, DynError> {
     let mut stream = UnixStream::connect(socket_path).await?;
     let request = JsonRpcRequest::new(json!(1), method, params);
     let payload = serde_json::to_vec(&request)?;
@@ -159,17 +164,14 @@ async fn call_rpc(
     Ok(response)
 }
 
-fn rpc_result_or_error(response: JsonRpcResponse) -> Result<Value, Box<dyn std::error::Error>> {
+fn rpc_result_or_error(response: JsonRpcResponse) -> Result<Value, DynError> {
     if let Some(error) = response.error {
         return Err(format!("RPC error {}: {}", error.code, error.message).into());
     }
     Ok(response.result.unwrap_or(json!(null)))
 }
 
-fn print_response(
-    response: JsonRpcResponse,
-    as_json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn print_response(response: JsonRpcResponse, as_json: bool) -> Result<(), DynError> {
     if let Some(error) = response.error {
         return Err(format!("RPC error {}: {}", error.code, error.message).into());
     }
@@ -184,7 +186,7 @@ fn print_response(
     Ok(())
 }
 
-fn print_event(event: &Value, as_json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn print_event(event: &Value, as_json: bool) -> Result<(), DynError> {
     if as_json {
         println!("{}", serde_json::to_string(event)?);
     } else {
@@ -199,7 +201,7 @@ async fn follow_events(
     as_json: bool,
     mut cursor: Option<String>,
     reconnect_delay_secs: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), DynError> {
     loop {
         let response = call_rpc(
             socket_path,
@@ -251,7 +253,7 @@ async fn run_builtin_lite(
     socket_path: &str,
     request: BuiltinLiteRequest<'_>,
     as_json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), DynError> {
     let BuiltinLiteRequest {
         name,
         model,
@@ -343,15 +345,10 @@ struct BuiltinLiteRequest<'a> {
     memory_max: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(std::io::stderr)
-        .init();
-
+async fn run_cli(
+    cli: Cli,
+    mut shell_runner: impl FnMut() -> Result<(), DynError>,
+) -> Result<(), DynError> {
     match cli.command {
         Commands::Health { json } => {
             info!(socket_path = %cli.socket_path, "Calling GetHealth over UDS JSON-RPC");
@@ -380,6 +377,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!(socket_path = %cli.socket_path, "Calling ListAgents over UDS JSON-RPC");
                 let response = call_rpc(&cli.socket_path, "ListAgents", json!({})).await?;
                 print_response(response, json)?;
+            }
+            AgentCommands::Shell => {
+                info!("Launching interactive agent shell TUI");
+                shell_runner()?;
             }
             AgentCommands::Create {
                 name,
@@ -575,4 +576,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), DynError> {
+    let cli = Cli::parse();
+
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stderr)
+        .init();
+
+    run_cli(cli, || tui::run()).await
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn shell_command_routes_to_tui() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let cli = Cli::try_parse_from(["agentctl", "agent", "shell"]).expect("cli args should parse");
+    let shell_called = Arc::new(AtomicBool::new(false));
+    let shell_called_for_closure = Arc::clone(&shell_called);
+
+    let result = run_cli(cli, move || {
+        shell_called_for_closure.store(true, Ordering::SeqCst);
+        Ok(())
+    })
+    .await;
+
+    assert!(result.is_ok());
+    assert!(shell_called.load(Ordering::SeqCst));
+}
+
+#[cfg(test)]
+#[test]
+fn tui_app_handles_quit_key() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = tui::AgentShellApp::new();
+    let should_continue =
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert!(!should_continue);
 }
