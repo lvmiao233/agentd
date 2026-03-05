@@ -3129,6 +3129,10 @@ async fn health_rpc_streams_run_agent_frames_over_http() {
     let response_text = String::from_utf8(response_bytes).expect("stream response should be utf8");
     assert!(response_text.starts_with("HTTP/1.1 200 OK"));
     assert!(response_text.contains("Content-Type: text/event-stream"));
+    assert!(
+        response_text.contains("\n\ndata: "),
+        "expected SSE frame separator between events: {response_text}"
+    );
     assert!(response_text.contains("\"status\":\"working\""));
     assert!(
         response_text.contains("\"status\":\"failed\"")
@@ -3246,6 +3250,10 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
     assert!(
         captured_text.contains("\"status\":\"working\""),
         "expected working frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\n\ndata: "),
+        "expected SSE frame separator between emitted daemon frames: {captured_text}"
     );
     assert!(
         captured_text.contains("\"output\":\"hello\""),
@@ -8732,7 +8740,7 @@ where
     let encoded = serde_json::to_string(payload).map_err(|err| {
         AgentError::Runtime(format!("encode run-agent stream frame failed: {err}"))
     })?;
-    let frame = format!("data: {encoded}\n");
+    let frame = format!("data: {encoded}\n\n");
     stream.write_all(frame.as_bytes()).await.map_err(|err| {
         AgentError::Runtime(format!("write run-agent stream frame failed: {err}"))
     })?;
