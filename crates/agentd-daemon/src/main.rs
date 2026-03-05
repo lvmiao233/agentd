@@ -3506,6 +3506,151 @@ async fn run_agent_non_stream_marks_usage_unavailable_when_provider_omits_usage(
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_non_stream_reports_provider_usage_and_persists_summary() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-non-stream-usage-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let profile = store
+        .create_agent(AgentProfile::new(
+            "usage-agent".to_string(),
+            ModelConfig {
+                provider: "one-api".to_string(),
+                model_name: "gpt-4.1-mini".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        ))
+        .await
+        .expect("create usage agent profile");
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text =
+            String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "unexpected provider request line: {request_text}"
+        );
+        let body = request_body(&request_text);
+        assert!(
+            body.contains("\"stream\":false"),
+            "provider request body should disable stream mode: {body}"
+        );
+
+        let provider_payload = json!({
+            "id": "chatcmpl-2",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "usage available"
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 4
+            }
+        })
+        .to_string();
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            provider_payload.len(),
+            provider_payload
+        );
+
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider response");
+        let _ = socket.shutdown().await;
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(92002),
+            "RunAgent",
+            json!({
+                "input": "non-stream with usage",
+                "agent_id": profile.id.to_string(),
+                "stream": false,
+            }),
+        ),
+        store.clone(),
+        state,
+        one_api_config,
+    )
+    .await;
+
+    assert!(
+        response.error.is_none(),
+        "run-agent response should succeed: {response:?}"
+    );
+    let result = response.result.expect("run-agent should include result payload");
+    assert_eq!(result["output"], json!("usage available"));
+    assert_eq!(
+        result["usage"],
+        json!({
+            "input_tokens": 7,
+            "output_tokens": 4,
+        })
+    );
+    assert_eq!(result["usage_source"], json!("provider"));
+
+    let usage_summary = store
+        .get_usage(profile.id)
+        .await
+        .expect("query usage summary after run-agent");
+    assert_eq!(usage_summary.input_tokens, 7);
+    assert_eq!(usage_summary.output_tokens, 4);
+    assert_eq!(usage_summary.total_tokens, 11);
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn run_agent_stream_surfaces_provider_error_events() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-run-agent-stream-provider-error-test-{}.sqlite",
