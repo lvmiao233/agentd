@@ -105,6 +105,7 @@ health_port = ${HEALTH_PORT}
 shutdown_timeout_secs = 5
 socket_path = "${SOCKET_PATH}"
 db_path = "${DB_PATH}"
+mcp_servers_dir = "/tmp/agentd-phasea-${RUN_ID}-mcp-disabled"
 
 [one_api]
 enabled = false
