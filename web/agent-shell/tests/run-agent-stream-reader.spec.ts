@@ -62,6 +62,24 @@ export async function run() {
   assert.equal(writes.length, 0, '[DONE] should not produce chunks');
 
   writes.length = 0;
+  const failedOutcome = await consumeRunAgentStream({
+    responseBody: createReadableStream([
+      'data: {"error":{"message":"upstream overloaded"},"status":"failed"}\n\n',
+    ]),
+    textId: 'text-failed',
+    writer,
+  });
+
+  assert.equal(failedOutcome.emitted, true, 'failed frame should emit visible text');
+  assert.equal(failedOutcome.terminalReached, true, 'failed frame should terminate stream');
+  assert.equal(failedOutcome.finishReason, 'error', 'failed frame should map to error finish reason');
+  assert.deepEqual(writes[0], {
+    type: 'text-delta',
+    id: 'text-failed',
+    delta: 'RunAgent failed: upstream overloaded',
+  });
+
+  writes.length = 0;
   const rawJsonOutcome = await consumeRunAgentStream({
     responseBody: createReadableStream([
       '{"result":{"llm":{"output":"raw"}}}\n',
