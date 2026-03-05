@@ -3,6 +3,7 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from 'ai';
+import { emitRunAgentStreamLine } from '@/lib/run-agent-stream';
 
 export const maxDuration = 60;
 
@@ -18,27 +19,6 @@ type JsonRpcResponse<T> = {
     data?: unknown;
   };
 };
-
-type RunAgentStreamPayload = Record<string, unknown>;
-
-type RunAgentToolCall = {
-  id: string;
-  name: string;
-  argumentsText: string;
-};
-
-function parseToolCallInput(argumentsText: string): unknown {
-  const trimmed = argumentsText.trim();
-  if (!trimmed) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return trimmed;
-  }
-}
 
 function buildConversationInput(messages: UIMessage[]): string {
   const normalized = messages
@@ -71,106 +51,6 @@ function buildSingleTextStreamResponse(text: string) {
   });
 
   return createUIMessageStreamResponse({ stream });
-}
-
-function normalizeStreamPayload(frame: RunAgentStreamPayload): RunAgentStreamPayload {
-  const maybeResult = frame.result;
-  if (maybeResult && typeof maybeResult === 'object') {
-    return maybeResult as RunAgentStreamPayload;
-  }
-  return frame;
-}
-
-function extractStreamError(frame: RunAgentStreamPayload): string | null {
-  const payload = normalizeStreamPayload(frame);
-  const error = payload.error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object') {
-    const message = (error as Record<string, unknown>).message;
-    if (typeof message === 'string' && message.trim()) return message;
-  }
-  const message = payload.message;
-  if (typeof message === 'string' && message.trim()) return message;
-  const status = payload.status;
-  if (status === 'failed' || status === 'blocked') {
-    return 'RunAgent streaming failed.';
-  }
-  return null;
-}
-
-function extractStreamText(frame: RunAgentStreamPayload): string {
-  const payload = normalizeStreamPayload(frame);
-  const llm = payload.llm;
-  if (llm && typeof llm === 'object') {
-    const output = (llm as Record<string, unknown>).output;
-    if (typeof output === 'string' && output.length > 0) {
-      return output;
-    }
-  }
-  for (const field of ['delta', 'token', 'text', 'content', 'output']) {
-    const value = payload[field];
-    if (typeof value === 'string' && value.length > 0) {
-      return value;
-    }
-  }
-  return '';
-}
-
-function extractStreamToolCalls(frame: RunAgentStreamPayload): RunAgentToolCall[] {
-  const payload = normalizeStreamPayload(frame);
-
-  const toolContainer = payload.tool;
-  if (!toolContainer || typeof toolContainer !== 'object') {
-    return [];
-  }
-
-  const calls = (toolContainer as Record<string, unknown>).calls;
-  if (!Array.isArray(calls)) {
-    return [];
-  }
-
-  return calls
-    .map((call, index) => {
-      if (!call || typeof call !== 'object') return null;
-      const raw = call as Record<string, unknown>;
-
-      const idValue = raw.id;
-      const id = typeof idValue === 'string' && idValue.trim() ? idValue : `call-${index}`;
-
-      const functionValue = raw.function;
-      let name = 'unknown_tool';
-      let argumentsText = '';
-
-      if (functionValue && typeof functionValue === 'object') {
-        const fn = functionValue as Record<string, unknown>;
-        const nameValue = fn.name;
-        if (typeof nameValue === 'string' && nameValue.trim()) {
-          name = nameValue;
-        }
-
-        const argumentsValue = fn.arguments;
-        if (typeof argumentsValue === 'string') {
-          argumentsText = argumentsValue;
-        }
-      }
-
-      return {
-        id,
-        name,
-        argumentsText,
-      };
-    })
-    .filter((entry): entry is RunAgentToolCall => entry !== null);
-}
-
-function isTerminalStreamFrame(frame: RunAgentStreamPayload): boolean {
-  const payload = normalizeStreamPayload(frame);
-  const status = payload.status;
-  if (status === 'completed' || status === 'done' || status === 'failed' || status === 'blocked') {
-    return true;
-  }
-  const kind = payload.type ?? payload.event ?? payload.kind;
-  return kind === 'done' || kind === 'completed' || kind === 'finish' || kind === 'finished';
 }
 
 export async function POST(req: Request) {
@@ -232,49 +112,13 @@ export async function POST(req: Request) {
         }
         if (!line) return;
 
-        let parsed: RunAgentStreamPayload | null = null;
-        try {
-          parsed = JSON.parse(line) as RunAgentStreamPayload;
-        } catch {
-          writer.write({ type: 'text-delta', id: textId, delta: line });
-          emitted = true;
-          return;
-        }
-
-        const errorMessage = extractStreamError(parsed);
-        if (errorMessage) {
-          writer.write({
-            type: 'text-delta',
-            id: textId,
-            delta: `RunAgent failed: ${errorMessage}`,
-          });
-          emitted = true;
-          terminalReached = true;
-          return;
-        }
-
-        const chunk = extractStreamText(parsed);
-        if (chunk) {
-          writer.write({ type: 'text-delta', id: textId, delta: chunk });
-          emitted = true;
-        }
-
-        const toolCalls = extractStreamToolCalls(parsed);
-        if (toolCalls.length > 0) {
-          for (const toolCall of toolCalls) {
-            writer.write({
-              type: 'tool-input-available',
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              input: parseToolCallInput(toolCall.argumentsText),
-            });
-          }
-          emitted = true;
-        }
-
-        if (isTerminalStreamFrame(parsed)) {
-          terminalReached = true;
-        }
+        const outcome = emitRunAgentStreamLine({
+          lineRaw: line,
+          textId,
+          writer,
+        });
+        emitted = emitted || outcome.emitted;
+        terminalReached = terminalReached || outcome.terminalReached;
       };
 
       while (!terminalReached) {

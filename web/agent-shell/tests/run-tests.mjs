@@ -32,7 +32,10 @@ async function main() {
   }
 
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const requested = args.length > 0 ? args : ['chat-page-streaming.spec.ts'];
+  const discovered = (await fs.readdir(scriptDir))
+    .filter((name) => name.endsWith('.spec.ts'))
+    .sort();
+  const requested = args.length > 0 ? args : discovered;
   const specs = requested.map((spec) =>
     path.isAbsolute(spec) ? spec : path.resolve(scriptDir, spec)
   );
