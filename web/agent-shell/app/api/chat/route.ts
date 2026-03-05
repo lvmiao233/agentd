@@ -21,6 +21,12 @@ type JsonRpcResponse<T> = {
 
 type RunAgentStreamPayload = Record<string, unknown>;
 
+type RunAgentToolCall = {
+  id: string;
+  name: string;
+  argumentsText: string;
+};
+
 function buildConversationInput(messages: UIMessage[]): string {
   const normalized = messages
     .map((message) => {
@@ -95,6 +101,71 @@ function extractStreamText(frame: RunAgentStreamPayload): string {
     }
   }
   return '';
+}
+
+function extractStreamToolCalls(frame: RunAgentStreamPayload): RunAgentToolCall[] {
+  const payload = normalizeStreamPayload(frame);
+
+  const toolContainer = payload.tool;
+  if (!toolContainer || typeof toolContainer !== 'object') {
+    return [];
+  }
+
+  const calls = (toolContainer as Record<string, unknown>).calls;
+  if (!Array.isArray(calls)) {
+    return [];
+  }
+
+  return calls
+    .map((call, index) => {
+      if (!call || typeof call !== 'object') return null;
+      const raw = call as Record<string, unknown>;
+
+      const idValue = raw.id;
+      const id = typeof idValue === 'string' && idValue.trim() ? idValue : `call-${index}`;
+
+      const functionValue = raw.function;
+      let name = 'unknown_tool';
+      let argumentsText = '';
+
+      if (functionValue && typeof functionValue === 'object') {
+        const fn = functionValue as Record<string, unknown>;
+        const nameValue = fn.name;
+        if (typeof nameValue === 'string' && nameValue.trim()) {
+          name = nameValue;
+        }
+
+        const argumentsValue = fn.arguments;
+        if (typeof argumentsValue === 'string') {
+          argumentsText = argumentsValue;
+        }
+      }
+
+      return {
+        id,
+        name,
+        argumentsText,
+      };
+    })
+    .filter((entry): entry is RunAgentToolCall => entry !== null);
+}
+
+function formatToolCallDelta(calls: RunAgentToolCall[]): string {
+  if (calls.length === 0) return '';
+
+  const lines = calls.map((call) => {
+    const rawArgs = call.argumentsText.trim();
+    if (!rawArgs) {
+      return `\n[tool] ${call.name}`;
+    }
+
+    const compactArgs = rawArgs.replaceAll(/\s+/g, ' ');
+    const preview =
+      compactArgs.length > 160 ? `${compactArgs.slice(0, 160)}…` : compactArgs;
+    return `\n[tool] ${call.name} ${preview}`;
+  });
+
+  return lines.join('');
 }
 
 function isTerminalStreamFrame(frame: RunAgentStreamPayload): boolean {
@@ -192,6 +263,16 @@ export async function POST(req: Request) {
           writer.write({ type: 'text-delta', id: textId, delta: chunk });
           emitted = true;
         }
+
+        const toolCalls = extractStreamToolCalls(parsed);
+        if (toolCalls.length > 0) {
+          const toolDelta = formatToolCallDelta(toolCalls);
+          if (toolDelta) {
+            writer.write({ type: 'text-delta', id: textId, delta: toolDelta });
+            emitted = true;
+          }
+        }
+
         if (isTerminalStreamFrame(parsed)) {
           terminalReached = true;
         }
