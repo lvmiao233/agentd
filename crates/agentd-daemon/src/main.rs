@@ -3280,6 +3280,105 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_stream_surfaces_provider_error_events() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-stream-provider-error-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text =
+            String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "unexpected provider request line: {request_text}"
+        );
+
+        let sse_body = concat!(
+            "data: {\"error\":{\"message\":\"upstream overloaded\"}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            sse_body.len(),
+            sse_body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider sse response");
+        let _ = socket.shutdown().await;
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let (mut read_stream, mut write_stream) = tokio::io::duplex(8 * 1024);
+    stream_run_agent_over_uds(
+        &mut write_stream,
+        store,
+        one_api_config,
+        RunAgentParams {
+            input: "trigger provider error".to_string(),
+            model: Some("gpt-4.1-mini".to_string()),
+            agent_id: None,
+            stream: Some(true),
+        },
+    )
+    .await;
+    drop(write_stream);
+
+    let mut captured = Vec::new();
+    read_stream
+        .read_to_end(&mut captured)
+        .await
+        .expect("read streamed run-agent frames");
+    let captured_text = String::from_utf8(captured).expect("captured frames should be utf8");
+    assert!(
+        captured_text.contains("\"status\":\"failed\""),
+        "expected failed terminal frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("upstream overloaded"),
+        "expected propagated provider error message in stream: {captured_text}"
+    );
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn a2a_client_discovers_remote_card() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task23-test-{}.sqlite",
@@ -7831,6 +7930,23 @@ fn extract_stream_tool_calls(response: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn extract_stream_error_message(response: &Value) -> Option<String> {
+    let error = response.get("error")?;
+    if let Some(message) = error.as_str() {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(message) = error.get("message").and_then(Value::as_str) {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    Some(error.to_string())
+}
+
 async fn persist_run_agent_usage(
     store: &Arc<SqliteStore>,
     profile: Option<&AgentProfile>,
@@ -8084,6 +8200,12 @@ where
                     ))
                 })?;
 
+                if let Some(error_message) = extract_stream_error_message(&event) {
+                    return Err(AgentError::Runtime(format!(
+                        "run agent provider stream error: {error_message}"
+                    )));
+                }
+
                 if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
                     input_tokens = input;
                     output_tokens = output_usage;
@@ -8152,6 +8274,11 @@ where
                     "parse trailing run-agent stream payload failed: {err}; payload={payload}"
                 ))
             })?;
+            if let Some(error_message) = extract_stream_error_message(&event) {
+                return Err(AgentError::Runtime(format!(
+                    "run agent provider stream error: {error_message}"
+                )));
+            }
             if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
                 input_tokens = input;
                 output_tokens = output_usage;
