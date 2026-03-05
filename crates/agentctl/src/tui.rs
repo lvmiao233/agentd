@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Stdout, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::Duration;
 
 use agentd_protocol::{JsonRpcRequest, JsonRpcResponse};
@@ -16,8 +18,35 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream as TokioUnixStream;
 
 type DynError = Box<dyn std::error::Error>;
+const STREAM_ERROR_EMITTED: &str = "__stream_error_emitted__";
+
+#[derive(Debug, Clone)]
+enum TuiCommand {
+    Chat {
+        input: String,
+        model: String,
+        agent_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum StreamChunk {
+    Token(String),
+    ToolCall { title: String, detail: String },
+    Done,
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamParseOutcome {
+    Continue,
+    Done,
+    Errored,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -85,9 +114,14 @@ pub struct AgentShellApp {
     active_model: String,
     active_agent_id: Option<String>,
     stream_seq: u64,
+    stream_active: bool,
+    stream_target_index: Option<usize>,
+    pending_chat_inputs: VecDeque<String>,
+    command_tx: Option<Sender<TuiCommand>>,
 }
 
 impl AgentShellApp {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::with_socket_path("/tmp/agentd.sock")
     }
@@ -109,9 +143,14 @@ impl AgentShellApp {
             active_model: "claude-4-sonnet".to_string(),
             active_agent_id: None,
             stream_seq: 0,
+            stream_active: false,
+            stream_target_index: None,
+            pending_chat_inputs: VecDeque::new(),
+            command_tx: None,
         }
     }
 
+    #[cfg(test)]
     pub fn supported_slash_commands() -> &'static [&'static str] {
         &[
             "/usage",
@@ -140,43 +179,100 @@ impl AgentShellApp {
             .push(format!("slash error: {message}"));
     }
 
+    fn set_command_sender(&mut self, command_tx: Sender<TuiCommand>) {
+        self.command_tx = Some(command_tx);
+    }
+
     fn append_stream_chunk(&mut self, chunk: &str) {
-        if let Some(last) = self.messages.last_mut() {
-            if !last.content.is_empty() {
-                last.content.push(' ');
+        if let Some(target_index) = self.stream_target_index {
+            if let Some(target) = self.messages.get_mut(target_index) {
+                if !target.content.is_empty() {
+                    target.content.push(' ');
+                }
+                target.content.push_str(chunk);
             }
-            last.content.push_str(chunk);
         }
     }
 
-    fn stream_demo_response(&mut self, user_input: &str) {
+    fn push_tool_call(&mut self, title: String, detail: String) {
+        self.stream_seq += 1;
+        self.tool_calls.push(ToolCallFold {
+            id: self.stream_seq,
+            title: title.clone(),
+            detail,
+            collapsed: true,
+        });
+        self.event_panel.entries.push(format!(
+            "tool_call#{} {} (collapsed)",
+            self.stream_seq, title
+        ));
+    }
+
+    fn begin_chat_stream(&mut self, input: String) {
+        self.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: input.clone(),
+        });
+
         self.status_bar.mode = "streaming".to_string();
+        self.stream_active = true;
         self.messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: String::new(),
         });
+        self.stream_target_index = Some(self.messages.len().saturating_sub(1));
 
-        let summary = format!("已收到输入：{user_input}");
-        for chunk in [
-            "正在分析请求...",
-            "调用工具摘要已折叠显示。",
-            summary.as_str(),
-        ] {
-            self.append_stream_chunk(chunk);
+        let command = TuiCommand::Chat {
+            input,
+            model: self.active_model.clone(),
+            agent_id: self.active_agent_id.clone(),
+        };
+        if let Some(command_tx) = &self.command_tx {
+            if let Err(err) = command_tx.send(command) {
+                self.stream_active = false;
+                self.status_bar.mode = "idle".to_string();
+                self.stream_target_index = None;
+                self.push_system_message(format!("stream dispatch failed: {err}"));
+            }
+        } else {
+            self.stream_active = false;
+            self.status_bar.mode = "idle".to_string();
+            self.stream_target_index = None;
+            self.push_system_message(
+                "stream dispatch unavailable: command channel not initialized",
+            );
         }
+    }
 
-        self.stream_seq += 1;
-        self.tool_calls.push(ToolCallFold {
-            id: self.stream_seq,
-            title: "mcp.search.ripgrep".to_string(),
-            detail: format!("query={user_input}"),
-            collapsed: true,
-        });
-        self.event_panel.entries.push(format!(
-            "tool_call#{} mcp.search.ripgrep (collapsed)",
-            self.stream_seq
-        ));
+    fn finish_streaming(&mut self) {
+        if let Some(target_index) = self.stream_target_index {
+            if let Some(target) = self.messages.get_mut(target_index) {
+                if target.content.trim().is_empty() {
+                    target.content = "(empty response)".to_string();
+                }
+            }
+        }
+        self.stream_active = false;
+        self.stream_target_index = None;
         self.status_bar.mode = "idle".to_string();
+        if let Some(next_input) = self.pending_chat_inputs.pop_front() {
+            self.begin_chat_stream(next_input);
+        }
+    }
+
+    fn handle_stream_chunk(&mut self, chunk: StreamChunk) {
+        match chunk {
+            StreamChunk::Token(text) => self.append_stream_chunk(&text),
+            StreamChunk::ToolCall { title, detail } => self.push_tool_call(title, detail),
+            StreamChunk::Done => self.finish_streaming(),
+            StreamChunk::Error(message) => {
+                self.push_system_message(format!("stream error: {message}"));
+                self.event_panel
+                    .entries
+                    .push(format!("stream error: {message}"));
+                self.finish_streaming();
+            }
+        }
     }
 
     fn current_or_default_agent_id(&mut self, explicit: Option<&str>) -> Result<String, String> {
@@ -538,11 +634,17 @@ impl AgentShellApp {
             return;
         }
 
-        self.messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: input.clone(),
-        });
-        self.stream_demo_response(&input);
+        if self.stream_active {
+            self.pending_chat_inputs.push_back(input.clone());
+            self.event_panel
+                .entries
+                .push(format!("chat queued while streaming: {input}"));
+            self.push_system_message("stream busy: queued input");
+            self.input_buffer.clear();
+            return;
+        }
+
+        self.begin_chat_stream(input);
         self.input_buffer.clear();
     }
 
@@ -738,14 +840,241 @@ fn call_rpc_over_uds(socket_path: &str, method: &str, params: Value) -> Result<V
     Ok(response.result.unwrap_or(json!(null)))
 }
 
+fn emit_chunk_from_value(value: &Value, chunk_tx: &Sender<StreamChunk>) -> StreamParseOutcome {
+    let mut done = false;
+    let mut payload = value;
+
+    if let Some(result) = payload.get("result") {
+        payload = result;
+    }
+
+    if let Some(error) = payload.get("error") {
+        let error_message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| error.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown stream error".to_string());
+        let _ = chunk_tx.send(StreamChunk::Error(error_message));
+        return StreamParseOutcome::Errored;
+    }
+
+    if let Some(status) = payload.get("status").and_then(Value::as_str) {
+        if matches!(status, "failed" | "blocked") {
+            let msg = payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("stream failed");
+            let _ = chunk_tx.send(StreamChunk::Error(msg.to_string()));
+            return StreamParseOutcome::Errored;
+        }
+        if matches!(status, "completed" | "done") {
+            done = true;
+        }
+    }
+
+    if let Some(kind) = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("event").and_then(Value::as_str))
+        .or_else(|| payload.get("kind").and_then(Value::as_str))
+    {
+        if matches!(kind, "done" | "completed" | "finish" | "finished") {
+            done = true;
+        }
+    }
+
+    if let Some(llm_output) = payload
+        .get("llm")
+        .and_then(|llm| llm.get("output"))
+        .and_then(Value::as_str)
+    {
+        let _ = chunk_tx.send(StreamChunk::Token(llm_output.to_string()));
+    }
+
+    for field in ["token", "delta", "text", "content", "output"] {
+        if let Some(text) = payload.get(field).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                let _ = chunk_tx.send(StreamChunk::Token(text.to_string()));
+                break;
+            }
+        }
+    }
+
+    if let Some(tool_call) = payload.get("tool_call").and_then(Value::as_object) {
+        let title = tool_call
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("tool_call")
+            .to_string();
+        let detail = serde_json::to_string(tool_call).unwrap_or_else(|_| "{}".to_string());
+        let _ = chunk_tx.send(StreamChunk::ToolCall { title, detail });
+    }
+
+    if let Some(tool_calls) = payload
+        .get("tool")
+        .and_then(|tool| tool.get("calls"))
+        .and_then(Value::as_array)
+    {
+        for tool_call in tool_calls {
+            let title = tool_call
+                .get("name")
+                .or_else(|| tool_call.get("tool"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool_call")
+                .to_string();
+            let detail = serde_json::to_string(tool_call).unwrap_or_else(|_| "{}".to_string());
+            let _ = chunk_tx.send(StreamChunk::ToolCall { title, detail });
+        }
+    }
+
+    if done {
+        StreamParseOutcome::Done
+    } else {
+        StreamParseOutcome::Continue
+    }
+}
+
+async fn stream_chat_rpc_over_uds(
+    socket_path: &str,
+    input: String,
+    model: String,
+    agent_id: Option<String>,
+    chunk_tx: &Sender<StreamChunk>,
+) -> Result<(), String> {
+    let mut stream = TokioUnixStream::connect(socket_path)
+        .await
+        .map_err(|err| format!("connect uds {} failed: {err}", socket_path))?;
+
+    let request = JsonRpcRequest::new(
+        json!(1),
+        "RunAgent",
+        json!({
+            "input": input,
+            "model": model,
+            "agent_id": agent_id,
+            "stream": true,
+        }),
+    );
+    let payload =
+        serde_json::to_vec(&request).map_err(|err| format!("encode rpc request failed: {err}"))?;
+
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|err| format!("write rpc request failed: {err}"))?;
+    stream
+        .shutdown()
+        .await
+        .map_err(|err| format!("shutdown write side failed: {err}"))?;
+
+    let mut read_buf = [0_u8; 4096];
+    let mut pending = Vec::<u8>::new();
+    while let Ok(read) = stream.read(&mut read_buf).await {
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&read_buf[..read]);
+
+        while let Some(line_end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line = pending.drain(..=line_end).collect::<Vec<_>>();
+            let mut line = String::from_utf8_lossy(&line).to_string();
+            if let Some(stripped) = line.strip_prefix("data:") {
+                line = stripped.to_string();
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+                match emit_chunk_from_value(&value, chunk_tx) {
+                    StreamParseOutcome::Continue => {}
+                    StreamParseOutcome::Done => return Ok(()),
+                    StreamParseOutcome::Errored => return Err(STREAM_ERROR_EMITTED.to_string()),
+                }
+            } else {
+                let _ = chunk_tx.send(StreamChunk::Token(trimmed.to_string()));
+            }
+        }
+    }
+
+    let trailing = String::from_utf8_lossy(&pending).trim().to_string();
+    if !trailing.is_empty() {
+        if let Ok(value) = serde_json::from_str::<Value>(&trailing) {
+            if emit_chunk_from_value(&value, chunk_tx) == StreamParseOutcome::Errored {
+                return Err(STREAM_ERROR_EMITTED.to_string());
+            }
+        } else {
+            let _ = chunk_tx.send(StreamChunk::Token(trailing));
+        }
+    }
+
+    Ok(())
+}
+
+fn spawn_chat_worker(
+    socket_path: String,
+    command_rx: Receiver<TuiCommand>,
+    chunk_tx: Sender<StreamChunk>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                let _ = chunk_tx.send(StreamChunk::Error(format!(
+                    "initialize background runtime failed: {err}"
+                )));
+                return;
+            }
+        };
+
+        while let Ok(command) = command_rx.recv() {
+            match command {
+                TuiCommand::Chat {
+                    input,
+                    model,
+                    agent_id,
+                } => {
+                    let result = runtime.block_on(stream_chat_rpc_over_uds(
+                        &socket_path,
+                        input,
+                        model,
+                        agent_id,
+                        &chunk_tx,
+                    ));
+                    match result {
+                        Ok(()) => {
+                            let _ = chunk_tx.send(StreamChunk::Done);
+                        }
+                        Err(err) => {
+                            if err != STREAM_ERROR_EMITTED {
+                                let _ = chunk_tx.send(StreamChunk::Error(err));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut AgentShellApp,
+    chunk_rx: &Receiver<StreamChunk>,
 ) -> Result<(), DynError> {
     loop {
+        while let Ok(chunk) = chunk_rx.try_recv() {
+            app.handle_stream_chunk(chunk);
+        }
+
         terminal.draw(|frame| app.render(frame))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
             if let Event::Key(key_event) = event {
                 if !app.handle_key_event(key_event) {
@@ -764,8 +1093,15 @@ pub fn run(socket_path: &str) -> Result<(), DynError> {
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let (command_tx, command_rx) = mpsc::channel::<TuiCommand>();
+    let (chunk_tx, chunk_rx) = mpsc::channel::<StreamChunk>();
+    let _worker_handle = spawn_chat_worker(socket_path.to_string(), command_rx, chunk_tx);
+
     let mut app = AgentShellApp::with_socket_path(socket_path);
-    let event_loop_result = run_event_loop(&mut terminal, &mut app);
+    app.set_command_sender(command_tx);
+    let event_loop_result = run_event_loop(&mut terminal, &mut app, &chunk_rx);
+
+    app.command_tx = None;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

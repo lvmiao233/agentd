@@ -1,6 +1,4 @@
-use agentd_protocol::{
-    A2ATask, A2ATaskEvent, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse,
-};
+use agentd_protocol::{A2ATask, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -246,33 +244,6 @@ impl AgentctlA2AClient {
         let task = serde_json::from_value::<A2ATask>(body["task"].clone())
             .map_err(|err| format!("invalid get task response: {err}"))?;
         Ok(task)
-    }
-
-    async fn stream_task(
-        &self,
-        target: &str,
-        task_id: &str,
-    ) -> Result<Vec<A2ATaskEvent>, DynError> {
-        let url = format!(
-            "{}/a2a/stream?task_id={}",
-            normalize_base_url(target)?,
-            task_id.trim()
-        );
-        let response = self.http.get(url).send().await?;
-        let response = response.error_for_status()?;
-        let text = response.text().await?;
-        let mut events = Vec::new();
-        for line in text.lines() {
-            if let Some(payload) = line.strip_prefix("data: ") {
-                if payload.trim().is_empty() {
-                    continue;
-                }
-                let event = serde_json::from_str::<A2ATaskEvent>(payload)
-                    .map_err(|err| format!("invalid stream event payload: {err}"))?;
-                events.push(event);
-            }
-        }
-        Ok(events)
     }
 }
 
@@ -822,7 +793,7 @@ async fn main() -> Result<(), DynError> {
         .with_writer(std::io::stderr)
         .init();
 
-    run_cli(cli, |socket_path| tui::run(socket_path)).await
+    run_cli(cli, tui::run).await
 }
 
 #[cfg(test)]
@@ -861,14 +832,7 @@ fn tui_app_handles_quit_key() {
 fn slash_commands_core_set_available() {
     let commands = tui::AgentShellApp::supported_slash_commands();
     for required in [
-        "/usage",
-        "/events",
-        "/tools",
-        "/compact",
-        "/model",
-        "/approve",
-        "/deny",
-        "/session",
+        "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
     ] {
         assert!(commands.contains(&required));
     }
@@ -886,6 +850,7 @@ fn tui_multi_agent_panel_updates_on_events() {
     assert!(tui::multi_agent_panel_updates_on_events_probe());
 }
 
+#[cfg(test)]
 fn test_json_http_response(status_line: &str, body: &Value) -> Vec<u8> {
     let encoded = serde_json::to_string(body).expect("encode response body");
     format!(
