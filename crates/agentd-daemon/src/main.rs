@@ -1654,7 +1654,7 @@ fn mcp_valid_stdio_server(name: &str, capability: &str) -> mcp::McpServerConfig 
         args: vec![
             "-c".to_string(),
             format!(
-                "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 30"
+                "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/call\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"tool-ok\"}}],\"isError\":false}}}}'; fi; done"
             ),
         ],
         transport: mcp::McpTransport::Stdio,
@@ -2282,6 +2282,101 @@ async fn firecracker_vsock_roundtrip() {
         .await
         .expect("firecracker vm shutdown should succeed");
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn invoke_skill_allow_executes_downstream_mcp_call() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let mut host = mcp::McpHost::new();
+    host.start_declared_servers(&[mcp_valid_stdio_server("mcp-fs", "fs.read_file")])
+        .await
+        .expect("mcp host should start configured server");
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(host)),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8801),
+            "CreateAgent",
+            json!({
+                "name": "invoke-allow-agent",
+                "model": "claude-4-sonnet",
+                "permission_policy": "allow",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+
+    let invoke_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(8802),
+            "InvokeSkill",
+            json!({
+                "agent_id": agent_id,
+                "server": "mcp-fs",
+                "tool": "fs.read_file",
+                "args": {
+                    "path": "README.md"
+                }
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+
+    assert!(
+        invoke_response.error.is_none(),
+        "invoke should succeed: {invoke_response:?}"
+    );
+    let downstream = invoke_response
+        .result
+        .expect("invoke result should exist")
+        .get("downstream")
+        .cloned()
+        .expect("downstream payload should exist");
+    assert_eq!(
+        downstream["content"][0]["text"],
+        json!("tool-ok"),
+        "invoke should return real downstream MCP payload"
+    );
+
+    let mcp_host = state.mcp_host();
+    mcp_host
+        .lock()
+        .await
+        .stop_all()
+        .await
+        .expect("mcp host stop should succeed");
+    cleanup_sqlite_files(&db_path);
 }
 
 #[cfg(test)]
@@ -7975,7 +8070,7 @@ async fn handle_rpc_request(
             let payload = json!({
                 "server": resolved_tool.server_id,
                 "tool": resolved_tool.tool_name,
-                "args": params.args,
+                "args": params.args.clone(),
             });
 
             let forward_server = resolved_tool.server_id.clone();
@@ -8018,6 +8113,31 @@ async fn handle_rpc_request(
                 return JsonRpcResponse::error(request.id, -32016, outcome.decision.reason);
             }
 
+            let downstream = {
+                let mcp_host = state.mcp_host();
+                let mut host = mcp_host.lock().await;
+                host.invoke_tool(
+                    &resolved_tool.server_id,
+                    &resolved_tool.tool_name,
+                    params.args.clone(),
+                )
+                .await
+            };
+
+            let downstream = match downstream {
+                Ok(result) => result,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!(
+                            "invoke skill downstream mcp call failed: server={} tool={} error={err}",
+                            resolved_tool.server_id, resolved_tool.tool_name
+                        ),
+                    )
+                }
+            };
+
             JsonRpcResponse::success(
                 request.id,
                 json!({
@@ -8028,7 +8148,7 @@ async fn handle_rpc_request(
                     "decision": outcome.decision,
                     "matched_rule": outcome.matched_rule,
                     "source_layer": outcome.source_layer,
-                    "downstream": outcome.downstream,
+                    "downstream": downstream,
                 }),
             )
         }

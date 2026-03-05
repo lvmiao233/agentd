@@ -5,8 +5,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{timeout, Duration};
 use tracing::info;
 
@@ -99,6 +100,8 @@ pub(crate) struct McpHostAuditEvent {
 #[derive(Debug)]
 pub(crate) struct McpServerHandle {
     pub(crate) process: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) transport: McpTransport,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -122,7 +125,9 @@ pub(crate) struct McpHost {
     registry: McpRegistry,
     audit_events: Vec<McpHostAuditEvent>,
     initialize_timeout: Duration,
+    call_timeout: Duration,
     stop_timeout: Duration,
+    next_request_id: AtomicU64,
 }
 
 impl Default for McpHost {
@@ -132,7 +137,9 @@ impl Default for McpHost {
             registry: McpRegistry::new(),
             audit_events: Vec::new(),
             initialize_timeout: Duration::from_secs(3),
+            call_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(2),
+            next_request_id: AtomicU64::new(2),
         }
     }
 }
@@ -287,6 +294,99 @@ impl McpHost {
         self.registry.entries.values().cloned().collect()
     }
 
+    pub(crate) async fn invoke_tool(
+        &mut self,
+        server_id: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<Value, AgentError> {
+        let handle = self
+            .servers
+            .get_mut(server_id)
+            .ok_or_else(|| AgentError::NotFound(format!("mcp server not found: {server_id}")))?;
+
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let request = serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": args,
+            },
+        }))
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "serialize tools/call request failed for {server_id}:{tool_name}: {err}"
+            ))
+        })?;
+
+        handle
+            .stdin
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|err| {
+                AgentError::Runtime(format!(
+                    "write tools/call request failed for {server_id}:{tool_name}: {err}"
+                ))
+            })?;
+        handle.stdin.write_all(b"\n").await.map_err(|err| {
+            AgentError::Runtime(format!(
+                "write tools/call request delimiter failed for {server_id}:{tool_name}: {err}"
+            ))
+        })?;
+        handle.stdin.flush().await.map_err(|err| {
+            AgentError::Runtime(format!(
+                "flush tools/call request failed for {server_id}:{tool_name}: {err}"
+            ))
+        })?;
+
+        let mut response_line = String::new();
+        let read = timeout(self.call_timeout, handle.stdout.read_line(&mut response_line))
+            .await
+            .map_err(|_| {
+                AgentError::Runtime(format!(
+                    "tools/call timed out for {server_id}:{tool_name}"
+                ))
+            })?
+            .map_err(|err| {
+                AgentError::Runtime(format!(
+                    "read tools/call response failed for {server_id}:{tool_name}: {err}"
+                ))
+            })?;
+
+        if read == 0 {
+            return Err(AgentError::Runtime(format!(
+                "tools/call response was empty for {server_id}:{tool_name}"
+            )));
+        }
+
+        let parsed: Value = serde_json::from_str(response_line.trim()).map_err(|err| {
+            AgentError::Runtime(format!(
+                "parse tools/call response failed for {server_id}:{tool_name}: {err}"
+            ))
+        })?;
+
+        let response_id = parsed.get("id").and_then(Value::as_u64).unwrap_or_default();
+        if response_id != request_id {
+            return Err(AgentError::Runtime(format!(
+                "tools/call response id mismatch for {server_id}:{tool_name} (expected={request_id}, got={response_id})"
+            )));
+        }
+
+        if let Some(error) = parsed.get("error") {
+            return Err(AgentError::Runtime(format!(
+                "tools/call returned error for {server_id}:{tool_name}: {error}"
+            )));
+        }
+
+        parsed.get("result").cloned().ok_or_else(|| {
+            AgentError::Runtime(format!(
+                "tools/call response missing result for {server_id}:{tool_name}"
+            ))
+        })
+    }
+
     pub(crate) async fn onboard_server(
         &mut self,
         config: McpServerConfig,
@@ -362,7 +462,15 @@ impl McpHost {
             AgentError::Runtime(format!("spawn mcp server {} failed: {err}", config.name))
         })?;
 
-        let initialize_capabilities = match self.perform_initialize(&mut child, config).await {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            AgentError::Runtime(format!("mcp server {} missing stdin pipe", config.name))
+        })?;
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            AgentError::Runtime(format!("mcp server {} missing stdout pipe", config.name))
+        })?;
+
+        let initialize_capabilities =
+            match self.perform_initialize(&mut stdin, &mut stdout, config).await {
             Ok(capabilities) => capabilities,
             Err(err) => {
                 let _ = terminate_child_process(&mut child, self.stop_timeout).await;
@@ -381,6 +489,8 @@ impl McpHost {
             config.name.clone(),
             McpServerHandle {
                 process: child,
+                stdin,
+                stdout: BufReader::new(stdout),
                 transport: config.transport,
                 trust_level: config.trust_level,
                 health: McpServerHealth::Healthy,
@@ -414,7 +524,8 @@ impl McpHost {
 
     async fn perform_initialize(
         &self,
-        child: &mut Child,
+        stdin: &mut ChildStdin,
+        stdout: &mut ChildStdout,
         config: &McpServerConfig,
     ) -> Result<Vec<String>, AgentError> {
         let init_request = serde_json::to_string(&serde_json::json!({
@@ -436,9 +547,6 @@ impl McpHost {
             ))
         })?;
 
-        let stdin = child.stdin.as_mut().ok_or_else(|| {
-            AgentError::Runtime(format!("mcp server {} missing stdin pipe", config.name))
-        })?;
         stdin
             .write_all(init_request.as_bytes())
             .await
@@ -461,9 +569,6 @@ impl McpHost {
             ))
         })?;
 
-        let stdout = child.stdout.as_mut().ok_or_else(|| {
-            AgentError::Runtime(format!("mcp server {} missing stdout pipe", config.name))
-        })?;
         let mut reader = BufReader::new(stdout);
         let mut response_line = String::new();
         let bytes = timeout(
