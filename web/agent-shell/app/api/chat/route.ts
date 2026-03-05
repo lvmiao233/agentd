@@ -3,7 +3,7 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from 'ai';
-import { emitRunAgentStreamLine } from '@/lib/run-agent-stream';
+import { consumeRunAgentStream } from '@/lib/run-agent-stream-reader';
 
 export const maxDuration = 60;
 
@@ -98,48 +98,11 @@ export async function POST(req: Request) {
       writer.write({ type: 'start-step' });
       writer.write({ type: 'text-start', id: textId });
 
-      let emitted = false;
-      const reader = responseBody.getReader();
-      const decoder = new TextDecoder();
-      let pending = '';
-      let terminalReached = false;
-
-      const handleLine = (lineRaw: string) => {
-        let line = lineRaw.trim();
-        if (!line) return;
-        if (line.startsWith('data:')) {
-          line = line.slice(5).trim();
-        }
-        if (!line) return;
-
-        const outcome = emitRunAgentStreamLine({
-          lineRaw: line,
-          textId,
-          writer,
-        });
-        emitted = emitted || outcome.emitted;
-        terminalReached = terminalReached || outcome.terminalReached;
-      };
-
-      while (!terminalReached) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        pending += decoder.decode(value, { stream: true });
-
-        let newlineIndex = pending.indexOf('\n');
-        while (newlineIndex >= 0) {
-          const line = pending.slice(0, newlineIndex);
-          pending = pending.slice(newlineIndex + 1);
-          handleLine(line);
-          if (terminalReached) break;
-          newlineIndex = pending.indexOf('\n');
-        }
-      }
-
-      const trailing = pending.trim();
-      if (!terminalReached && trailing) {
-        handleLine(trailing);
-      }
+      const { emitted } = await consumeRunAgentStream({
+        responseBody,
+        textId,
+        writer,
+      });
 
       if (!emitted) {
         writer.write({
