@@ -599,6 +599,7 @@ struct A2AHttpClient {
     http: reqwest::Client,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct A2AAgentCard {
     agent_id: String,
@@ -620,6 +621,7 @@ impl A2AHttpClient {
         }
     }
 
+    #[cfg(test)]
     async fn discover_agent(&self, base_url: &str) -> Result<A2AAgentCard, AgentError> {
         let url = format!(
             "{}/.well-known/agent.json",
@@ -1748,6 +1750,8 @@ fn build_firecracker_executor_for_test(root: &Path) -> firecracker::FirecrackerE
         .rootfs_path(rootfs)
         .default_vcpu_count(1)
         .default_mem_size_mib(512)
+        .default_network_policy(firecracker::NetworkIsolationPolicy::AllowAll)
+        .default_jailer(Some(firecracker::JailerConfig::default()))
         .vsock_root_dir(root.join("vsock"))
         .build()
         .expect("build firecracker executor")
@@ -2742,8 +2746,7 @@ async fn ws_bridge_forwards_rpc_and_stream() {
                 "method": "GetHealth",
                 "params": {}
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .expect("send health rpc over ws");
@@ -2798,8 +2801,7 @@ async fn ws_bridge_forwards_rpc_and_stream() {
                     "task_id": created.id,
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .expect("subscribe task stream over ws");
@@ -2902,7 +2904,9 @@ async fn a2a_client_discovers_remote_card() {
         .discover_agent(&format!("http://{bind_addr}"))
         .await
         .expect("discover remote agent card");
+    assert!(!card.agent_id.is_empty());
     assert_eq!(card.name, "remote-card-agent");
+    assert!(!card.version.is_empty());
     assert_eq!(card.model, "claude-4-sonnet");
     assert_eq!(card.provider, "one-api");
     assert_eq!(card.capabilities["protocol"], json!("a2a-compatible"));
@@ -3442,7 +3446,7 @@ async fn migration_failure_rolls_back_source_session() {
         migration_response
             .error
             .as_ref()
-            .and_then(|err| Some(err.message.contains("context migration failed")))
+            .map(|err| err.message.contains("context migration failed"))
             .unwrap_or(false),
         "failure should include context migration error: {migration_response:?}"
     );
@@ -3672,7 +3676,29 @@ async fn health_server(
                     continue;
                 }
 
-                let response = if method == "GET" && (path == "/health") {
+                let response = if method == "POST" && path == "/rpc" {
+                    let body = request_body(&request);
+                    match serde_json::from_str::<JsonRpcRequest>(body) {
+                        Ok(rpc_request) => {
+                            let rpc_response = handle_rpc_request(
+                                rpc_request,
+                                store.clone(),
+                                state.clone(),
+                                one_api_config.clone(),
+                            )
+                            .await;
+                            json_http_response("200 OK", &serde_json::to_value(&rpc_response).unwrap_or(json!({"error":"serialize failed"})))?
+                        }
+                        Err(err) => {
+                            let error_response = JsonRpcResponse::error(
+                                json!(null),
+                                -32700,
+                                format!("parse error: {err}"),
+                            );
+                            json_http_response("200 OK", &serde_json::to_value(&error_response).unwrap_or(json!({"error":"serialize failed"})))?
+                        }
+                    }
+                } else if method == "GET" && (path == "/health") {
                     let storage_status = if store.health_check().is_ok() {
                         "ready"
                     } else {
