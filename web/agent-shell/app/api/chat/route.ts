@@ -27,21 +27,20 @@ type JsonRpcResponse<T> = {
   };
 };
 
-function extractLatestUserInput(messages: UIMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message.role !== 'user') continue;
+function buildConversationInput(messages: UIMessage[]): string {
+  const normalized = messages
+    .map((message) => {
+      const content = message.parts
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('')
+        .trim();
+      if (!content) return '';
+      return `[${message.role}]\n${content}`;
+    })
+    .filter(Boolean);
 
-    const textParts = message.parts
-      .filter((part) => part.type === 'text')
-      .map((part) => part.text)
-      .join('')
-      .trim();
-    if (textParts) return textParts;
-
-  }
-
-  return '';
+  return normalized.join('\n\n').trim();
 }
 
 function buildSingleTextStreamResponse(text: string) {
@@ -73,7 +72,7 @@ export async function POST(req: Request) {
   } = await req.json();
 
   const selectedModel = modelId ?? 'gpt-5.3-codex';
-  const input = extractLatestUserInput(messages);
+  const input = buildConversationInput(messages);
   if (!input) {
     return buildSingleTextStreamResponse('Please provide a message to run.');
   }
