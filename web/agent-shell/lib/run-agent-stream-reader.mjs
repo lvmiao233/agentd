@@ -52,6 +52,12 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
 
     const data = parseSseDataLine(line);
     if (data !== null) {
+      if (pendingDataLines.length > 0) {
+        commitEvent();
+        if (terminalReached) {
+          return;
+        }
+      }
       pendingDataLines.push(data);
       return;
     }

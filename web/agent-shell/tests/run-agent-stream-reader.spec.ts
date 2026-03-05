@@ -78,6 +78,24 @@ export async function run() {
   });
 
   writes.length = 0;
+  const daemonFrameOutcome = await consumeRunAgentStream({
+    responseBody: createReadableStream([
+      'data: {"result":{"llm":{"output":"daemon"}}}\n',
+      'data: {"result":{"status":"completed"}}\n',
+    ]),
+    textId: 'text-daemon',
+    writer,
+  });
+
+  assert.equal(daemonFrameOutcome.emitted, true, 'daemon newline-delimited frames should emit content');
+  assert.equal(daemonFrameOutcome.terminalReached, true, 'daemon completed frame should terminate stream');
+  assert.deepEqual(writes[0], {
+    type: 'text-delta',
+    id: 'text-daemon',
+    delta: 'daemon',
+  });
+
+  writes.length = 0;
   const trailingOutcome = await consumeRunAgentStream({
     responseBody: createReadableStream(['data: {"result":{"llm":{"output":"tail"}}}']),
     textId: 'text-trailing',
