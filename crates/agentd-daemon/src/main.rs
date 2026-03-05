@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
@@ -5825,6 +5825,17 @@ struct InvokeSkillParams {
     args: Value,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RunAgentParams {
+    input: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    stream: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OnboardMcpServerParams {
     name: String,
@@ -7124,6 +7135,15 @@ struct OneApiProvisioned {
     channel_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RunAgentExecution {
+    agent_id: Option<uuid::Uuid>,
+    model_name: String,
+    output: String,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
 fn extract_string_value(value: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(v) = value.get(*key) {
@@ -7284,6 +7304,264 @@ async fn provision_one_api(
         access_token,
         channel_id,
     })
+}
+
+fn derive_one_api_chat_url(config: &OneApiConfig) -> Result<String, AgentError> {
+    let mut url = reqwest::Url::parse(&config.health_url)
+        .map_err(|err| AgentError::Config(format!("invalid one_api health_url: {err}")))?;
+    url.set_path("/v1/chat/completions");
+    url.set_query(None);
+    Ok(url.to_string())
+}
+
+fn extract_chat_completion_text(response: &Value) -> Result<String, AgentError> {
+    let choices = response
+        .get("choices")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AgentError::Runtime("one-api response missing choices array".to_string()))?;
+
+    let first = choices
+        .first()
+        .ok_or_else(|| AgentError::Runtime("one-api response choices is empty".to_string()))?;
+
+    let content_value = first
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .ok_or_else(|| {
+            AgentError::Runtime("one-api response missing choices[0].message.content".to_string())
+        })?;
+
+    if let Some(content) = content_value.as_str() {
+        return Ok(content.to_string());
+    }
+
+    if let Some(parts) = content_value.as_array() {
+        let mut combined = String::new();
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                combined.push_str(text);
+            }
+        }
+        if !combined.trim().is_empty() {
+            return Ok(combined);
+        }
+    }
+
+    Err(AgentError::Runtime(
+        "one-api response content is not a supported type".to_string(),
+    ))
+}
+
+fn extract_chat_usage_tokens(response: &Value) -> (u64, u64) {
+    let input_tokens = response
+        .get("usage")
+        .and_then(|usage| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = response
+        .get("usage")
+        .and_then(|usage| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (input_tokens, output_tokens)
+}
+
+async fn resolve_run_agent_profile(
+    store: &Arc<SqliteStore>,
+    params: &RunAgentParams,
+) -> Result<Option<AgentProfile>, AgentError> {
+    if let Some(agent_id_raw) = params.agent_id.as_deref() {
+        let agent_id = uuid::Uuid::parse_str(agent_id_raw)
+            .map_err(|err| AgentError::InvalidInput(format!("invalid agent_id: {err}")))?;
+        let profile = store.get_agent(agent_id).await?;
+        return Ok(Some(profile));
+    }
+
+    let agents = store.list_agents().await?;
+    if agents.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(ready_agent) = agents
+        .iter()
+        .find(|agent| agent.status == AgentLifecycleState::Ready)
+        .cloned()
+    {
+        return Ok(Some(ready_agent));
+    }
+
+    Ok(agents.into_iter().next())
+}
+
+async fn resolve_run_agent_access_token(
+    store: &Arc<SqliteStore>,
+    profile: &AgentProfile,
+) -> Result<Option<String>, AgentError> {
+    let idempotency_key = format!(
+        "{}:{}:{}",
+        profile.name, profile.model.provider, profile.model.model_name
+    );
+    let mapping = store.get_mapping_by_idempotency_key(&idempotency_key).await?;
+    Ok(mapping.map(|entry| entry.one_api_access_token))
+}
+
+async fn execute_run_agent(
+    store: Arc<SqliteStore>,
+    one_api_config: &OneApiConfig,
+    params: RunAgentParams,
+) -> Result<RunAgentExecution, AgentError> {
+    if params.input.trim().is_empty() {
+        return Err(AgentError::InvalidInput(
+            "input must be non-empty".to_string(),
+        ));
+    }
+
+    let profile = resolve_run_agent_profile(&store, &params).await?;
+    let model_name = params
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| profile.as_ref().map(|agent| agent.model.model_name.clone()))
+        .unwrap_or_else(|| "gpt-4.1-mini".to_string());
+
+    let endpoint = derive_one_api_chat_url(one_api_config)?;
+    let token = if let Some(profile) = profile.as_ref() {
+        resolve_run_agent_access_token(&store, profile).await?
+    } else {
+        None
+    };
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| AgentError::Runtime(format!("build run-agent client failed: {err}")))?;
+
+    let mut request = client.post(endpoint).header("Content-Type", "application/json");
+    if let Some(access_token) = token.as_deref() {
+        request = request.header("Authorization", format!("Bearer {access_token}"));
+    }
+
+    let body = json!({
+        "model": model_name,
+        "stream": false,
+        "messages": [{"role": "user", "content": params.input}],
+    });
+
+    let response = request
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("run agent one-api request failed: {err}")))?;
+
+    let status = response.status();
+    let raw_body = response
+        .text()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("read run-agent body failed: {err}")))?;
+
+    if !status.is_success() {
+        return Err(AgentError::Runtime(format!(
+            "run agent failed with status {status}: {raw_body}"
+        )));
+    }
+
+    let parsed: Value = serde_json::from_str(&raw_body)
+        .map_err(|err| AgentError::Runtime(format!("parse run-agent response failed: {err}")))?;
+
+    let output = extract_chat_completion_text(&parsed)?;
+    let (input_tokens, output_tokens) = extract_chat_usage_tokens(&parsed);
+
+    if let Some(profile) = profile.as_ref() {
+        let _ = store
+            .record_usage(
+                profile.id,
+                &model_name,
+                i64::try_from(input_tokens).unwrap_or(i64::MAX),
+                i64::try_from(output_tokens).unwrap_or(i64::MAX),
+                0.0,
+            )
+            .await;
+    }
+
+    Ok(RunAgentExecution {
+        agent_id: profile.as_ref().map(|agent| agent.id),
+        model_name,
+        output,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+async fn write_run_agent_stream_frame(
+    stream: &mut UnixStream,
+    payload: &Value,
+) -> Result<(), AgentError> {
+    let encoded = serde_json::to_string(payload)
+        .map_err(|err| AgentError::Runtime(format!("encode run-agent stream frame failed: {err}")))?;
+    let frame = format!("data: {encoded}\n");
+    stream
+        .write_all(frame.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write run-agent stream frame failed: {err}")))?;
+    stream
+        .flush()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("flush run-agent stream frame failed: {err}")))?;
+    Ok(())
+}
+
+async fn stream_run_agent_over_uds(
+    stream: &mut UnixStream,
+    store: Arc<SqliteStore>,
+    one_api_config: OneApiConfig,
+    params: RunAgentParams,
+) {
+    let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
+    match execute_run_agent(store, &one_api_config, params).await {
+        Ok(execution) => {
+            let _ = write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "result": {
+                        "status": "working",
+                        "llm": {
+                            "output": execution.output,
+                        },
+                        "model": execution.model_name,
+                        "agent_id": execution.agent_id,
+                    }
+                }),
+            )
+            .await;
+            let _ = write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "result": {
+                        "status": "completed",
+                        "type": "done",
+                        "usage": {
+                            "input_tokens": execution.input_tokens,
+                            "output_tokens": execution.output_tokens,
+                        }
+                    }
+                }),
+            )
+            .await;
+        }
+        Err(err) => {
+            let _ = write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "error": {
+                        "message": err.to_string(),
+                    },
+                    "status": "failed",
+                }),
+            )
+            .await;
+        }
+    }
 }
 
 fn derive_trust_level_from_profile(profile: &AgentProfile) -> TrustLevel {
@@ -7753,6 +8031,45 @@ async fn handle_rpc_request(
                     "downstream": outcome.downstream,
                 }),
             )
+        }
+        "RunAgent" | "management.RunAgent" => {
+            let params = match serde_json::from_value::<RunAgentParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid run agent params: {err}"),
+                    )
+                }
+            };
+
+            match execute_run_agent(store.clone(), &one_api_config, params.clone()).await {
+                Ok(execution) => JsonRpcResponse::success(
+                    request.id,
+                    json!({
+                        "agent_id": execution.agent_id,
+                        "model": execution.model_name,
+                        "output": execution.output,
+                        "usage": {
+                            "input_tokens": execution.input_tokens,
+                            "output_tokens": execution.output_tokens,
+                        },
+                        "stream": params.stream.unwrap_or(false),
+                    }),
+                ),
+                Err(AgentError::InvalidInput(message)) => {
+                    JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32030,
+                    format!("run agent failed: {err}"),
+                ),
+            }
         }
         "AuthorizeMcpTool" | "management.AuthorizeMcpTool" => {
             let params = match serde_json::from_value::<AuthorizeMcpToolParams>(request.params) {
@@ -9293,6 +9610,41 @@ async fn protocol_server(
                 let request: Result<JsonRpcRequest, _> = serde_json::from_slice(&request_bytes);
                 let response = match request {
                     Ok(request) if request.jsonrpc == "2.0" => {
+                        let stream_requested = request.method == "RunAgent"
+                            && request
+                                .params
+                                .get("stream")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+
+                        if stream_requested {
+                            match serde_json::from_value::<RunAgentParams>(request.params.clone()) {
+                                Ok(params) => {
+                                    stream_run_agent_over_uds(
+                                        &mut stream,
+                                        store.clone(),
+                                        one_api_config.clone(),
+                                        params,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => {
+                                    let _ = write_run_agent_stream_frame(
+                                        &mut stream,
+                                        &json!({
+                                            "error": {
+                                                "message": format!("invalid run agent params: {err}"),
+                                            },
+                                            "status": "failed",
+                                        }),
+                                    )
+                                    .await;
+                                }
+                            }
+                            let _ = stream.shutdown().await;
+                            continue;
+                        }
+
                         handle_rpc_request(request, store.clone(), state.clone(), one_api_config.clone()).await
                     }
                     Ok(request) => JsonRpcResponse::error(request.id, -32600, "invalid jsonrpc version"),
