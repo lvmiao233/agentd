@@ -153,6 +153,71 @@ def test_policy_deny_blocks_before_provider_call(monkeypatch, capsys) -> None:
     assert invoked["provider"] is False
 
 
+def test_policy_ask_blocks_before_provider_call(monkeypatch, capsys) -> None:
+    invoked = {"provider": False}
+
+    def fail_if_provider_called(**_: Any) -> dict[str, Any]:
+        invoked["provider"] = True
+        raise AssertionError("provider should not be called when policy asks approval")
+
+    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+        if method == "AuthorizeTool":
+            return {"decision": "ask"}
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(_CLI_MODULE, "_invoke_real_with_retry", fail_if_provider_called)
+    monkeypatch.setattr(_CLI_MODULE, "call_rpc", fake_call_rpc)
+
+    exit_code = _CLI_MODULE.run_once(_make_args())
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["error"] == "policy.ask"
+    assert invoked["provider"] is False
+
+
+def test_tool_loop_policy_ask_blocks_after_provider_call(monkeypatch, capsys) -> None:
+    state = {"authorize_calls": 0}
+
+    def fake_invoke_with_retry(**_: Any) -> dict[str, Any]:
+        return {
+            "output": "",
+            "input_tokens": 5,
+            "output_tokens": 2,
+            "total_tokens": 7,
+            "provider_request_id": "req-ask-loop",
+            "request_id_source": "response._request_id",
+            "provider_model": "gpt-4o-mini",
+            "usage_source": "provider",
+            "transport_mode": "real",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "builtin.lite.upper",
+                    "arguments": '{"prompt":"ask me"}',
+                }
+            ],
+        }
+
+    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+        if method == "AuthorizeTool":
+            state["authorize_calls"] += 1
+            if state["authorize_calls"] == 1:
+                return {"decision": "allow"}
+            return {"decision": "ask"}
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(_CLI_MODULE, "_invoke_real_with_retry", fake_invoke_with_retry)
+    monkeypatch.setattr(_CLI_MODULE, "call_rpc", fake_call_rpc)
+
+    exit_code = _CLI_MODULE.run_once(_make_args())
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["error"] == "policy.ask"
+    assert payload["provider_call_attempted"] is False
+
+
 def test_tool_calling_loop_handles_two_consecutive_tool_calls(
     monkeypatch, capsys
 ) -> None:

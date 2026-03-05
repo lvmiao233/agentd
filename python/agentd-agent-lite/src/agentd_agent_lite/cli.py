@@ -1242,6 +1242,8 @@ def _run_chat_turn(
             tool_decision = str(tool_authorization.get("decision", "ask"))
             if tool_decision == "deny":
                 raise RpcError(-32016, "policy.deny: tool blocked")
+            if tool_decision == "ask":
+                raise RpcError(-32024, "policy.ask: approval required")
 
             discovered_tool = _resolve_discovered_tool(session, tool_name)
             if discovered_tool is not None:
@@ -1516,6 +1518,21 @@ def run_once(args: argparse.Namespace) -> int:
             )
         )
         return 2
+    if decision == "ask":
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "agent_id": args.agent_id,
+                    "tool": args.tool,
+                    "error": "policy.ask",
+                    "message": "tool requires explicit approval",
+                    "provider_call_attempted": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 2
 
     legacy_tool_output = run_builtin_tool(args.tool, args.prompt)
 
@@ -1591,6 +1608,22 @@ def run_once(args: argparse.Namespace) -> int:
                         "agent_id": args.agent_id,
                         "tool": args.tool,
                         "error": "policy.deny",
+                        "code": err.code,
+                        "message": err.message,
+                        "provider_call_attempted": provider_call_attempted,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        if err.code == -32024:
+            print(
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "agent_id": args.agent_id,
+                        "tool": args.tool,
+                        "error": "policy.ask",
                         "code": err.code,
                         "message": err.message,
                         "provider_call_attempted": provider_call_attempted,
