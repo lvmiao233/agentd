@@ -36,8 +36,8 @@ use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixListener};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
@@ -3076,6 +3076,73 @@ async fn ws_bridge_forwards_rpc_and_stream() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn health_rpc_streams_run_agent_frames_over_http() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-http-stream-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind health server listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve health server local address");
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state,
+        OneApiConfig::default(),
+        shutdown_rx,
+    ));
+
+    let mut conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect /rpc endpoint");
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 9901,
+        "method": "RunAgent",
+        "params": {
+            "input": "stream over http",
+            "stream": true
+        }
+    })
+    .to_string();
+    let req = format!(
+        "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    conn.write_all(req.as_bytes())
+        .await
+        .expect("send stream rpc request");
+
+    let mut response_bytes = Vec::new();
+    conn.read_to_end(&mut response_bytes)
+        .await
+        .expect("read stream rpc response");
+    let response_text = String::from_utf8(response_bytes).expect("stream response should be utf8");
+    assert!(response_text.starts_with("HTTP/1.1 200 OK"));
+    assert!(response_text.contains("Content-Type: text/event-stream"));
+    assert!(response_text.contains("\"status\":\"working\""));
+    assert!(
+        response_text.contains("\"status\":\"failed\"")
+            || response_text.contains("\"status\":\"completed\""),
+        "expected terminal stream frame in response: {response_text}"
+    );
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn a2a_client_discovers_remote_card() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task23-test-{}.sqlite",
@@ -3900,6 +3967,46 @@ async fn health_server(
                     let body = request_body(&request);
                     match serde_json::from_str::<JsonRpcRequest>(body) {
                         Ok(rpc_request) => {
+                            let stream_requested =
+                                matches!(rpc_request.method.as_str(), "RunAgent" | "management.RunAgent")
+                                    && rpc_request
+                                        .params
+                                        .get("stream")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false);
+
+                            if stream_requested {
+                                let sse_headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+                                stream.write_all(sse_headers.as_bytes()).await?;
+
+                                match serde_json::from_value::<RunAgentParams>(rpc_request.params.clone()) {
+                                    Ok(params) => {
+                                        stream_run_agent_over_uds(
+                                            &mut stream,
+                                            store.clone(),
+                                            one_api_config.clone(),
+                                            params,
+                                        )
+                                        .await;
+                                    }
+                                    Err(err) => {
+                                        let _ = write_run_agent_stream_frame(
+                                            &mut stream,
+                                            &json!({
+                                                "error": {
+                                                    "message": format!("invalid run agent params: {err}"),
+                                                },
+                                                "status": "failed",
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                }
+
+                                let _ = stream.shutdown().await;
+                                continue;
+                            }
+
                             let rpc_response = handle_rpc_request(
                                 rpc_request,
                                 store.clone(),
@@ -7555,7 +7662,9 @@ async fn resolve_run_agent_access_token(
         "{}:{}:{}",
         profile.name, profile.model.provider, profile.model.model_name
     );
-    let mapping = store.get_mapping_by_idempotency_key(&idempotency_key).await?;
+    let mapping = store
+        .get_mapping_by_idempotency_key(&idempotency_key)
+        .await?;
     Ok(mapping.map(|entry| entry.one_api_access_token))
 }
 
@@ -7591,7 +7700,9 @@ async fn execute_run_agent(
         .build()
         .map_err(|err| AgentError::Runtime(format!("build run-agent client failed: {err}")))?;
 
-    let mut request = client.post(endpoint).header("Content-Type", "application/json");
+    let mut request = client
+        .post(endpoint)
+        .header("Content-Type", "application/json");
     if let Some(access_token) = token.as_deref() {
         request = request.header("Authorization", format!("Bearer {access_token}"));
     }
@@ -7602,11 +7713,10 @@ async fn execute_run_agent(
         "messages": [{"role": "user", "content": params.input}],
     });
 
-    let response = request
-        .json(&body)
-        .send()
-        .await
-        .map_err(|err| AgentError::Runtime(format!("run agent one-api request failed: {err}")))?;
+    let response =
+        request.json(&body).send().await.map_err(|err| {
+            AgentError::Runtime(format!("run agent one-api request failed: {err}"))
+        })?;
 
     let status = response.status();
     let raw_body = response
@@ -7647,30 +7757,31 @@ async fn execute_run_agent(
     })
 }
 
-async fn write_run_agent_stream_frame(
-    stream: &mut UnixStream,
-    payload: &Value,
-) -> Result<(), AgentError> {
-    let encoded = serde_json::to_string(payload)
-        .map_err(|err| AgentError::Runtime(format!("encode run-agent stream frame failed: {err}")))?;
+async fn write_run_agent_stream_frame<W>(stream: &mut W, payload: &Value) -> Result<(), AgentError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let encoded = serde_json::to_string(payload).map_err(|err| {
+        AgentError::Runtime(format!("encode run-agent stream frame failed: {err}"))
+    })?;
     let frame = format!("data: {encoded}\n");
-    stream
-        .write_all(frame.as_bytes())
-        .await
-        .map_err(|err| AgentError::Runtime(format!("write run-agent stream frame failed: {err}")))?;
-    stream
-        .flush()
-        .await
-        .map_err(|err| AgentError::Runtime(format!("flush run-agent stream frame failed: {err}")))?;
+    stream.write_all(frame.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!("write run-agent stream frame failed: {err}"))
+    })?;
+    stream.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush run-agent stream frame failed: {err}"))
+    })?;
     Ok(())
 }
 
-async fn stream_run_agent_over_uds(
-    stream: &mut UnixStream,
+async fn stream_run_agent_over_uds<W>(
+    stream: &mut W,
     store: Arc<SqliteStore>,
     one_api_config: OneApiConfig,
     params: RunAgentParams,
-) {
+) where
+    W: AsyncWrite + Unpin,
+{
     let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
     match execute_run_agent(store, &one_api_config, params).await {
         Ok(execution) => {
@@ -8185,16 +8296,14 @@ async fn handle_rpc_request(
 
             let downstream = match downstream {
                 Ok(result) => result,
-                Err(err) => {
-                    return JsonRpcResponse::error(
-                        request.id,
-                        -32022,
-                        format!(
-                            "invoke skill downstream mcp call failed: server={} tool={} error={err}",
-                            resolved_tool.server_id, resolved_tool.tool_name
-                        ),
-                    )
-                }
+                Err(err) => return JsonRpcResponse::error(
+                    request.id,
+                    -32022,
+                    format!(
+                        "invoke skill downstream mcp call failed: server={} tool={} error={err}",
+                        resolved_tool.server_id, resolved_tool.tool_name
+                    ),
+                ),
             };
 
             JsonRpcResponse::success(
@@ -8243,11 +8352,9 @@ async fn handle_rpc_request(
                 Err(AgentError::NotFound(message)) => {
                     JsonRpcResponse::error(request.id, -32010, message)
                 }
-                Err(err) => JsonRpcResponse::error(
-                    request.id,
-                    -32030,
-                    format!("run agent failed: {err}"),
-                ),
+                Err(err) => {
+                    JsonRpcResponse::error(request.id, -32030, format!("run agent failed: {err}"))
+                }
             }
         }
         "AuthorizeMcpTool" | "management.AuthorizeMcpTool" => {
