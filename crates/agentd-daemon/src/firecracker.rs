@@ -19,6 +19,7 @@ use uuid::Uuid;
 const DEFAULT_VSOCK_TIMEOUT_SECS: u64 = 5;
 
 const API_POLL_INTERVAL_MS: u64 = 25;
+const READY_PROBE_PAYLOAD: &str = r#"{"rpc":"daemon.ready"}"#;
 const DEFAULT_FIRECRACKER_BINARY: &str = "/usr/bin/firecracker";
 const DEFAULT_FIRECRACKER_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
 
@@ -424,13 +425,21 @@ impl FirecrackerExecutor {
         };
 
         let (read_half, write_half) = stream.into_split();
+        let mut read_half = BufReader::new(read_half);
+        let mut write_half = write_half;
+        if let Err(err) = probe_guest_readiness(&mut read_half, &mut write_half, spec.launch_timeout).await {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            return Err(err);
+        }
+
         Ok(FirecrackerVmHandle {
             agent_id: spec.agent_id,
             config: vm_config,
             child,
             api_socket_path: None,
             transport: VmTransport::Mock {
-                read_half: BufReader::new(read_half),
+                read_half,
                 write_half,
             },
         })
@@ -766,6 +775,57 @@ async fn wait_for_path_exists(
         }
         sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
     }
+}
+
+async fn probe_guest_readiness(
+    read_half: &mut BufReader<OwnedReadHalf>,
+    write_half: &mut OwnedWriteHalf,
+    timeout_duration: Duration,
+) -> Result<(), AgentError> {
+    write_half
+        .write_all(READY_PROBE_PAYLOAD.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker ready probe failed: {err}")))?;
+    write_half
+        .write_all(b"\n")
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker ready probe newline failed: {err}")))?;
+    write_half
+        .flush()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("flush firecracker ready probe failed: {err}")))?;
+
+    let mut response_line = String::new();
+    let read = timeout(timeout_duration, read_half.read_line(&mut response_line))
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "firecracker guest readiness probe timed out after {}ms",
+                timeout_duration.as_millis()
+            ))
+        })?
+        .map_err(|err| AgentError::Runtime(format!("read firecracker ready probe failed: {err}")))?;
+
+    if read == 0 {
+        return Err(AgentError::Runtime(
+            "firecracker guest readiness probe connection closed".to_string(),
+        ));
+    }
+
+    let response = serde_json::from_str::<serde_json::Value>(response_line.trim_end()).map_err(|err| {
+        AgentError::Protocol(format!("decode firecracker ready probe response failed: {err}"))
+    })?;
+    let status = response
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if status != "ok" {
+        return Err(AgentError::Runtime(format!(
+            "firecracker guest readiness probe returned non-ok status: {status}"
+        )));
+    }
+
+    Ok(())
 }
 
 async fn firecracker_put_json(

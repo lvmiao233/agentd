@@ -2540,6 +2540,65 @@ async fn firecracker_launch_timeout_returns_stable_error() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn firecracker_launch_fails_when_guest_readiness_probe_times_out() {
+    let root = temp_firecracker_runtime_dir();
+    let executor = build_firecracker_executor_for_test(&root);
+    let agent_id = uuid::Uuid::new_v4();
+    let pid_file = root.join("vm.pid");
+
+    let python_probe_block = "import os,socket,time;s=socket.socket(socket.AF_UNIX);s.connect(os.environ['AGENTD_VSOCK_PATH']);time.sleep(5)";
+    let command = format!(
+        "echo $$ > \"{}\"; exec /usr/bin/env python3 -c \"{}\"",
+        pid_file.display(),
+        python_probe_block
+    );
+    let err = executor
+        .launch_agent(firecracker::FirecrackerAgentLaunchSpec {
+            agent_id,
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), command],
+            env: HashMap::new(),
+            vcpu_count: None,
+            mem_size_mib: None,
+            network: None,
+            network_policy: None,
+            jailer: None,
+            launch_timeout: Duration::from_millis(200),
+        })
+        .await
+        .expect_err("vm launch should fail when guest readiness probe does not respond");
+
+    match err {
+        AgentError::Runtime(message) => {
+            assert!(
+                message.contains("guest readiness probe timed out"),
+                "unexpected readiness timeout error message: {message}"
+            );
+        }
+        other => panic!("expected runtime readiness timeout error, got: {other}"),
+    }
+
+    let socket_path = executor.vsock_path_for_agent(agent_id);
+    assert!(
+        !socket_path.exists(),
+        "readiness timeout should clean stale vsock socket"
+    );
+
+    if let Ok(pid_text) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_text.trim().parse::<u32>() {
+            firecracker_wait_process_exit(pid).await;
+            assert!(
+                !PathBuf::from(format!("/proc/{pid}")).exists(),
+                "readiness timeout should not leave orphan vm process"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn untrusted_agent_uses_firecracker_runtime() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task21-test-{}.sqlite",
