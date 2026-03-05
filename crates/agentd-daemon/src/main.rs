@@ -3143,6 +3143,143 @@ async fn health_rpc_streams_run_agent_frames_over_http() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_stream_forwards_provider_token_deltas() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-stream-provider-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text =
+            String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "unexpected provider request line: {request_text}"
+        );
+        let body = request_body(&request_text);
+        assert!(
+            body.contains("\"stream\":true"),
+            "provider request body should enable stream=true: {body}"
+        );
+        assert!(
+            body.contains("\"include_usage\":true"),
+            "provider request body should enable include_usage: {body}"
+        );
+
+        let sse_body = concat!(
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            sse_body.len(),
+            sse_body
+        );
+
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider sse response");
+        let _ = socket.shutdown().await;
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let (mut read_stream, mut write_stream) = tokio::io::duplex(16 * 1024);
+    stream_run_agent_over_uds(
+        &mut write_stream,
+        store,
+        one_api_config,
+        RunAgentParams {
+            input: "stream this".to_string(),
+            model: Some("gpt-4.1-mini".to_string()),
+            agent_id: None,
+            stream: Some(true),
+        },
+    )
+    .await;
+    drop(write_stream);
+
+    let mut captured = Vec::new();
+    read_stream
+        .read_to_end(&mut captured)
+        .await
+        .expect("read streamed run-agent frames");
+    let captured_text = String::from_utf8(captured).expect("captured frames should be utf8");
+
+    assert!(
+        captured_text.contains("\"status\":\"working\""),
+        "expected working frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"output\":\"hello\""),
+        "expected first token frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"output\":\" world\""),
+        "expected second token frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"tool\":{\"calls\":"),
+        "expected tool call frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"status\":\"completed\""),
+        "expected completed frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"input_tokens\":3"),
+        "expected streamed usage input_tokens in terminal frame: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"output_tokens\":2"),
+        "expected streamed usage output_tokens in terminal frame: {captured_text}"
+    );
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn a2a_client_discovers_remote_card() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task23-test-{}.sqlite",
@@ -7405,6 +7542,14 @@ struct RunAgentExecution {
     output_tokens: u64,
 }
 
+#[derive(Debug, Clone)]
+struct RunAgentResolvedContext {
+    profile: Option<AgentProfile>,
+    model_name: String,
+    endpoint: String,
+    access_token: Option<String>,
+}
+
 fn extract_string_value(value: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(v) = value.get(*key) {
@@ -7627,6 +7772,85 @@ fn extract_chat_usage_tokens(response: &Value) -> (u64, u64) {
     (input_tokens, output_tokens)
 }
 
+fn extract_stream_delta_text(response: &Value) -> Option<String> {
+    let delta_content = response
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|first| first.get("delta"))
+        .and_then(|delta| delta.get("content"))?;
+
+    if let Some(content) = delta_content.as_str() {
+        return Some(content.to_string());
+    }
+
+    if let Some(parts) = delta_content.as_array() {
+        let mut combined = String::new();
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                combined.push_str(text);
+            }
+        }
+        if !combined.is_empty() {
+            return Some(combined);
+        }
+    }
+
+    None
+}
+
+fn stream_event_has_terminal_finish_reason(response: &Value) -> bool {
+    response
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .is_some_and(|reason| !reason.is_null())
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn extract_stream_usage_tokens(response: &Value) -> Option<(u64, u64)> {
+    response
+        .get("usage")
+        .map(|_| extract_chat_usage_tokens(response))
+}
+
+fn extract_stream_tool_calls(response: &Value) -> Vec<Value> {
+    response
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|first| first.get("delta"))
+        .and_then(|delta| delta.get("tool_calls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+async fn persist_run_agent_usage(
+    store: &Arc<SqliteStore>,
+    profile: Option<&AgentProfile>,
+    model_name: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
+    if let Some(profile) = profile {
+        let _ = store
+            .record_usage(
+                profile.id,
+                model_name,
+                i64::try_from(input_tokens).unwrap_or(i64::MAX),
+                i64::try_from(output_tokens).unwrap_or(i64::MAX),
+                0.0,
+            )
+            .await;
+    }
+}
+
 async fn resolve_run_agent_profile(
     store: &Arc<SqliteStore>,
     params: &RunAgentParams,
@@ -7668,6 +7892,34 @@ async fn resolve_run_agent_access_token(
     Ok(mapping.map(|entry| entry.one_api_access_token))
 }
 
+async fn resolve_run_agent_context(
+    store: &Arc<SqliteStore>,
+    one_api_config: &OneApiConfig,
+    params: &RunAgentParams,
+) -> Result<RunAgentResolvedContext, AgentError> {
+    let profile = resolve_run_agent_profile(store, params).await?;
+    let model_name = params
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| profile.as_ref().map(|agent| agent.model.model_name.clone()))
+        .unwrap_or_else(|| "gpt-4.1-mini".to_string());
+
+    let endpoint = derive_one_api_chat_url(one_api_config)?;
+    let access_token = if let Some(profile) = profile.as_ref() {
+        resolve_run_agent_access_token(store, profile).await?
+    } else {
+        None
+    };
+
+    Ok(RunAgentResolvedContext {
+        profile,
+        model_name,
+        endpoint,
+        access_token,
+    })
+}
+
 async fn execute_run_agent(
     store: Arc<SqliteStore>,
     one_api_config: &OneApiConfig,
@@ -7679,20 +7931,7 @@ async fn execute_run_agent(
         ));
     }
 
-    let profile = resolve_run_agent_profile(&store, &params).await?;
-    let model_name = params
-        .model
-        .clone()
-        .filter(|model| !model.trim().is_empty())
-        .or_else(|| profile.as_ref().map(|agent| agent.model.model_name.clone()))
-        .unwrap_or_else(|| "gpt-4.1-mini".to_string());
-
-    let endpoint = derive_one_api_chat_url(one_api_config)?;
-    let token = if let Some(profile) = profile.as_ref() {
-        resolve_run_agent_access_token(&store, profile).await?
-    } else {
-        None
-    };
+    let context = resolve_run_agent_context(&store, one_api_config, &params).await?;
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -7701,14 +7940,14 @@ async fn execute_run_agent(
         .map_err(|err| AgentError::Runtime(format!("build run-agent client failed: {err}")))?;
 
     let mut request = client
-        .post(endpoint)
+        .post(context.endpoint)
         .header("Content-Type", "application/json");
-    if let Some(access_token) = token.as_deref() {
+    if let Some(access_token) = context.access_token.as_deref() {
         request = request.header("Authorization", format!("Bearer {access_token}"));
     }
 
     let body = json!({
-        "model": model_name,
+        "model": context.model_name,
         "stream": false,
         "messages": [{"role": "user", "content": params.input}],
     });
@@ -7736,21 +7975,233 @@ async fn execute_run_agent(
     let output = extract_chat_completion_text(&parsed)?;
     let (input_tokens, output_tokens) = extract_chat_usage_tokens(&parsed);
 
-    if let Some(profile) = profile.as_ref() {
-        let _ = store
-            .record_usage(
-                profile.id,
-                &model_name,
-                i64::try_from(input_tokens).unwrap_or(i64::MAX),
-                i64::try_from(output_tokens).unwrap_or(i64::MAX),
-                0.0,
-            )
-            .await;
-    }
+    persist_run_agent_usage(
+        &store,
+        context.profile.as_ref(),
+        &context.model_name,
+        input_tokens,
+        output_tokens,
+    )
+    .await;
 
     Ok(RunAgentExecution {
-        agent_id: profile.as_ref().map(|agent| agent.id),
-        model_name,
+        agent_id: context.profile.as_ref().map(|agent| agent.id),
+        model_name: context.model_name,
+        output,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+async fn execute_run_agent_streaming<W>(
+    stream: &mut W,
+    store: Arc<SqliteStore>,
+    one_api_config: &OneApiConfig,
+    params: RunAgentParams,
+) -> Result<RunAgentExecution, AgentError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if params.input.trim().is_empty() {
+        return Err(AgentError::InvalidInput(
+            "input must be non-empty".to_string(),
+        ));
+    }
+
+    let context = resolve_run_agent_context(&store, one_api_config, &params).await?;
+    let model_name = context.model_name.clone();
+    let mut request = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| AgentError::Runtime(format!("build run-agent client failed: {err}")))?
+        .post(context.endpoint.clone())
+        .header("Content-Type", "application/json");
+
+    if let Some(access_token) = context.access_token.as_deref() {
+        request = request.header("Authorization", format!("Bearer {access_token}"));
+    }
+
+    let body = json!({
+        "model": model_name,
+        "stream": true,
+        "stream_options": {
+            "include_usage": true
+        },
+        "messages": [{"role": "user", "content": params.input}],
+    });
+
+    let mut response =
+        request.json(&body).send().await.map_err(|err| {
+            AgentError::Runtime(format!("run agent one-api request failed: {err}"))
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw_body = response
+            .text()
+            .await
+            .map_err(|err| AgentError::Runtime(format!("read run-agent body failed: {err}")))?;
+        return Err(AgentError::Runtime(format!(
+            "run agent failed with status {status}: {raw_body}"
+        )));
+    }
+
+    let mut pending = String::new();
+    let mut event_data_lines = Vec::<String>::new();
+    let mut output = String::new();
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("read run-agent stream chunk failed: {err}")))?
+    {
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(line_end) = pending.find('\n') {
+            let line = pending[..line_end].trim_end_matches('\r').to_string();
+            pending.drain(..=line_end);
+
+            if line.is_empty() {
+                if event_data_lines.is_empty() {
+                    continue;
+                }
+                let payload = event_data_lines.join("\n");
+                event_data_lines.clear();
+
+                if payload == "[DONE]" {
+                    continue;
+                }
+
+                let event: Value = serde_json::from_str(&payload).map_err(|err| {
+                    AgentError::Runtime(format!(
+                        "parse run-agent stream payload failed: {err}; payload={payload}"
+                    ))
+                })?;
+
+                if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
+                    input_tokens = input;
+                    output_tokens = output_usage;
+                }
+
+                if let Some(delta) = extract_stream_delta_text(&event) {
+                    if !delta.is_empty() {
+                        output.push_str(&delta);
+                        write_run_agent_stream_frame(
+                            stream,
+                            &json!({
+                                "result": {
+                                    "status": "working",
+                                    "llm": {
+                                        "output": delta,
+                                    },
+                                    "model": context.model_name,
+                                    "agent_id": context.profile.as_ref().map(|agent| agent.id),
+                                }
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+
+                let tool_calls = extract_stream_tool_calls(&event);
+                if !tool_calls.is_empty() {
+                    write_run_agent_stream_frame(
+                        stream,
+                        &json!({
+                            "result": {
+                                "status": "working",
+                                "tool": {
+                                    "calls": tool_calls,
+                                }
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+
+                if stream_event_has_terminal_finish_reason(&event) {
+                    continue;
+                }
+                continue;
+            }
+
+            if let Some(payload) = line.strip_prefix("data:") {
+                event_data_lines.push(payload.trim_start().to_string());
+            }
+        }
+    }
+
+    if !pending.trim().is_empty() {
+        if let Some(payload) = pending.trim().strip_prefix("data:") {
+            event_data_lines.push(payload.trim_start().to_string());
+        }
+    }
+
+    if !event_data_lines.is_empty() {
+        let payload = event_data_lines.join("\n");
+        if payload != "[DONE]" {
+            let event: Value = serde_json::from_str(&payload).map_err(|err| {
+                AgentError::Runtime(format!(
+                    "parse trailing run-agent stream payload failed: {err}; payload={payload}"
+                ))
+            })?;
+            if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
+                input_tokens = input;
+                output_tokens = output_usage;
+            }
+            if let Some(delta) = extract_stream_delta_text(&event) {
+                if !delta.is_empty() {
+                    output.push_str(&delta);
+                    write_run_agent_stream_frame(
+                        stream,
+                        &json!({
+                            "result": {
+                                "status": "working",
+                                "llm": {
+                                    "output": delta,
+                                },
+                                "model": context.model_name,
+                                "agent_id": context.profile.as_ref().map(|agent| agent.id),
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+            }
+
+            let tool_calls = extract_stream_tool_calls(&event);
+            if !tool_calls.is_empty() {
+                write_run_agent_stream_frame(
+                    stream,
+                    &json!({
+                        "result": {
+                            "status": "working",
+                            "tool": {
+                                "calls": tool_calls,
+                            }
+                        }
+                    }),
+                )
+                .await?;
+            }
+        }
+    }
+
+    persist_run_agent_usage(
+        &store,
+        context.profile.as_ref(),
+        &context.model_name,
+        input_tokens,
+        output_tokens,
+    )
+    .await;
+
+    Ok(RunAgentExecution {
+        agent_id: context.profile.as_ref().map(|agent| agent.id),
+        model_name: context.model_name,
         output,
         input_tokens,
         output_tokens,
@@ -7783,22 +8234,8 @@ async fn stream_run_agent_over_uds<W>(
     W: AsyncWrite + Unpin,
 {
     let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
-    match execute_run_agent(store, &one_api_config, params).await {
+    match execute_run_agent_streaming(stream, store, &one_api_config, params).await {
         Ok(execution) => {
-            let _ = write_run_agent_stream_frame(
-                stream,
-                &json!({
-                    "result": {
-                        "status": "working",
-                        "llm": {
-                            "output": execution.output,
-                        },
-                        "model": execution.model_name,
-                        "agent_id": execution.agent_id,
-                    }
-                }),
-            )
-            .await;
             let _ = write_run_agent_stream_frame(
                 stream,
                 &json!({
@@ -8296,14 +8733,16 @@ async fn handle_rpc_request(
 
             let downstream = match downstream {
                 Ok(result) => result,
-                Err(err) => return JsonRpcResponse::error(
-                    request.id,
-                    -32022,
-                    format!(
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32022,
+                        format!(
                         "invoke skill downstream mcp call failed: server={} tool={} error={err}",
                         resolved_tool.server_id, resolved_tool.tool_name
                     ),
-                ),
+                    )
+                }
             };
 
             JsonRpcResponse::success(
