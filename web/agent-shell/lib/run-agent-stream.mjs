@@ -121,6 +121,9 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
   if (!line) {
     return { emitted: false, terminalReached: false };
   }
+  if (line === '[DONE]') {
+    return { emitted: false, terminalReached: true };
+  }
 
   let parsed;
   try {

@@ -66,4 +66,12 @@ export async function run() {
   assert.equal(doneOutcome.emitted, false, 'done frame with no payload should not emit text');
   assert.equal(doneOutcome.terminalReached, true, 'done frame must terminate stream');
   assert.equal(writes.length, 0, 'done frame should not emit extra chunks');
+
+  const providerDoneOutcome = emitRunAgentStreamLine({
+    lineRaw: 'data: [DONE]',
+    textId: 'text-5',
+    writer,
+  });
+  assert.equal(providerDoneOutcome.emitted, false, '[DONE] marker should not emit text');
+  assert.equal(providerDoneOutcome.terminalReached, true, '[DONE] marker should terminate stream');
 }
