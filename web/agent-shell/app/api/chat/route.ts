@@ -27,6 +27,19 @@ type RunAgentToolCall = {
   argumentsText: string;
 };
 
+function parseToolCallInput(argumentsText: string): unknown {
+  const trimmed = argumentsText.trim();
+  if (!trimmed) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return trimmed;
+  }
+}
+
 function buildConversationInput(messages: UIMessage[]): string {
   const normalized = messages
     .map((message) => {
@@ -150,24 +163,6 @@ function extractStreamToolCalls(frame: RunAgentStreamPayload): RunAgentToolCall[
     .filter((entry): entry is RunAgentToolCall => entry !== null);
 }
 
-function formatToolCallDelta(calls: RunAgentToolCall[]): string {
-  if (calls.length === 0) return '';
-
-  const lines = calls.map((call) => {
-    const rawArgs = call.argumentsText.trim();
-    if (!rawArgs) {
-      return `\n[tool] ${call.name}`;
-    }
-
-    const compactArgs = rawArgs.replaceAll(/\s+/g, ' ');
-    const preview =
-      compactArgs.length > 160 ? `${compactArgs.slice(0, 160)}…` : compactArgs;
-    return `\n[tool] ${call.name} ${preview}`;
-  });
-
-  return lines.join('');
-}
-
 function isTerminalStreamFrame(frame: RunAgentStreamPayload): boolean {
   const payload = normalizeStreamPayload(frame);
   const status = payload.status;
@@ -266,11 +261,15 @@ export async function POST(req: Request) {
 
         const toolCalls = extractStreamToolCalls(parsed);
         if (toolCalls.length > 0) {
-          const toolDelta = formatToolCallDelta(toolCalls);
-          if (toolDelta) {
-            writer.write({ type: 'text-delta', id: textId, delta: toolDelta });
-            emitted = true;
+          for (const toolCall of toolCalls) {
+            writer.write({
+              type: 'tool-input-available',
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              input: parseToolCallInput(toolCall.argumentsText),
+            });
           }
+          emitted = true;
         }
 
         if (isTerminalStreamFrame(parsed)) {
