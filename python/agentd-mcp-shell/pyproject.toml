@@ -3,7 +3,7 @@ name = "agentd-mcp-shell"
 version = "0.1.0"
 description = "Builtin MCP shell server for agentd"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["mcp>=1.6.0"]
 
 [project.scripts]
 agentd-mcp-shell = "agentd_mcp_shell.server:main"

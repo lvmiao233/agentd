@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import tempfile
+from importlib import import_module
 from pathlib import Path
 from typing import Any
+
+FastMCP = import_module("mcp.server.fastmcp").FastMCP
+
+SERVER_NAME = "agentd-mcp-git"
+
+mcp = FastMCP(SERVER_NAME)
 
 
 def _ok(data: dict[str, Any]) -> dict[str, Any]:
@@ -46,7 +52,7 @@ def _run_git(repo_path: str, args: list[str]) -> subprocess.CompletedProcess[str
     )
 
 
-def git_status(repo_path: str = ".") -> dict[str, Any]:
+def _git_status_impl(repo_path: str = ".") -> dict[str, Any]:
     try:
         validated = _validate_repo_path(repo_path)
         completed = _run_git(str(validated), ["status", "--short", "--branch"])
@@ -70,7 +76,7 @@ def git_status(repo_path: str = ".") -> dict[str, Any]:
         return _error("GIT_OPERATION_FAILED", str(exc), {"repo_path": repo_path})
 
 
-def git_diff(repo_path: str = ".", revision: str | None = None) -> dict[str, Any]:
+def _git_diff_impl(repo_path: str = ".", revision: str | None = None) -> dict[str, Any]:
     try:
         validated = _validate_repo_path(repo_path)
         args = ["diff"]
@@ -102,7 +108,7 @@ def git_diff(repo_path: str = ".", revision: str | None = None) -> dict[str, Any
         )
 
 
-def git_log(repo_path: str = ".", max_count: int = 20) -> dict[str, Any]:
+def _git_log_impl(repo_path: str = ".", max_count: int = 20) -> dict[str, Any]:
     try:
         validated = _validate_repo_path(repo_path)
         bounded_count = max(1, max_count)
@@ -136,8 +142,10 @@ def git_log(repo_path: str = ".", max_count: int = 20) -> dict[str, Any]:
         )
 
 
-def git_apply_patch(
-    repo_path: str, patch: str, check_only: bool = False
+def _git_apply_patch_impl(
+    repo_path: str,
+    patch: str,
+    check_only: bool = False,
 ) -> dict[str, Any]:
     try:
         validated = _validate_repo_path(repo_path)
@@ -186,47 +194,42 @@ def git_apply_patch(
         return _error("GIT_OPERATION_FAILED", str(exc), {"repo_path": repo_path})
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agentd-mcp-git")
-    subparsers = parser.add_subparsers(dest="tool", required=True)
-
-    status_parser = subparsers.add_parser("git-status")
-    status_parser.add_argument("--repo-path", default=".")
-
-    diff_parser = subparsers.add_parser("git-diff")
-    diff_parser.add_argument("--repo-path", default=".")
-    diff_parser.add_argument("--revision")
-
-    log_parser = subparsers.add_parser("git-log")
-    log_parser.add_argument("--repo-path", default=".")
-    log_parser.add_argument("--max-count", type=int, default=20)
-
-    patch_parser = subparsers.add_parser("git-apply-patch")
-    patch_parser.add_argument("--repo-path", required=True)
-    patch_parser.add_argument("--patch", required=True)
-    patch_parser.add_argument("--check-only", action="store_true")
-
-    return parser
+@mcp.tool()
+def git_status(repo_path: str = ".") -> str:
+    """Show short git status for a repository."""
+    return json.dumps(_git_status_impl(repo_path=repo_path), ensure_ascii=False)
 
 
-def main() -> int:
-    parser = _build_parser()
-    args = parser.parse_args()
-    if args.tool == "git-status":
-        payload = git_status(repo_path=args.repo_path)
-    elif args.tool == "git-diff":
-        payload = git_diff(repo_path=args.repo_path, revision=args.revision)
-    elif args.tool == "git-log":
-        payload = git_log(repo_path=args.repo_path, max_count=args.max_count)
-    else:
-        payload = git_apply_patch(
-            repo_path=args.repo_path,
-            patch=args.patch,
-            check_only=args.check_only,
-        )
-    print(json.dumps(payload, ensure_ascii=False))
-    return 0 if payload.get("ok") else 1
+@mcp.tool()
+def git_diff(repo_path: str = ".", revision: str | None = None) -> str:
+    """Show git diff for working tree or a specific revision."""
+    return json.dumps(
+        _git_diff_impl(repo_path=repo_path, revision=revision),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def git_log(repo_path: str = ".", max_count: int = 20) -> str:
+    """Show recent commit entries in one-line format."""
+    return json.dumps(
+        _git_log_impl(repo_path=repo_path, max_count=max_count),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def git_apply_patch(repo_path: str, patch: str, check_only: bool = False) -> str:
+    """Validate and optionally apply a git patch."""
+    return json.dumps(
+        _git_apply_patch_impl(repo_path=repo_path, patch=patch, check_only=check_only),
+        ensure_ascii=False,
+    )
+
+
+def main() -> None:
+    mcp.run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

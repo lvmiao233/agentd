@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -48,15 +49,15 @@ def test_git_status_diff_log(tmp_path: Path) -> None:
 
     (repo / "notes.txt").write_text("line 1\nline 2\n", encoding="utf-8")
 
-    status_result = git_status(repo_path=str(repo))
+    status_result = json.loads(git_status(repo_path=str(repo)))
     assert status_result["ok"] is True
     assert "notes.txt" in status_result["data"]["output"]
 
-    diff_result = git_diff(repo_path=str(repo))
+    diff_result = json.loads(git_diff(repo_path=str(repo)))
     assert diff_result["ok"] is True
     assert "+line 2" in diff_result["data"]["output"]
 
-    log_result = git_log(repo_path=str(repo), max_count=5)
+    log_result = json.loads(git_log(repo_path=str(repo), max_count=5))
     assert log_result["ok"] is True
     assert any("init" in entry for entry in log_result["data"]["entries"])
 
@@ -66,7 +67,7 @@ def test_git_apply_patch_rejects_invalid_patch(tmp_path: Path) -> None:
     repo.mkdir()
     _init_repo(repo)
 
-    result = git_apply_patch(repo_path=str(repo), patch="not a patch")
+    result = json.loads(git_apply_patch(repo_path=str(repo), patch="not a patch"))
 
     assert result["ok"] is False
     error = result["error"]
@@ -89,7 +90,7 @@ def test_git_apply_patch_applies_valid_patch(tmp_path: Path) -> None:
         " line 1\n"
         "+line patched\n"
     )
-    result = git_apply_patch(repo_path=str(repo), patch=patch)
+    result = json.loads(git_apply_patch(repo_path=str(repo), patch=patch))
 
     assert result["ok"] is True
     assert result["data"]["applied"] is True

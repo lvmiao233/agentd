@@ -3,7 +3,7 @@ name = "agentd-mcp-search"
 version = "0.1.0"
 description = "Builtin MCP search server baseline for agentd"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["mcp>=1.6.0"]
 
 [project.scripts]
 agentd-mcp-search = "agentd_mcp_search.server:main"

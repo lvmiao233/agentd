@@ -3,22 +3,24 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 import uuid
+from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
+
+FastMCP = import_module("mcp.server.fastmcp").FastMCP
 
 SERVER_NAME = "agentd-mcp-shell"
 SERVER_VERSION = "0.1.0"
-PROTOCOL_VERSION = "2025-03-26"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_OUTPUT_CHARS = 12_000
 MAX_STORED_EXECUTIONS = 200
 
 _EXECUTIONS: dict[str, dict[str, Any]] = {}
+mcp = FastMCP(SERVER_NAME)
 
 
 @dataclass(slots=True)
@@ -177,7 +179,7 @@ def _render_execution(record: dict[str, Any], max_output_chars: int) -> dict[str
     }
 
 
-def execute_with_timeout(arguments: dict[str, Any]) -> dict[str, Any]:
+def _execute_with_timeout_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     command, shell_mode = _normalize_command(arguments.get("command"))
     timeout_seconds = _as_positive_float(
         arguments.get("timeout_seconds"),
@@ -237,7 +239,7 @@ def execute_with_timeout(arguments: dict[str, Any]) -> dict[str, Any]:
     return _render_execution(record, max_output_chars)
 
 
-def get_output(arguments: dict[str, Any]) -> dict[str, Any]:
+def _get_output_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     execution_id = _require_string(arguments.get("execution_id"), "execution_id")
     max_output_chars = _as_positive_int(
         arguments.get("max_output_chars"),
@@ -252,203 +254,45 @@ def get_output(arguments: dict[str, Any]) -> dict[str, Any]:
     return _render_execution(record, max_output_chars)
 
 
-TOOL_DECLARATIONS: list[dict[str, Any]] = [
-    {
-        "name": "execute_with_timeout",
-        "description": "Execute a command with timeout and output capture.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 1,
-                        },
-                    ]
-                },
-                "timeout_seconds": {"type": "number", "minimum": 0.001},
-                "max_output_chars": {"type": "integer", "minimum": 1},
-                "cwd": {"type": "string"},
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
-            },
-            "required": ["command"],
-        },
-    },
-    {
-        "name": "get_output",
-        "description": "Get captured output for a previous execution.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "execution_id": {"type": "string"},
-                "max_output_chars": {"type": "integer", "minimum": 1},
-            },
-            "required": ["execution_id"],
-        },
-    },
-]
+@mcp.tool()
+def execute_with_timeout(
+    command: str | list[str],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Execute a command with timeout and output capture."""
+    result = _execute_with_timeout_impl(
+        {
+            "command": command,
+            "timeout_seconds": timeout_seconds,
+            "max_output_chars": max_output_chars,
+            "cwd": cwd,
+            "env": env,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-TOOL_HANDLERS: dict[str, Any] = {
-    "execute_with_timeout": execute_with_timeout,
-    "get_output": get_output,
-}
+@mcp.tool()
+def get_output(
+    execution_id: str,
+    max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+) -> str:
+    """Get captured output for a previous execution."""
+    result = _get_output_impl(
+        {
+            "execution_id": execution_id,
+            "max_output_chars": max_output_chars,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-def list_tools() -> list[dict[str, Any]]:
-    return [dict(tool) for tool in TOOL_DECLARATIONS]
-
-
-def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    handler = TOOL_HANDLERS.get(tool_name)
-    if handler is None:
-        raise ToolError(-32601, f"unknown tool: {tool_name}")
-    if not isinstance(arguments, dict):
-        raise ToolError(-32602, "invalid params: `arguments` must be an object")
-    return handler(arguments)
-
-
-def build_initialize_result() -> dict[str, Any]:
-    return {
-        "protocolVersion": PROTOCOL_VERSION,
-        "serverInfo": {
-            "name": SERVER_NAME,
-            "version": SERVER_VERSION,
-        },
-        "capabilities": {
-            "tools": {
-                "listChanged": False,
-            }
-        },
-        "tools": list_tools(),
-    }
-
-
-def _success_response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": result,
-    }
-
-
-def _error_response(
-    request_id: Any,
-    code: int,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "code": code,
-        "message": message,
-    }
-    if details is not None:
-        payload["data"] = details
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "error": payload,
-    }
-
-
-def handle_request(request: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        return _error_response(None, -32600, "invalid request")
-
-    request_id = request.get("id")
-    method = request.get("method")
-    params = request.get("params", {})
-
-    try:
-        if method == "initialize":
-            return _success_response(request_id, build_initialize_result())
-
-        if method == "tools/list":
-            return _success_response(request_id, {"tools": list_tools()})
-
-        if method == "tools/call":
-            if not isinstance(params, dict):
-                raise ToolError(-32602, "invalid params: object required")
-
-            tool_name = _require_string(params.get("name"), "params.name")
-            arguments = params.get("arguments", {})
-            if arguments is None:
-                arguments = {}
-            if not isinstance(arguments, dict):
-                raise ToolError(-32602, "invalid params: `arguments` must be an object")
-
-            tool_result = call_tool(tool_name, arguments)
-            return _success_response(
-                request_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(tool_result, ensure_ascii=False),
-                        }
-                    ],
-                    "structuredContent": tool_result,
-                    "isError": False,
-                },
-            )
-
-        if method == "ping":
-            return _success_response(request_id, {"status": "ok"})
-
-        if method == "shutdown":
-            return _success_response(request_id, {"status": "bye"})
-
-        return _error_response(request_id, -32601, f"method not found: {method}")
-    except ToolError as err:
-        return _error_response(request_id, err.code, err.message, err.details)
-    except Exception as err:
-        return _error_response(request_id, -32603, f"internal error: {err}")
-
-
-def run_stdio_server(
-    input_stream: TextIO | None = None, output_stream: TextIO | None = None
-) -> int:
-    source = input_stream if input_stream is not None else sys.stdin
-    sink = output_stream if output_stream is not None else sys.stdout
-
-    for raw_line in source:
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        request: dict[str, Any] | None
-        try:
-            parsed = json.loads(line)
-            request = parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError as err:
-            response = _error_response(None, -32700, f"parse error: {err.msg}")
-            sink.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sink.flush()
-            continue
-
-        if request is None:
-            response = _error_response(None, -32600, "invalid request")
-        else:
-            response = handle_request(request)
-
-        sink.write(json.dumps(response, ensure_ascii=False) + "\n")
-        sink.flush()
-
-        if request is not None and request.get("method") == "shutdown":
-            break
-
-    return 0
-
-
-def main() -> int:
-    return run_stdio_server()
+def main() -> None:
+    mcp.run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

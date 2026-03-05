@@ -3,7 +3,7 @@ name = "agentd-mcp-git"
 version = "0.1.0"
 description = "Builtin MCP git server baseline for agentd"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["mcp>=1.6.0"]
 
 [project.scripts]
 agentd-mcp-git = "agentd_mcp_git.server:main"

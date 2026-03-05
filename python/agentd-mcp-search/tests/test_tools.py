@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 _module_path = (
@@ -26,14 +27,14 @@ def test_ripgrep_and_find_definition(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    rg_result = ripgrep("greet", root=str(tmp_path))
+    rg_result = json.loads(ripgrep("greet", root=str(tmp_path)))
     assert rg_result["ok"] is True
     rg_matches = rg_result["data"]["matches"]
     assert rg_matches
     assert rg_matches[0]["file"].endswith("sample.py")
     assert isinstance(rg_matches[0]["line"], int)
 
-    fd_result = find_definition("greet", root=str(tmp_path))
+    fd_result = json.loads(find_definition("greet", root=str(tmp_path)))
     assert fd_result["ok"] is True
     fd_matches = fd_result["data"]["matches"]
     assert fd_matches
@@ -42,7 +43,7 @@ def test_ripgrep_and_find_definition(tmp_path: Path) -> None:
 
 def test_semantic_search_placeholder_payload(tmp_path: Path) -> None:
     (tmp_path / "x.py").write_text("x = 1\n", encoding="utf-8")
-    result = semantic_search("meaning of x", root=str(tmp_path))
+    result = json.loads(semantic_search("meaning of x", root=str(tmp_path)))
 
     assert result["ok"] is True
     assert result["data"]["tool"] == "semantic_search"
@@ -53,7 +54,7 @@ def test_semantic_search_placeholder_payload(tmp_path: Path) -> None:
 
 def test_ripgrep_returns_structured_error_for_missing_root(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
-    result = ripgrep("hello", root=str(missing))
+    result = json.loads(ripgrep("hello", root=str(missing)))
 
     assert result["ok"] is False
     error = result["error"]

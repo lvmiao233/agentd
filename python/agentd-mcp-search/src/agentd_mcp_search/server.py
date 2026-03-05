@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import subprocess
+from importlib import import_module
 from pathlib import Path
 from typing import Any
+
+FastMCP = import_module("mcp.server.fastmcp").FastMCP
+
+SERVER_NAME = "agentd-mcp-search"
+
+mcp = FastMCP(SERVER_NAME)
 
 
 def _ok(data: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +57,9 @@ def _validate_root(root: str) -> Path:
     return candidate
 
 
-def ripgrep(pattern: str, root: str = ".", max_results: int = 200) -> dict[str, Any]:
+def _ripgrep_impl(
+    pattern: str, root: str = ".", max_results: int = 200
+) -> dict[str, Any]:
     try:
         if not pattern:
             return _error(
@@ -103,7 +111,7 @@ def ripgrep(pattern: str, root: str = ".", max_results: int = 200) -> dict[str, 
         )
 
 
-def find_definition(
+def _find_definition_impl(
     symbol: str, root: str = ".", max_results: int = 50
 ) -> dict[str, Any]:
     try:
@@ -166,7 +174,7 @@ def find_definition(
         )
 
 
-def semantic_search(
+def _semantic_search_impl(
     query: str, root: str = ".", max_results: int = 20
 ) -> dict[str, Any]:
     try:
@@ -196,44 +204,36 @@ def semantic_search(
         )
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agentd-mcp-search")
-    subparsers = parser.add_subparsers(dest="tool", required=True)
-
-    rg_parser = subparsers.add_parser("ripgrep")
-    rg_parser.add_argument("pattern")
-    rg_parser.add_argument("--root", default=".")
-    rg_parser.add_argument("--max-results", type=int, default=200)
-
-    fd_parser = subparsers.add_parser("find-definition")
-    fd_parser.add_argument("symbol")
-    fd_parser.add_argument("--root", default=".")
-    fd_parser.add_argument("--max-results", type=int, default=50)
-
-    semantic_parser = subparsers.add_parser("semantic-search")
-    semantic_parser.add_argument("query")
-    semantic_parser.add_argument("--root", default=".")
-    semantic_parser.add_argument("--max-results", type=int, default=20)
-
-    return parser
+@mcp.tool()
+def ripgrep(pattern: str, root: str = ".", max_results: int = 200) -> str:
+    """Search files using ripgrep and return structured match records."""
+    return json.dumps(
+        _ripgrep_impl(pattern=pattern, root=root, max_results=max_results),
+        ensure_ascii=False,
+    )
 
 
-def main() -> int:
-    parser = _build_parser()
-    args = parser.parse_args()
-    if args.tool == "ripgrep":
-        payload = ripgrep(args.pattern, root=args.root, max_results=args.max_results)
-    elif args.tool == "find-definition":
-        payload = find_definition(
-            args.symbol, root=args.root, max_results=args.max_results
-        )
-    else:
-        payload = semantic_search(
-            args.query, root=args.root, max_results=args.max_results
-        )
-    print(json.dumps(payload, ensure_ascii=False))
-    return 0 if payload.get("ok") else 1
+@mcp.tool()
+def find_definition(symbol: str, root: str = ".", max_results: int = 50) -> str:
+    """Find likely code definitions for a symbol using ripgrep patterns."""
+    return json.dumps(
+        _find_definition_impl(symbol=symbol, root=root, max_results=max_results),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def semantic_search(query: str, root: str = ".", max_results: int = 20) -> str:
+    """Placeholder semantic search tool; currently returns no matches."""
+    return json.dumps(
+        _semantic_search_impl(query=query, root=root, max_results=max_results),
+        ensure_ascii=False,
+    )
+
+
+def main() -> None:
+    mcp.run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

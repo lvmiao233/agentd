@@ -3,20 +3,23 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
+from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
+
+FastMCP = import_module("mcp.server.fastmcp").FastMCP
 
 SERVER_NAME = "agentd-mcp-fs"
 SERVER_VERSION = "0.1.0"
-PROTOCOL_VERSION = "2025-03-26"
 
 DEFAULT_MAX_MATCHES = 50
 DEFAULT_MAX_TREE_DEPTH = 3
 DEFAULT_MAX_TREE_ENTRIES = 200
 DEFAULT_MAX_READ_CHARS = 200_000
 DEFAULT_MAX_FILE_BYTES = 2_000_000
+
+mcp = FastMCP(SERVER_NAME)
 
 
 @dataclass(slots=True)
@@ -71,7 +74,7 @@ def _sorted_entries(path: Path) -> list[Path]:
     )
 
 
-def read_file(arguments: dict[str, Any]) -> dict[str, Any]:
+def _read_file_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     path_value = _require_string(arguments.get("path"), "path")
     encoding = _require_string(arguments.get("encoding", "utf-8"), "encoding")
     max_chars = _as_positive_int(
@@ -106,7 +109,7 @@ def read_file(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_directory(arguments: dict[str, Any]) -> dict[str, Any]:
+def _list_directory_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     path_value = _require_string(arguments.get("path", "."), "path")
     include_hidden = bool(arguments.get("include_hidden", True))
 
@@ -145,7 +148,7 @@ def list_directory(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def search_files(arguments: dict[str, Any]) -> dict[str, Any]:
+def _search_files_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     base_path_value = _require_string(arguments.get("path", "."), "path")
     pattern_text = _require_string(arguments.get("pattern"), "pattern")
     use_regex = bool(arguments.get("use_regex", False))
@@ -240,7 +243,7 @@ def _apply_single_edit(
     return text.replace(search, replace, 1), 1
 
 
-def patch_file(arguments: dict[str, Any]) -> dict[str, Any]:
+def _patch_file_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     path_value = _require_string(arguments.get("path"), "path")
     encoding = _require_string(arguments.get("encoding", "utf-8"), "encoding")
 
@@ -351,7 +354,7 @@ def _build_tree_node(
     return node
 
 
-def tree(arguments: dict[str, Any]) -> dict[str, Any]:
+def _tree_impl(arguments: dict[str, Any]) -> dict[str, Any]:
     path_value = _require_string(arguments.get("path", "."), "path")
     max_depth = _as_positive_int(
         arguments.get("max_depth"), "max_depth", DEFAULT_MAX_TREE_DEPTH
@@ -376,245 +379,101 @@ def tree(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-TOOL_DECLARATIONS: list[dict[str, Any]] = [
-    {
-        "name": "read_file",
-        "description": "Read text content from a file.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "encoding": {"type": "string", "default": "utf-8"},
-                "max_chars": {"type": "integer", "minimum": 1},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "list_directory",
-        "description": "List entries in a directory.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "default": "."},
-                "include_hidden": {"type": "boolean", "default": True},
-            },
-        },
-    },
-    {
-        "name": "search_files",
-        "description": "Search text across files recursively.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "default": "."},
-                "pattern": {"type": "string"},
-                "use_regex": {"type": "boolean", "default": False},
-                "case_sensitive": {"type": "boolean", "default": False},
-                "max_matches": {"type": "integer", "minimum": 1},
-                "max_file_bytes": {"type": "integer", "minimum": 1},
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "patch_file",
-        "description": "Patch a file using one or more search/replace edits.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "search": {"type": "string"},
-                "replace": {"type": "string"},
-                "replace_all": {"type": "boolean", "default": False},
-                "edits": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "search": {"type": "string"},
-                            "replace": {"type": "string"},
-                            "replace_all": {"type": "boolean", "default": False},
-                        },
-                        "required": ["search", "replace"],
-                    },
-                },
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "tree",
-        "description": "Return a structured directory tree.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "default": "."},
-                "max_depth": {"type": "integer", "minimum": 1},
-                "max_entries": {"type": "integer", "minimum": 1},
-            },
-        },
-    },
-]
+@mcp.tool()
+def read_file(
+    path: str, encoding: str = "utf-8", max_chars: int = DEFAULT_MAX_READ_CHARS
+) -> str:
+    """Read text content from a file."""
+    result = _read_file_impl(
+        {
+            "path": path,
+            "encoding": encoding,
+            "max_chars": max_chars,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-TOOL_HANDLERS: dict[str, Any] = {
-    "read_file": read_file,
-    "list_directory": list_directory,
-    "search_files": search_files,
-    "patch_file": patch_file,
-    "tree": tree,
-}
+@mcp.tool()
+def list_directory(path: str = ".", include_hidden: bool = True) -> str:
+    """List entries in a directory."""
+    result = _list_directory_impl(
+        {
+            "path": path,
+            "include_hidden": include_hidden,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-def list_tools() -> list[dict[str, Any]]:
-    return [dict(tool) for tool in TOOL_DECLARATIONS]
+@mcp.tool()
+def search_files(
+    pattern: str,
+    path: str = ".",
+    use_regex: bool = False,
+    case_sensitive: bool = False,
+    max_matches: int = DEFAULT_MAX_MATCHES,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> str:
+    """Search text across files recursively."""
+    result = _search_files_impl(
+        {
+            "path": path,
+            "pattern": pattern,
+            "use_regex": use_regex,
+            "case_sensitive": case_sensitive,
+            "max_matches": max_matches,
+            "max_file_bytes": max_file_bytes,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    handler = TOOL_HANDLERS.get(tool_name)
-    if handler is None:
-        raise ToolError(-32601, f"unknown tool: {tool_name}")
-    if not isinstance(arguments, dict):
-        raise ToolError(-32602, "invalid params: `arguments` must be an object")
-    return handler(arguments)
-
-
-def build_initialize_result() -> dict[str, Any]:
-    return {
-        "protocolVersion": PROTOCOL_VERSION,
-        "serverInfo": {
-            "name": SERVER_NAME,
-            "version": SERVER_VERSION,
-        },
-        "capabilities": {
-            "tools": {
-                "listChanged": False,
-            }
-        },
-        "tools": list_tools(),
+@mcp.tool()
+def patch_file(
+    path: str,
+    search: str | None = None,
+    replace: str = "",
+    replace_all: bool = False,
+    edits: list[dict[str, Any]] | None = None,
+    encoding: str = "utf-8",
+) -> str:
+    """Patch a file using one or more search/replace edits."""
+    arguments: dict[str, Any] = {
+        "path": path,
+        "encoding": encoding,
     }
+    if edits is not None:
+        arguments["edits"] = edits
+    else:
+        arguments["search"] = search
+        arguments["replace"] = replace
+        arguments["replace_all"] = replace_all
+
+    result = _patch_file_impl(arguments)
+    return json.dumps(result, ensure_ascii=False)
 
 
-def _success_response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": result,
-    }
+@mcp.tool()
+def tree(
+    path: str = ".",
+    max_depth: int = DEFAULT_MAX_TREE_DEPTH,
+    max_entries: int = DEFAULT_MAX_TREE_ENTRIES,
+) -> str:
+    """Return a structured directory tree."""
+    result = _tree_impl(
+        {
+            "path": path,
+            "max_depth": max_depth,
+            "max_entries": max_entries,
+        }
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
-def _error_response(
-    request_id: Any,
-    code: int,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "code": code,
-        "message": message,
-    }
-    if details is not None:
-        payload["data"] = details
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "error": payload,
-    }
-
-
-def handle_request(request: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        return _error_response(None, -32600, "invalid request")
-
-    request_id = request.get("id")
-    method = request.get("method")
-    params = request.get("params", {})
-
-    try:
-        if method == "initialize":
-            return _success_response(request_id, build_initialize_result())
-
-        if method == "tools/list":
-            return _success_response(request_id, {"tools": list_tools()})
-
-        if method == "tools/call":
-            if not isinstance(params, dict):
-                raise ToolError(-32602, "invalid params: object required")
-
-            tool_name = _require_string(params.get("name"), "params.name")
-            arguments = params.get("arguments", {})
-            if arguments is None:
-                arguments = {}
-            if not isinstance(arguments, dict):
-                raise ToolError(-32602, "invalid params: `arguments` must be an object")
-
-            tool_result = call_tool(tool_name, arguments)
-            return _success_response(
-                request_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(tool_result, ensure_ascii=False),
-                        }
-                    ],
-                    "structuredContent": tool_result,
-                    "isError": False,
-                },
-            )
-
-        if method == "ping":
-            return _success_response(request_id, {"status": "ok"})
-
-        if method == "shutdown":
-            return _success_response(request_id, {"status": "bye"})
-
-        return _error_response(request_id, -32601, f"method not found: {method}")
-    except ToolError as err:
-        return _error_response(request_id, err.code, err.message, err.details)
-    except Exception as err:
-        return _error_response(request_id, -32603, f"internal error: {err}")
-
-
-def run_stdio_server(
-    input_stream: TextIO | None = None, output_stream: TextIO | None = None
-) -> int:
-    source = input_stream if input_stream is not None else sys.stdin
-    sink = output_stream if output_stream is not None else sys.stdout
-
-    for raw_line in source:
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        request: dict[str, Any] | None
-        try:
-            parsed = json.loads(line)
-            request = parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError as err:
-            response = _error_response(None, -32700, f"parse error: {err.msg}")
-            sink.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sink.flush()
-            continue
-
-        if request is None:
-            response = _error_response(None, -32600, "invalid request")
-        else:
-            response = handle_request(request)
-
-        sink.write(json.dumps(response, ensure_ascii=False) + "\n")
-        sink.flush()
-
-        if request is not None and request.get("method") == "shutdown":
-            break
-
-    return 0
-
-
-def main() -> int:
-    return run_stdio_server()
+def main() -> None:
+    mcp.run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

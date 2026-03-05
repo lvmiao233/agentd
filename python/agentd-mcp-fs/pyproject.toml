@@ -3,7 +3,7 @@ name = "agentd-mcp-fs"
 version = "0.1.0"
 description = "Builtin MCP filesystem server for agentd"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["mcp>=1.6.0"]
 
 [project.scripts]
 agentd-mcp-fs = "agentd_mcp_fs.server:main"
