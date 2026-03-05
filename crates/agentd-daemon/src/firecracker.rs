@@ -6,7 +6,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-#[cfg(test)]
 use tokio::io::AsyncBufReadExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -560,14 +559,32 @@ impl FirecrackerExecutor {
             )));
         }
 
-        wait_for_vm_running(&api_socket, spec.launch_timeout).await?;
+        if let Err(err) = wait_for_vm_running(&api_socket, spec.launch_timeout).await {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(err);
+        }
 
-        wait_for_path_exists(
+        if let Err(err) = wait_for_path_exists(
             &vm_config.vsock_path,
             spec.launch_timeout,
             "firecracker vsock device",
         )
-        .await?;
+        .await
+        {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(err);
+        }
+
+        if let Err(err) = wait_for_guest_readiness_on_vsock(&vm_config.vsock_path, spec.launch_timeout).await {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(err);
+        }
 
         Ok(FirecrackerVmHandle {
             agent_id: spec.agent_id,
@@ -775,6 +792,58 @@ async fn wait_for_path_exists(
                 timeout_duration.as_millis()
             )));
         }
+        sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
+    }
+}
+
+async fn wait_for_guest_readiness_on_vsock(
+    vsock_path: &Path,
+    timeout_duration: Duration,
+) -> Result<(), AgentError> {
+    let deadline = Instant::now() + timeout_duration;
+    let mut last_error: Option<String> = None;
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            let suffix = last_error
+                .as_deref()
+                .map(|message| format!(" last_error={message}"))
+                .unwrap_or_default();
+            return Err(AgentError::Runtime(format!(
+                "firecracker launch timeout waiting for guest readiness on vsock: path={} timeout_ms={}{}",
+                vsock_path.display(),
+                timeout_duration.as_millis(),
+                suffix,
+            )));
+        }
+
+        match UnixStream::connect(vsock_path).await {
+            Ok(stream) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(AgentError::Runtime(format!(
+                        "firecracker launch timeout waiting for guest readiness on vsock: path={} timeout_ms={}",
+                        vsock_path.display(),
+                        timeout_duration.as_millis(),
+                    )));
+                }
+
+                let (read_half, write_half) = stream.into_split();
+                let mut read_half = BufReader::new(read_half);
+                let mut write_half = write_half;
+                match probe_guest_readiness(&mut read_half, &mut write_half, remaining).await {
+                    Ok(()) => return Ok(()),
+                    Err(err) => {
+                        last_error = Some(err.to_string());
+                    }
+                }
+            }
+            Err(err) => {
+                last_error = Some(format!("connect failed: {err}"));
+            }
+        }
+
         sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
     }
 }
@@ -1002,6 +1071,72 @@ fn enforce_network_isolation_policy(config: &FirecrackerVmConfig) -> Result<(), 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_guest_readiness_on_vsock_succeeds() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-ready-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+        let socket_path = runtime_root.join("guest-ready.sock");
+        prepare_socket_file(&socket_path, "test guest readiness socket").expect("prepare socket path");
+
+        let listener = UnixListener::bind(&socket_path).expect("bind guest readiness socket");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept readiness probe");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+
+            let mut line = String::new();
+            let read = reader
+                .read_line(&mut line)
+                .await
+                .expect("read readiness probe payload");
+            assert!(read > 0, "probe payload should be non-empty");
+            let payload: serde_json::Value =
+                serde_json::from_str(line.trim_end()).expect("decode readiness probe payload");
+            assert_eq!(payload["rpc"], json!("daemon.ready"));
+
+            write_half
+                .write_all(b"{\"status\":\"ok\"}\n")
+                .await
+                .expect("write readiness response");
+            write_half.flush().await.expect("flush readiness response");
+        });
+
+        wait_for_guest_readiness_on_vsock(&socket_path, Duration::from_millis(800))
+            .await
+            .expect("guest readiness probe should succeed");
+
+        server.await.expect("server task should join");
+        let _ = cleanup_socket_file(&socket_path, "test guest readiness socket");
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
+    async fn wait_for_guest_readiness_on_vsock_times_out_without_listener() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-ready-timeout-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+        let socket_path = runtime_root.join("missing.sock");
+
+        let err = wait_for_guest_readiness_on_vsock(&socket_path, Duration::from_millis(120))
+            .await
+            .expect_err("readiness should time out when no listener is present");
+        match err {
+            AgentError::Runtime(message) => {
+                assert!(
+                    message.contains("waiting for guest readiness on vsock"),
+                    "unexpected timeout error: {message}"
+                );
+            }
+            other => panic!("expected runtime timeout error, got: {other}"),
+        }
+
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
 }
 
 #[cfg(all(test, feature = "firecracker-integration"))]
