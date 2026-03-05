@@ -8047,7 +8047,7 @@ where
         )));
     }
 
-    let mut pending = String::new();
+    let mut pending_bytes = Vec::<u8>::new();
     let mut event_data_lines = Vec::<String>::new();
     let mut output = String::new();
     let mut input_tokens = 0;
@@ -8058,11 +8058,14 @@ where
         .await
         .map_err(|err| AgentError::Runtime(format!("read run-agent stream chunk failed: {err}")))?
     {
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        pending_bytes.extend_from_slice(&chunk);
 
-        while let Some(line_end) = pending.find('\n') {
-            let line = pending[..line_end].trim_end_matches('\r').to_string();
-            pending.drain(..=line_end);
+        while let Some(line_end) = pending_bytes.iter().position(|byte| *byte == b'\n') {
+            let line_bytes = pending_bytes.drain(..=line_end).collect::<Vec<_>>();
+            let line = String::from_utf8_lossy(&line_bytes)
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string();
 
             if line.is_empty() {
                 if event_data_lines.is_empty() {
@@ -8134,8 +8137,9 @@ where
         }
     }
 
-    if !pending.trim().is_empty() {
-        if let Some(payload) = pending.trim().strip_prefix("data:") {
+    if !pending_bytes.is_empty() {
+        let trailing = String::from_utf8_lossy(&pending_bytes).trim().to_string();
+        if let Some(payload) = trailing.strip_prefix("data:") {
             event_data_lines.push(payload.trim_start().to_string());
         }
     }
