@@ -207,7 +207,7 @@ export type RuntimeEvent = {
 
 export type SubscribeEventsResult = {
   events: RuntimeEvent[];
-  cursor?: string;
+  next_cursor?: string;
 };
 
 export async function subscribeEvents(params?: {

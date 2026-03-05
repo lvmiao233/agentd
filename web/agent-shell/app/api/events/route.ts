@@ -7,12 +7,15 @@ export async function GET(req: Request) {
   const limit = searchParams.get('limit')
     ? Number(searchParams.get('limit'))
     : 50;
+  const waitTimeoutSecs = searchParams.get('wait_timeout_secs')
+    ? Number(searchParams.get('wait_timeout_secs'))
+    : 5;
 
   try {
     const result = await subscribeEvents({
       cursor,
       limit,
-      wait_timeout_secs: 0,
+      wait_timeout_secs: waitTimeoutSecs,
     });
     return NextResponse.json(result);
   } catch (err) {

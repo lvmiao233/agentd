@@ -58,7 +58,7 @@ export default function EventsPage() {
       if (!res.ok) throw new Error('fetch failed');
       const data = await res.json();
       const newEvents: RuntimeEvent[] = data.events ?? [];
-      if (data.cursor) cursorRef.current = data.cursor;
+      if (data.next_cursor) cursorRef.current = data.next_cursor;
       if (newEvents.length > 0) {
         setEvents((prev) => {
           const seen = new Set(prev.map((e) => e.id));
