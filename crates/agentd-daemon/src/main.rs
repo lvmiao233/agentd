@@ -221,6 +221,18 @@ struct DaemonConfig {
     agent_profiles_dir: String,
     #[serde(default = "default_mcp_servers_dir")]
     mcp_servers_dir: String,
+    #[serde(default)]
+    firecracker_enabled: bool,
+    #[serde(default = "default_firecracker_binary")]
+    firecracker_binary: String,
+    #[serde(default = "default_firecracker_kernel_path")]
+    firecracker_kernel_path: String,
+    #[serde(default = "default_firecracker_rootfs_path")]
+    firecracker_rootfs_path: String,
+    #[serde(default = "default_firecracker_vsock_root_dir")]
+    firecracker_vsock_root_dir: String,
+    #[serde(default = "default_firecracker_api_socket_root_dir")]
+    firecracker_api_socket_root_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -272,6 +284,12 @@ impl Default for DaemonConfig {
             agent_card_root: default_agent_card_root(),
             agent_profiles_dir: default_agent_profiles_dir(),
             mcp_servers_dir: default_mcp_servers_dir(),
+            firecracker_enabled: false,
+            firecracker_binary: default_firecracker_binary(),
+            firecracker_kernel_path: default_firecracker_kernel_path(),
+            firecracker_rootfs_path: default_firecracker_rootfs_path(),
+            firecracker_vsock_root_dir: default_firecracker_vsock_root_dir(),
+            firecracker_api_socket_root_dir: default_firecracker_api_socket_root_dir(),
         }
     }
 }
@@ -337,6 +355,26 @@ fn default_agent_profiles_dir() -> String {
 
 fn default_mcp_servers_dir() -> String {
     "configs/mcp-servers".to_string()
+}
+
+fn default_firecracker_binary() -> String {
+    "/usr/bin/firecracker".to_string()
+}
+
+fn default_firecracker_kernel_path() -> String {
+    "data/firecracker/vmlinux.bin".to_string()
+}
+
+fn default_firecracker_rootfs_path() -> String {
+    "data/firecracker/rootfs.ext4".to_string()
+}
+
+fn default_firecracker_vsock_root_dir() -> String {
+    "/tmp/agentd-firecracker/vsock".to_string()
+}
+
+fn default_firecracker_api_socket_root_dir() -> String {
+    "/tmp/agentd-firecracker/api".to_string()
 }
 
 fn default_one_api_command() -> String {
@@ -1445,6 +1483,34 @@ fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config = toml::from_str::<AppConfig>(&content)?;
     Ok(config)
+}
+
+fn build_firecracker_executor_from_config(
+    config: &DaemonConfig,
+) -> Result<Option<Arc<firecracker::FirecrackerExecutor>>, Box<dyn std::error::Error>> {
+    if !config.firecracker_enabled {
+        return Ok(None);
+    }
+
+    let executor = firecracker::FirecrackerExecutor::builder()
+        .firecracker_binary(PathBuf::from(&config.firecracker_binary))
+        .kernel_path(PathBuf::from(&config.firecracker_kernel_path))
+        .rootfs_path(PathBuf::from(&config.firecracker_rootfs_path))
+        .vsock_root_dir(PathBuf::from(&config.firecracker_vsock_root_dir))
+        .api_socket_root_dir(PathBuf::from(&config.firecracker_api_socket_root_dir))
+        .launch_mode(firecracker::FirecrackerLaunchMode::RealFirecracker)
+        .build()
+        .map_err(|err| {
+            format!(
+                "build firecracker executor failed: enabled={} binary={} kernel={} rootfs={} error={err}",
+                config.firecracker_enabled,
+                config.firecracker_binary,
+                config.firecracker_kernel_path,
+                config.firecracker_rootfs_path,
+            )
+        })?;
+
+    Ok(Some(Arc::new(executor)))
 }
 
 fn notify_systemd(state: &str) {
@@ -9487,7 +9553,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+    let firecracker_executor = build_firecracker_executor_from_config(&config.daemon)?;
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
         if config.one_api.enabled {
             "starting"
         } else {
@@ -9496,6 +9563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lifecycle_manager,
         PathBuf::from(config.daemon.agent_card_root.clone()),
         mcp_host.clone(),
+        firecracker_executor,
     );
 
     let health_listener = TcpListener::bind(bind_addr).await?;

@@ -1,17 +1,33 @@
 use agentd_core::AgentError;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(test)]
+use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 use uuid::Uuid;
 
+#[cfg(test)]
 const DEFAULT_VSOCK_TIMEOUT_SECS: u64 = 5;
+
+const API_POLL_INTERVAL_MS: u64 = 25;
+const DEFAULT_FIRECRACKER_BINARY: &str = "/usr/bin/firecracker";
+const DEFAULT_FIRECRACKER_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirecrackerLaunchMode {
+    RealFirecracker,
+    MockProcess,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirecrackerNetworkConfig {
@@ -92,6 +108,7 @@ pub struct FirecrackerAgentLaunchSpec {
 
 #[derive(Debug, Clone)]
 pub struct FirecrackerExecutor {
+    firecracker_binary: PathBuf,
     kernel_path: PathBuf,
     rootfs_path: PathBuf,
     default_vcpu_count: u8,
@@ -100,10 +117,13 @@ pub struct FirecrackerExecutor {
     default_network_policy: NetworkIsolationPolicy,
     default_jailer: Option<JailerConfig>,
     vsock_root_dir: PathBuf,
+    api_socket_root_dir: PathBuf,
+    launch_mode: FirecrackerLaunchMode,
 }
 
 #[derive(Debug, Clone)]
 pub struct FirecrackerExecutorBuilder {
+    firecracker_binary: PathBuf,
     kernel_path: Option<PathBuf>,
     rootfs_path: Option<PathBuf>,
     default_vcpu_count: u8,
@@ -112,11 +132,14 @@ pub struct FirecrackerExecutorBuilder {
     default_network_policy: NetworkIsolationPolicy,
     default_jailer: Option<JailerConfig>,
     vsock_root_dir: PathBuf,
+    api_socket_root_dir: PathBuf,
+    launch_mode: FirecrackerLaunchMode,
 }
 
 impl Default for FirecrackerExecutorBuilder {
     fn default() -> Self {
         Self {
+            firecracker_binary: PathBuf::from(DEFAULT_FIRECRACKER_BINARY),
             kernel_path: None,
             rootfs_path: None,
             default_vcpu_count: 1,
@@ -124,12 +147,28 @@ impl Default for FirecrackerExecutorBuilder {
             default_network: Some(FirecrackerNetworkConfig::default()),
             default_network_policy: NetworkIsolationPolicy::AllowAll,
             default_jailer: Some(JailerConfig::default()),
-            vsock_root_dir: std::env::temp_dir().join("agentd-firecracker"),
+            vsock_root_dir: std::env::temp_dir().join("agentd-firecracker-vsock"),
+            api_socket_root_dir: std::env::temp_dir().join("agentd-firecracker-api"),
+            launch_mode: {
+                #[cfg(test)]
+                {
+                    FirecrackerLaunchMode::MockProcess
+                }
+                #[cfg(not(test))]
+                {
+                    FirecrackerLaunchMode::RealFirecracker
+                }
+            },
         }
     }
 }
 
 impl FirecrackerExecutorBuilder {
+    pub fn firecracker_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.firecracker_binary = path.into();
+        self
+    }
+
     pub fn kernel_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.kernel_path = Some(path.into());
         self
@@ -155,6 +194,16 @@ impl FirecrackerExecutorBuilder {
         self
     }
 
+    pub fn api_socket_root_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.api_socket_root_dir = path.into();
+        self
+    }
+
+    pub fn launch_mode(mut self, mode: FirecrackerLaunchMode) -> Self {
+        self.launch_mode = mode;
+        self
+    }
+
     pub fn default_network_policy(mut self, policy: NetworkIsolationPolicy) -> Self {
         self.default_network_policy = policy;
         self
@@ -166,12 +215,12 @@ impl FirecrackerExecutorBuilder {
     }
 
     pub fn build(self) -> Result<FirecrackerExecutor, AgentError> {
-        let kernel_path = self
-            .kernel_path
-            .ok_or_else(|| AgentError::InvalidInput("firecracker kernel_path is required".to_string()))?;
-        let rootfs_path = self
-            .rootfs_path
-            .ok_or_else(|| AgentError::InvalidInput("firecracker rootfs_path is required".to_string()))?;
+        let kernel_path = self.kernel_path.ok_or_else(|| {
+            AgentError::InvalidInput("firecracker kernel_path is required".to_string())
+        })?;
+        let rootfs_path = self.rootfs_path.ok_or_else(|| {
+            AgentError::InvalidInput("firecracker rootfs_path is required".to_string())
+        })?;
 
         if self.default_vcpu_count == 0 {
             return Err(AgentError::InvalidInput(
@@ -186,6 +235,7 @@ impl FirecrackerExecutorBuilder {
         }
 
         Ok(FirecrackerExecutor {
+            firecracker_binary: self.firecracker_binary,
             kernel_path,
             rootfs_path,
             default_vcpu_count: self.default_vcpu_count,
@@ -194,6 +244,8 @@ impl FirecrackerExecutorBuilder {
             default_network_policy: self.default_network_policy,
             default_jailer: self.default_jailer,
             vsock_root_dir: self.vsock_root_dir,
+            api_socket_root_dir: self.api_socket_root_dir,
+            launch_mode: self.launch_mode,
         })
     }
 }
@@ -207,6 +259,12 @@ impl FirecrackerExecutor {
         let compact = agent_id.simple().to_string();
         let suffix = &compact[..12];
         self.vsock_root_dir.join(format!("a-{suffix}.sock"))
+    }
+
+    pub fn api_socket_for_agent(&self, agent_id: Uuid) -> PathBuf {
+        let compact = agent_id.simple().to_string();
+        let suffix = &compact[..12];
+        self.api_socket_root_dir.join(format!("a-{suffix}.api.sock"))
     }
 
     pub fn build_vm_config(
@@ -260,7 +318,19 @@ impl FirecrackerExecutor {
 
         let vm_config = self.build_vm_config(&spec)?;
         enforce_network_isolation_policy(&vm_config)?;
-        prepare_vsock_socket(&vm_config.vsock_path)?;
+
+        match self.launch_mode {
+            FirecrackerLaunchMode::MockProcess => self.launch_mock_agent(spec, vm_config).await,
+            FirecrackerLaunchMode::RealFirecracker => self.launch_real_vm(spec, vm_config).await,
+        }
+    }
+
+    async fn launch_mock_agent(
+        &self,
+        spec: FirecrackerAgentLaunchSpec,
+        vm_config: FirecrackerVmConfig,
+    ) -> Result<FirecrackerVmHandle, AgentError> {
+        prepare_socket_file(&vm_config.vsock_path, "firecracker vsock")?;
 
         let listener = UnixListener::bind(&vm_config.vsock_path).map_err(|err| {
             AgentError::Runtime(format!(
@@ -323,7 +393,7 @@ impl FirecrackerExecutor {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
-                let _ = cleanup_vsock_socket(&vm_config.vsock_path);
+                let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
                 return Err(AgentError::Runtime(format!(
                     "spawn firecracker vm process failed: command={} error={err}",
                     spec.command
@@ -336,7 +406,7 @@ impl FirecrackerExecutor {
             Ok(Ok(accepted)) => accepted,
             Ok(Err(err)) => {
                 let _ = terminate_child(&mut child).await;
-                let _ = cleanup_vsock_socket(&vm_config.vsock_path);
+                let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
                 return Err(AgentError::Runtime(format!(
                     "accept firecracker vsock bridge failed: path={} error={err}",
                     vm_config.vsock_path.display()
@@ -344,7 +414,7 @@ impl FirecrackerExecutor {
             }
             Err(_) => {
                 let _ = terminate_child(&mut child).await;
-                let _ = cleanup_vsock_socket(&vm_config.vsock_path);
+                let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
                 return Err(AgentError::Runtime(format!(
                     "firecracker launch timeout: agent_id={} timeout_ms={}",
                     spec.agent_id,
@@ -358,8 +428,142 @@ impl FirecrackerExecutor {
             agent_id: spec.agent_id,
             config: vm_config,
             child,
-            read_half: BufReader::new(read_half),
-            write_half,
+            api_socket_path: None,
+            transport: VmTransport::Mock {
+                read_half: BufReader::new(read_half),
+                write_half,
+            },
+        })
+    }
+
+    async fn launch_real_vm(
+        &self,
+        spec: FirecrackerAgentLaunchSpec,
+        vm_config: FirecrackerVmConfig,
+    ) -> Result<FirecrackerVmHandle, AgentError> {
+        ensure_path_exists(&self.firecracker_binary, "binary")?;
+        prepare_socket_file(&vm_config.vsock_path, "firecracker vsock")?;
+
+        let api_socket = self.api_socket_for_agent(spec.agent_id);
+        prepare_socket_file(&api_socket, "firecracker api")?;
+
+        let mut child = match Command::new(&self.firecracker_binary)
+            .arg("--api-sock")
+            .arg(&api_socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+                let _ = cleanup_socket_file(&api_socket, "firecracker api");
+                return Err(AgentError::Runtime(format!(
+                    "spawn firecracker binary failed: binary={} error={err}",
+                    self.firecracker_binary.display()
+                )));
+            }
+        };
+
+        if let Err(err) = wait_for_unix_socket(&api_socket, spec.launch_timeout).await {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(err);
+        }
+
+        let guest_cid = guest_cid_for_agent(spec.agent_id);
+
+        let configure = async {
+            firecracker_put_json(
+                &api_socket,
+                "/boot-source",
+                &json!({
+                    "kernel_image_path": vm_config.kernel_path,
+                    "boot_args": DEFAULT_FIRECRACKER_BOOT_ARGS,
+                }),
+            )
+            .await?;
+
+            firecracker_put_json(
+                &api_socket,
+                "/drives/rootfs",
+                &json!({
+                    "drive_id": "rootfs",
+                    "path_on_host": vm_config.rootfs_path,
+                    "is_root_device": true,
+                    "is_read_only": false,
+                }),
+            )
+            .await?;
+
+            firecracker_put_json(
+                &api_socket,
+                "/machine-config",
+                &json!({
+                    "vcpu_count": vm_config.vcpu_count,
+                    "mem_size_mib": vm_config.mem_size_mib,
+                }),
+            )
+            .await?;
+
+            firecracker_put_json(
+                &api_socket,
+                "/vsock",
+                &json!({
+                    "vsock_id": "agentd-vsock",
+                    "guest_cid": guest_cid,
+                    "uds_path": vm_config.vsock_path,
+                }),
+            )
+            .await?;
+
+            if let Some(network) = &vm_config.network {
+                firecracker_put_json(
+                    &api_socket,
+                    "/network-interfaces/eth0",
+                    &json!({
+                        "iface_id": "eth0",
+                        "host_dev_name": network.tap_device,
+                        "guest_mac": "06:00:ac:10:00:02",
+                    }),
+                )
+                .await?;
+            }
+
+            firecracker_put_json(
+                &api_socket,
+                "/actions",
+                &json!({"action_type": "InstanceStart"}),
+            )
+            .await
+        };
+
+        if let Err(err) = configure.await {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(AgentError::Runtime(format!(
+                "configure firecracker vm failed: agent_id={} error={err}",
+                spec.agent_id
+            )));
+        }
+
+        wait_for_path_exists(
+            &vm_config.vsock_path,
+            spec.launch_timeout,
+            "firecracker vsock device",
+        )
+        .await?;
+
+        Ok(FirecrackerVmHandle {
+            agent_id: spec.agent_id,
+            config: vm_config,
+            child,
+            api_socket_path: Some(api_socket),
+            transport: VmTransport::Firecracker,
         })
     }
 }
@@ -369,15 +573,26 @@ pub struct FirecrackerVmHandle {
     pub agent_id: Uuid,
     config: FirecrackerVmConfig,
     child: Child,
-    read_half: BufReader<OwnedReadHalf>,
-    write_half: OwnedWriteHalf,
+    api_socket_path: Option<PathBuf>,
+    transport: VmTransport,
+}
+
+#[derive(Debug)]
+enum VmTransport {
+    Mock {
+        read_half: BufReader<OwnedReadHalf>,
+        write_half: OwnedWriteHalf,
+    },
+    Firecracker,
 }
 
 impl FirecrackerVmHandle {
+    #[cfg(test)]
     pub fn agent_id(&self) -> Uuid {
         self.agent_id
     }
 
+    #[cfg(test)]
     pub fn config(&self) -> &FirecrackerVmConfig {
         &self.config
     }
@@ -386,27 +601,38 @@ impl FirecrackerVmHandle {
         self.child.id()
     }
 
+    #[cfg(test)]
     pub async fn roundtrip_json(&mut self, request: &Value) -> Result<Value, AgentError> {
+        let VmTransport::Mock {
+            read_half,
+            write_half,
+        } = &mut self.transport
+        else {
+            return Err(AgentError::Runtime(
+                "firecracker vsock roundtrip_json is only available in mock mode".to_string(),
+            ));
+        };
+
         let encoded = serde_json::to_string(request).map_err(|err| {
             AgentError::Protocol(format!("encode firecracker vsock request failed: {err}"))
         })?;
-        self.write_half
+        write_half
             .write_all(encoded.as_bytes())
             .await
             .map_err(|err| {
                 AgentError::Runtime(format!("write firecracker vsock request failed: {err}"))
             })?;
-        self.write_half.write_all(b"\n").await.map_err(|err| {
+        write_half.write_all(b"\n").await.map_err(|err| {
             AgentError::Runtime(format!("write firecracker vsock newline failed: {err}"))
         })?;
-        self.write_half.flush().await.map_err(|err| {
+        write_half.flush().await.map_err(|err| {
             AgentError::Runtime(format!("flush firecracker vsock request failed: {err}"))
         })?;
 
         let mut line = String::new();
         let read = timeout(
             Duration::from_secs(DEFAULT_VSOCK_TIMEOUT_SECS),
-            self.read_half.read_line(&mut line),
+            read_half.read_line(&mut line),
         )
         .await
         .map_err(|_| {
@@ -415,7 +641,9 @@ impl FirecrackerVmHandle {
                 DEFAULT_VSOCK_TIMEOUT_SECS
             ))
         })?
-        .map_err(|err| AgentError::Runtime(format!("read firecracker vsock response failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Runtime(format!("read firecracker vsock response failed: {err}"))
+        })?;
 
         if read == 0 {
             return Err(AgentError::Runtime(
@@ -429,15 +657,35 @@ impl FirecrackerVmHandle {
     }
 
     pub async fn shutdown(mut self) -> Result<(), AgentError> {
+        if let VmTransport::Mock { write_half, .. } = &mut self.transport {
+            let _ = write_half.shutdown().await;
+        }
+
+        if let Some(api_socket) = &self.api_socket_path {
+            let _ = firecracker_put_json(
+                api_socket,
+                "/actions",
+                &json!({"action_type": "SendCtrlAltDel"}),
+            )
+            .await;
+        }
+
         terminate_child(&mut self.child).await?;
-        cleanup_vsock_socket(&self.config.vsock_path)
+        cleanup_socket_file(&self.config.vsock_path, "firecracker vsock")?;
+        if let Some(api_socket) = &self.api_socket_path {
+            cleanup_socket_file(api_socket, "firecracker api")?;
+        }
+        Ok(())
     }
 }
 
 impl Drop for FirecrackerVmHandle {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
-        let _ = cleanup_vsock_socket(&self.config.vsock_path);
+        let _ = cleanup_socket_file(&self.config.vsock_path, "firecracker vsock");
+        if let Some(api_socket) = &self.api_socket_path {
+            let _ = cleanup_socket_file(api_socket, "firecracker api");
+        }
     }
 }
 
@@ -453,32 +701,131 @@ fn ensure_path_exists(path: &Path, label: &str) -> Result<(), AgentError> {
     }
 }
 
-fn prepare_vsock_socket(path: &Path) -> Result<(), AgentError> {
+fn prepare_socket_file(path: &Path, label: &str) -> Result<(), AgentError> {
     let parent = path.parent().ok_or_else(|| {
         AgentError::Runtime(format!(
-            "firecracker vsock path has no parent: {}",
+            "{label} path has no parent: {}",
             path.display()
         ))
     })?;
     std::fs::create_dir_all(parent).map_err(|err| {
         AgentError::Runtime(format!(
-            "create firecracker vsock parent failed: path={} error={err}",
+            "create {label} parent failed: path={} error={err}",
             parent.display()
         ))
     })?;
-
-    cleanup_vsock_socket(path)
+    cleanup_socket_file(path, label)
 }
 
-fn cleanup_vsock_socket(path: &Path) -> Result<(), AgentError> {
+fn cleanup_socket_file(path: &Path, label: &str) -> Result<(), AgentError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(AgentError::Runtime(format!(
-            "cleanup firecracker vsock socket failed: path={} error={err}",
+            "cleanup {label} socket failed: path={} error={err}",
             path.display()
         ))),
     }
+}
+
+async fn wait_for_unix_socket(path: &Path, timeout_duration: Duration) -> Result<(), AgentError> {
+    let deadline = Instant::now() + timeout_duration;
+    loop {
+        if path.exists() {
+            if UnixStream::connect(path).await.is_ok() {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(AgentError::Runtime(format!(
+                "firecracker launch timeout waiting for api socket: path={} timeout_ms={}",
+                path.display(),
+                timeout_duration.as_millis()
+            )));
+        }
+        sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
+    }
+}
+
+async fn wait_for_path_exists(
+    path: &Path,
+    timeout_duration: Duration,
+    label: &str,
+) -> Result<(), AgentError> {
+    let deadline = Instant::now() + timeout_duration;
+    loop {
+        if path.exists() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(AgentError::Runtime(format!(
+                "firecracker launch timeout waiting for {label}: path={} timeout_ms={}",
+                path.display(),
+                timeout_duration.as_millis()
+            )));
+        }
+        sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
+    }
+}
+
+async fn firecracker_put_json(
+    api_socket: &Path,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<(), AgentError> {
+    let body = serde_json::to_vec(payload)
+        .map_err(|err| AgentError::Protocol(format!("encode firecracker request failed: {err}")))?;
+    let request = format!(
+        "PUT {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+
+    let mut stream = UnixStream::connect(api_socket).await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "connect firecracker api socket failed: path={} error={err}",
+            api_socket.display()
+        ))
+    })?;
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker api request failed: {err}")))?;
+    stream
+        .write_all(&body)
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker api body failed: {err}")))?;
+    stream
+        .flush()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("flush firecracker api request failed: {err}")))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .map_err(|err| AgentError::Runtime(format!("read firecracker api response failed: {err}")))?;
+
+    let response_str = String::from_utf8_lossy(&response);
+    let status_line = response_str.lines().next().unwrap_or_default();
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or_default();
+    if !(200..300).contains(&status_code) {
+        return Err(AgentError::Runtime(format!(
+            "firecracker api returned non-success status: path={path} status_line={status_line} response={response_str}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn guest_cid_for_agent(agent_id: Uuid) -> u32 {
+    let mut bytes = [0_u8; 4];
+    bytes.copy_from_slice(&agent_id.as_bytes()[..4]);
+    let raw = u32::from_le_bytes(bytes);
+    3 + (raw % ((u32::MAX - 3) / 2))
 }
 
 async fn terminate_child(child: &mut Child) -> Result<(), AgentError> {
@@ -503,8 +850,7 @@ async fn terminate_child(child: &mut Child) -> Result<(), AgentError> {
 }
 
 fn enforce_network_isolation_policy(config: &FirecrackerVmConfig) -> Result<(), AgentError> {
-    if matches!(config.network_policy, NetworkIsolationPolicy::DenyAll)
-        && config.network.is_some()
+    if matches!(config.network_policy, NetworkIsolationPolicy::DenyAll) && config.network.is_some()
     {
         let tap_device = config
             .network
@@ -517,4 +863,55 @@ fn enforce_network_isolation_policy(config: &FirecrackerVmConfig) -> Result<(), 
     }
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "firecracker-integration"))]
+mod integration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn real_firecracker_launch_path_is_available_with_env_assets() {
+        let Some(kernel_path) = std::env::var_os("AGENTD_TEST_FIRECRACKER_KERNEL") else {
+            return;
+        };
+        let Some(rootfs_path) = std::env::var_os("AGENTD_TEST_FIRECRACKER_ROOTFS") else {
+            return;
+        };
+
+        let firecracker_binary = std::env::var_os("AGENTD_TEST_FIRECRACKER_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_FIRECRACKER_BINARY));
+
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-it-{}", Uuid::new_v4()));
+        let executor = FirecrackerExecutor::builder()
+            .firecracker_binary(firecracker_binary)
+            .kernel_path(PathBuf::from(kernel_path))
+            .rootfs_path(PathBuf::from(rootfs_path))
+            .vsock_root_dir(runtime_root.join("vsock"))
+            .api_socket_root_dir(runtime_root.join("api"))
+            .launch_mode(FirecrackerLaunchMode::RealFirecracker)
+            .build()
+            .expect("build integration firecracker executor");
+
+        let launch = executor
+            .launch_agent(FirecrackerAgentLaunchSpec {
+                agent_id: Uuid::new_v4(),
+                command: "agent-lite".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                vcpu_count: Some(1),
+                mem_size_mib: Some(256),
+                network: None,
+                network_policy: Some(NetworkIsolationPolicy::AllowAll),
+                jailer: None,
+                launch_timeout: Duration::from_secs(5),
+            })
+            .await;
+
+        if let Ok(vm) = launch {
+            let _ = vm.shutdown().await;
+        }
+
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
 }
