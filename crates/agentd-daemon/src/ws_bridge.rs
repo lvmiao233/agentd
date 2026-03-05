@@ -1,5 +1,7 @@
 use super::{handle_rpc_request, OneApiConfig, RuntimeState};
-use agentd_protocol::{A2AStreamParams, A2ATaskEvent, A2ATaskState, JsonRpcRequest, JsonRpcResponse};
+use agentd_protocol::{
+    A2AStreamParams, A2ATaskEvent, A2ATaskState, JsonRpcRequest, JsonRpcResponse,
+};
 use agentd_store::SqliteStore;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
@@ -8,11 +10,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncWriteExt, Result as TokioIoResult};
 use tokio::net::TcpStream;
 use tokio::time::Duration;
-use tokio_tungstenite::tungstenite::{
-    handshake::derive_accept_key,
-    protocol::Role,
-    Message,
-};
+use tokio_tungstenite::tungstenite::{handshake::derive_accept_key, protocol::Role, Message};
 use tokio_tungstenite::WebSocketStream;
 use tracing::warn;
 
@@ -54,8 +52,14 @@ pub(super) async fn serve_ws_bridge(
     while let Some(incoming) = ws.next().await {
         match incoming {
             Ok(Message::Text(payload)) => {
-                if let Err(err) =
-                    handle_text_message(&mut ws, payload.as_ref(), store.clone(), state.clone(), one_api_config.clone()).await
+                if let Err(err) = handle_text_message(
+                    &mut ws,
+                    payload.as_ref(),
+                    store.clone(),
+                    state.clone(),
+                    one_api_config.clone(),
+                )
+                .await
                 {
                     warn!(%err, "websocket bridge message handling failed");
                     break;
@@ -86,7 +90,11 @@ async fn handle_text_message(
     let request = match serde_json::from_str::<JsonRpcRequest>(payload) {
         Ok(request) => request,
         Err(_) => {
-            send_rpc_response(ws, &JsonRpcResponse::error(json!(null), -32700, "parse error")).await?;
+            send_rpc_response(
+                ws,
+                &JsonRpcResponse::error(json!(null), -32700, "parse error"),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -215,7 +223,7 @@ async fn send_rpc_response(
 
 async fn send_json(ws: &mut WebSocketStream<TcpStream>, payload: &Value) -> Result<(), DynError> {
     let encoded = serde_json::to_string(payload)?;
-    ws.send(Message::Text(encoded.into())).await?;
+    ws.send(Message::Text(encoded)).await?;
     Ok(())
 }
 

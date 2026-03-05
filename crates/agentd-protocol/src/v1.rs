@@ -44,17 +44,17 @@ pub enum A2ATaskState {
 
 impl A2ATaskState {
     pub fn can_transition_to(self, next: Self) -> bool {
-        match (self, next) {
-            (Self::Submitted, Self::Working) => true,
-            (Self::Working, Self::InputRequired) => true,
-            (Self::Working, Self::Completed) => true,
-            (Self::Working, Self::Failed) => true,
-            (Self::Working, Self::Canceled) => true,
-            (Self::InputRequired, Self::Working) => true,
-            (Self::InputRequired, Self::Failed) => true,
-            (Self::InputRequired, Self::Canceled) => true,
-            _ => false,
-        }
+        matches!(
+            (self, next),
+            (Self::Submitted, Self::Working)
+                | (Self::Working, Self::InputRequired)
+                | (Self::Working, Self::Completed)
+                | (Self::Working, Self::Failed)
+                | (Self::Working, Self::Canceled)
+                | (Self::InputRequired, Self::Working)
+                | (Self::InputRequired, Self::Failed)
+                | (Self::InputRequired, Self::Canceled)
+        )
     }
 
     pub fn to_agent_lifecycle_state(self) -> AgentLifecycleState {
