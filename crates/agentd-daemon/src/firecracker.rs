@@ -560,6 +560,8 @@ impl FirecrackerExecutor {
             )));
         }
 
+        wait_for_vm_running(&api_socket, spec.launch_timeout).await?;
+
         wait_for_path_exists(
             &vm_config.vsock_path,
             spec.launch_timeout,
@@ -777,6 +779,34 @@ async fn wait_for_path_exists(
     }
 }
 
+async fn wait_for_vm_running(
+    api_socket: &Path,
+    timeout_duration: Duration,
+) -> Result<(), AgentError> {
+    let deadline = Instant::now() + timeout_duration;
+    loop {
+        if let Ok(body) = firecracker_get_json(api_socket, "/vm").await {
+            let state = body
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if state.eq_ignore_ascii_case("running") {
+                return Ok(());
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(AgentError::Runtime(format!(
+                "firecracker launch timeout waiting for vm state running: path={} timeout_ms={}",
+                api_socket.display(),
+                timeout_duration.as_millis()
+            )));
+        }
+
+        sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
+    }
+}
+
 async fn probe_guest_readiness(
     read_half: &mut BufReader<OwnedReadHalf>,
     write_half: &mut OwnedWriteHalf,
@@ -879,6 +909,55 @@ async fn firecracker_put_json(
     }
 
     Ok(())
+}
+
+async fn firecracker_get_json(api_socket: &Path, path: &str) -> Result<serde_json::Value, AgentError> {
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    );
+
+    let mut stream = UnixStream::connect(api_socket).await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "connect firecracker api socket failed: path={} error={err}",
+            api_socket.display()
+        ))
+    })?;
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker api request failed: {err}")))?;
+    stream
+        .flush()
+        .await
+        .map_err(|err| AgentError::Runtime(format!("flush firecracker api request failed: {err}")))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .map_err(|err| AgentError::Runtime(format!("read firecracker api response failed: {err}")))?;
+
+    let response_str = String::from_utf8_lossy(&response);
+    let (head, body) = response_str.split_once("\r\n\r\n").ok_or_else(|| {
+        AgentError::Runtime(format!("invalid firecracker api response: path={path}"))
+    })?;
+    let status_line = head.lines().next().unwrap_or_default();
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or_default();
+    if !(200..300).contains(&status_code) {
+        return Err(AgentError::Runtime(format!(
+            "firecracker api returned non-success status: path={path} status_line={status_line} response={response_str}"
+        )));
+    }
+
+    serde_json::from_str::<serde_json::Value>(body.trim()).map_err(|err| {
+        AgentError::Protocol(format!(
+            "decode firecracker api json failed: path={path} error={err}"
+        ))
+    })
 }
 
 fn guest_cid_for_agent(agent_id: Uuid) -> u32 {
