@@ -151,13 +151,10 @@ export async function authorizeTool(params: {
 // --- MCP Servers ---
 
 export type McpServer = {
-  name: string;
-  command: string;
+  server: string;
   trust_level: string;
-  source: string;
-  status: string;
+  health: string;
   capabilities: string[];
-  message: string;
 };
 
 export async function listMcpServers(): Promise<McpServer[]> {
@@ -170,16 +167,21 @@ export async function onboardMcpServer(params: {
   command: string;
   args?: string[];
   trust_level?: string;
-}): Promise<McpServer> {
-  return rpcCall<McpServer>('OnboardMcpServer', params);
+}): Promise<{ status: string; server: McpServer }> {
+  return rpcCall<{ status: string; server: McpServer }>('OnboardMcpServer', params);
 }
 
 // --- Available Tools ---
 
 export type AvailableTool = {
-  name: string;
   server: string;
-  description?: string;
+  tool: string;
+  policy_tool: string;
+  trust_level: string;
+  health: string;
+  decision: string;
+  reason?: string;
+  trace_id?: string;
 };
 
 export async function listAvailableTools(agentId: string): Promise<AvailableTool[]> {

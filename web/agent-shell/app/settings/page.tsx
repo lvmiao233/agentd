@@ -21,35 +21,32 @@ import {
 } from 'lucide-react';
 
 type McpServer = {
-  name: string;
-  command: string;
+  server: string;
   trust_level: string;
-  source: string;
-  status: string;
+  health: string;
   capabilities: string[];
-  message: string;
 };
 
-function statusIcon(status: string) {
-  switch (status) {
+function statusIcon(health: string) {
+  switch (health) {
     case 'healthy':
       return <CheckCircle className="size-4 text-green-400" />;
-    case 'onboarding':
+    case 'degraded':
       return <Loader2 className="size-4 animate-spin text-yellow-400" />;
-    case 'failed':
+    case 'unreachable':
       return <XCircle className="size-4 text-red-400" />;
     default:
       return <Server className="size-4 text-muted-foreground" />;
   }
 }
 
-function statusVariant(status: string) {
-  switch (status) {
+function statusVariant(health: string) {
+  switch (health) {
     case 'healthy':
       return 'default' as const;
-    case 'onboarding':
+    case 'degraded':
       return 'outline' as const;
-    case 'failed':
+    case 'unreachable':
       return 'destructive' as const;
     default:
       return 'secondary' as const;
@@ -117,7 +114,7 @@ export default function SettingsPage() {
     }
   }
 
-  const healthyCount = servers.filter((s) => s.status === 'healthy').length;
+  const healthyCount = servers.filter((s) => s.health === 'healthy').length;
 
   return (
     <div className="space-y-6">
@@ -217,30 +214,19 @@ export default function SettingsPage() {
           <ul className="space-y-2">
             {servers.map((server) => (
               <li
-                key={server.name}
+                key={server.server}
                 className="rounded-lg border border-border bg-background p-3"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    {statusIcon(server.status)}
-                    <span className="font-medium">{server.name}</span>
-                    <Badge variant={statusVariant(server.status)}>
-                      {server.status}
+                    {statusIcon(server.health)}
+                    <span className="font-medium">{server.server}</span>
+                    <Badge variant={statusVariant(server.health)}>
+                      {server.health}
                     </Badge>
                     <Badge variant="outline">{server.trust_level}</Badge>
-                    <Badge variant="secondary">{server.source}</Badge>
                   </div>
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  <code className="rounded bg-muted px-1 text-xs">
-                    {server.command}
-                  </code>
-                </p>
-                {server.message && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {server.message}
-                  </p>
-                )}
                 {server.capabilities.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {server.capabilities.map((cap) => (

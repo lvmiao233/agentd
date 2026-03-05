@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { daemonRpc } from '@/lib/daemon-fetch';
+import { listAgents } from '@/lib/daemon-rpc';
 
 export async function GET() {
   try {
-    const result = await daemonRpc<{ agents: unknown[] }>('ListAgents');
-    return NextResponse.json(result);
+    const agents = await listAgents();
+    return NextResponse.json({ agents });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'daemon unreachable' },

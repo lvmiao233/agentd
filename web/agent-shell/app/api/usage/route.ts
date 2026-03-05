@@ -1,14 +1,5 @@
 import { NextResponse } from 'next/server';
-import { daemonRpc } from '@/lib/daemon-fetch';
-
-type AgentSummary = {
-  agent_id: string;
-  name: string;
-  model: string;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cost_usd: number;
-};
+import { getUsage, listAgents } from '@/lib/daemon-rpc';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -16,11 +7,11 @@ export async function GET(req: Request) {
 
   try {
     if (agentId) {
-      const result = await daemonRpc('GetUsage', { agent_id: agentId });
+      const result = await getUsage(agentId);
       return NextResponse.json(result);
     }
 
-    const { agents } = await daemonRpc<{ agents: AgentSummary[] }>('ListAgents');
+    const agents = await listAgents();
     const usage = (agents ?? []).map((a) => ({
       agent_id: a.agent_id,
       name: a.name,

@@ -8,12 +8,14 @@ import {
   LayoutDashboard,
   Activity,
   BarChart3,
+  Wrench,
   Settings,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/chat', label: 'Chat', icon: MessageSquare },
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/tools', label: 'Tools', icon: Wrench },
   { href: '/events', label: 'Events', icon: Activity },
   { href: '/usage', label: 'Usage', icon: BarChart3 },
   { href: '/settings', label: 'Settings', icon: Settings },

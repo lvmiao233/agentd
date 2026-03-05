@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { daemonRpc } from '@/lib/daemon-fetch';
+import { listMcpServers, onboardMcpServer } from '@/lib/daemon-rpc';
 
 export async function GET() {
   try {
-    const result = await daemonRpc('ListMcpServers');
-    return NextResponse.json(result);
+    const servers = await listMcpServers();
+    return NextResponse.json({ servers });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'daemon unreachable' },
@@ -16,7 +16,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const result = await daemonRpc('OnboardMcpServer', body);
+    const result = await onboardMcpServer(body);
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(

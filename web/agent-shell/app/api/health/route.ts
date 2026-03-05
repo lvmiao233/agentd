@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { daemonRpc } from '@/lib/daemon-fetch';
+import { getHealth } from '@/lib/daemon-rpc';
 
 export async function GET() {
   try {
-    const result = await daemonRpc('GetHealth');
-    return NextResponse.json(result);
+    const health = await getHealth();
+    return NextResponse.json(health);
   } catch (err) {
     return NextResponse.json(
       {

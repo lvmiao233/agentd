@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { daemonRpc } from '@/lib/daemon-fetch';
+import { subscribeEvents } from '@/lib/daemon-rpc';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -9,7 +9,7 @@ export async function GET(req: Request) {
     : 50;
 
   try {
-    const result = await daemonRpc('SubscribeEvents', {
+    const result = await subscribeEvents({
       cursor,
       limit,
       wait_timeout_secs: 0,
