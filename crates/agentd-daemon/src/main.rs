@@ -3389,6 +3389,123 @@ async fn run_agent_stream_marks_usage_unavailable_when_provider_omits_usage() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_non_stream_marks_usage_unavailable_when_provider_omits_usage() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-non-stream-no-usage-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text =
+            String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "unexpected provider request line: {request_text}"
+        );
+        let body = request_body(&request_text);
+        assert!(
+            body.contains("\"stream\":false"),
+            "provider request body should disable stream mode: {body}"
+        );
+
+        let provider_payload = json!({
+            "id": "chatcmpl-1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        })
+        .to_string();
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            provider_payload.len(),
+            provider_payload
+        );
+
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider response");
+        let _ = socket.shutdown().await;
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(92001),
+            "RunAgent",
+            json!({
+                "input": "non-stream this",
+                "model": "gpt-4.1-mini",
+                "stream": false,
+            }),
+        ),
+        store,
+        state,
+        one_api_config,
+    )
+    .await;
+
+    assert!(
+        response.error.is_none(),
+        "run-agent response should succeed: {response:?}"
+    );
+    let result = response.result.expect("run-agent should include result payload");
+    assert_eq!(result["output"], json!("hello"));
+    assert!(
+        result["usage"].is_null(),
+        "usage should be null when provider omits usage payload: {result}"
+    );
+    assert_eq!(result["usage_source"], json!("unavailable"));
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn run_agent_stream_surfaces_provider_error_events() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-run-agent-stream-provider-error-test-{}.sqlite",
@@ -8199,16 +8316,23 @@ async fn execute_run_agent(
         .map_err(|err| AgentError::Runtime(format!("parse run-agent response failed: {err}")))?;
 
     let output = extract_chat_completion_text(&parsed)?;
-    let (input_tokens, output_tokens) = extract_chat_usage_tokens(&parsed);
+    let usage_available = parsed.get("usage").is_some();
+    let (input_tokens, output_tokens) = if usage_available {
+        extract_chat_usage_tokens(&parsed)
+    } else {
+        (0, 0)
+    };
 
-    persist_run_agent_usage(
-        &store,
-        context.profile.as_ref(),
-        &context.model_name,
-        input_tokens,
-        output_tokens,
-    )
-    .await;
+    if usage_available {
+        persist_run_agent_usage(
+            &store,
+            context.profile.as_ref(),
+            &context.model_name,
+            input_tokens,
+            output_tokens,
+        )
+        .await;
+    }
 
     Ok(RunAgentExecution {
         agent_id: context.profile.as_ref().map(|agent| agent.id),
@@ -8216,7 +8340,7 @@ async fn execute_run_agent(
         output,
         input_tokens,
         output_tokens,
-        usage_available: parsed.get("usage").is_some(),
+        usage_available,
     })
 }
 
@@ -9031,19 +9155,33 @@ async fn handle_rpc_request(
             };
 
             match execute_run_agent(store.clone(), &one_api_config, params.clone()).await {
-                Ok(execution) => JsonRpcResponse::success(
-                    request.id,
-                    json!({
-                        "agent_id": execution.agent_id,
-                        "model": execution.model_name,
-                        "output": execution.output,
-                        "usage": {
+                Ok(execution) => {
+                    let usage_payload = if execution.usage_available {
+                        json!({
                             "input_tokens": execution.input_tokens,
                             "output_tokens": execution.output_tokens,
-                        },
-                        "stream": params.stream.unwrap_or(false),
-                    }),
-                ),
+                        })
+                    } else {
+                        Value::Null
+                    };
+                    let usage_source = if execution.usage_available {
+                        "provider"
+                    } else {
+                        "unavailable"
+                    };
+
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "agent_id": execution.agent_id,
+                            "model": execution.model_name,
+                            "output": execution.output,
+                            "usage": usage_payload,
+                            "usage_source": usage_source,
+                            "stream": params.stream.unwrap_or(false),
+                        }),
+                    )
+                }
                 Err(AgentError::InvalidInput(message)) => {
                     JsonRpcResponse::error(request.id, -32602, message)
                 }
