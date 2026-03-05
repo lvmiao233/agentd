@@ -3280,6 +3280,115 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_stream_marks_usage_unavailable_when_provider_omits_usage() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-stream-no-usage-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text =
+            String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "unexpected provider request line: {request_text}"
+        );
+
+        let sse_body = concat!(
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            sse_body.len(),
+            sse_body
+        );
+
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider sse response");
+        let _ = socket.shutdown().await;
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let (mut read_stream, mut write_stream) = tokio::io::duplex(16 * 1024);
+    stream_run_agent_over_uds(
+        &mut write_stream,
+        store,
+        one_api_config,
+        RunAgentParams {
+            input: "stream this".to_string(),
+            model: Some("gpt-4.1-mini".to_string()),
+            agent_id: None,
+            stream: Some(true),
+        },
+    )
+    .await;
+    drop(write_stream);
+
+    let mut captured = Vec::new();
+    read_stream
+        .read_to_end(&mut captured)
+        .await
+        .expect("read streamed run-agent frames");
+    let captured_text = String::from_utf8(captured).expect("captured frames should be utf8");
+
+    assert!(
+        captured_text.contains("\"status\":\"completed\""),
+        "expected completed frame in stream: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"usage\":null"),
+        "expected unavailable usage in terminal frame: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"usage_source\":\"unavailable\""),
+        "expected unavailable usage source in terminal frame: {captured_text}"
+    );
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn run_agent_stream_surfaces_provider_error_events() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-run-agent-stream-provider-error-test-{}.sqlite",
@@ -7639,6 +7748,7 @@ struct RunAgentExecution {
     output: String,
     input_tokens: u64,
     output_tokens: u64,
+    usage_available: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -8106,6 +8216,7 @@ async fn execute_run_agent(
         output,
         input_tokens,
         output_tokens,
+        usage_available: parsed.get("usage").is_some(),
     })
 }
 
@@ -8168,6 +8279,7 @@ where
     let mut output = String::new();
     let mut input_tokens = 0;
     let mut output_tokens = 0;
+    let mut usage_available = false;
 
     while let Some(chunk) = response
         .chunk()
@@ -8209,6 +8321,7 @@ where
                 if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
                     input_tokens = input;
                     output_tokens = output_usage;
+                    usage_available = true;
                 }
 
                 if let Some(delta) = extract_stream_delta_text(&event) {
@@ -8282,6 +8395,7 @@ where
             if let Some((input, output_usage)) = extract_stream_usage_tokens(&event) {
                 input_tokens = input;
                 output_tokens = output_usage;
+                usage_available = true;
             }
             if let Some(delta) = extract_stream_delta_text(&event) {
                 if !delta.is_empty() {
@@ -8321,14 +8435,16 @@ where
         }
     }
 
-    persist_run_agent_usage(
-        &store,
-        context.profile.as_ref(),
-        &context.model_name,
-        input_tokens,
-        output_tokens,
-    )
-    .await;
+    if usage_available {
+        persist_run_agent_usage(
+            &store,
+            context.profile.as_ref(),
+            &context.model_name,
+            input_tokens,
+            output_tokens,
+        )
+        .await;
+    }
 
     Ok(RunAgentExecution {
         agent_id: context.profile.as_ref().map(|agent| agent.id),
@@ -8336,6 +8452,7 @@ where
         output,
         input_tokens,
         output_tokens,
+        usage_available,
     })
 }
 
@@ -8367,16 +8484,27 @@ async fn stream_run_agent_over_uds<W>(
     let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
     match execute_run_agent_streaming(stream, store, &one_api_config, params).await {
         Ok(execution) => {
+            let usage_payload = if execution.usage_available {
+                json!({
+                    "input_tokens": execution.input_tokens,
+                    "output_tokens": execution.output_tokens,
+                })
+            } else {
+                Value::Null
+            };
+            let usage_source = if execution.usage_available {
+                "provider"
+            } else {
+                "unavailable"
+            };
             let _ = write_run_agent_stream_frame(
                 stream,
                 &json!({
                     "result": {
                         "status": "completed",
                         "type": "done",
-                        "usage": {
-                            "input_tokens": execution.input_tokens,
-                            "output_tokens": execution.output_tokens,
-                        }
+                        "usage": usage_payload,
+                        "usage_source": usage_source,
                     }
                 }),
             )
