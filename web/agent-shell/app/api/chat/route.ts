@@ -98,7 +98,7 @@ export async function POST(req: Request) {
       writer.write({ type: 'start-step' });
       writer.write({ type: 'text-start', id: textId });
 
-      const { emitted } = await consumeRunAgentStream({
+      const { emitted, finishReason } = await consumeRunAgentStream({
         responseBody,
         textId,
         writer,
@@ -114,7 +114,7 @@ export async function POST(req: Request) {
 
       writer.write({ type: 'text-end', id: textId });
       writer.write({ type: 'finish-step' });
-      writer.write({ type: 'finish', finishReason: 'stop' });
+      writer.write({ type: 'finish', finishReason: finishReason ?? 'stop' });
     },
   });
 

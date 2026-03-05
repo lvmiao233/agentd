@@ -36,6 +36,7 @@ export async function run() {
 
   assert.equal(fragmentedOutcome.emitted, true, 'fragmented stream should emit content');
   assert.equal(fragmentedOutcome.terminalReached, true, 'completed frame should terminate stream');
+  assert.equal(fragmentedOutcome.finishReason, 'stop', 'completed frame should map to stop finish reason');
   assert.deepEqual(writes[0], {
     type: 'text-delta',
     id: 'text-fragmented',
@@ -57,6 +58,7 @@ export async function run() {
 
   assert.equal(doneMarkerOutcome.emitted, false, '[DONE] should not emit text');
   assert.equal(doneMarkerOutcome.terminalReached, true, '[DONE] should terminate stream');
+  assert.equal(doneMarkerOutcome.finishReason, 'stop', '[DONE] should map to stop finish reason');
   assert.equal(writes.length, 0, '[DONE] should not produce chunks');
 
   writes.length = 0;
@@ -71,6 +73,7 @@ export async function run() {
 
   assert.equal(rawJsonOutcome.emitted, true, 'raw json newline stream should emit content');
   assert.equal(rawJsonOutcome.terminalReached, true, 'raw completed json frame should terminate stream');
+  assert.equal(rawJsonOutcome.finishReason, 'stop', 'raw completed frame should map to stop finish reason');
   assert.deepEqual(writes[0], {
     type: 'text-delta',
     id: 'text-raw-json',
@@ -89,6 +92,7 @@ export async function run() {
 
   assert.equal(daemonFrameOutcome.emitted, true, 'daemon newline-delimited frames should emit content');
   assert.equal(daemonFrameOutcome.terminalReached, true, 'daemon completed frame should terminate stream');
+  assert.equal(daemonFrameOutcome.finishReason, 'stop', 'daemon completed frame should map to stop finish reason');
   assert.deepEqual(writes[0], {
     type: 'text-delta',
     id: 'text-daemon',
@@ -104,6 +108,7 @@ export async function run() {
 
   assert.equal(trailingOutcome.emitted, true, 'trailing event should emit on stream end');
   assert.equal(trailingOutcome.terminalReached, false, 'non-terminal trailing event should stay non-terminal');
+  assert.equal(trailingOutcome.finishReason, null, 'non-terminal stream should not emit finish reason');
   assert.deepEqual(writes[0], {
     type: 'text-delta',
     id: 'text-trailing',

@@ -20,6 +20,7 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
   let pendingDataLines = [];
   let emitted = false;
   let terminalReached = false;
+  let finishReason = null;
 
   const commitEvent = () => {
     if (pendingDataLines.length === 0) {
@@ -36,6 +37,9 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
     });
     emitted = emitted || outcome.emitted;
     terminalReached = terminalReached || outcome.terminalReached;
+    if (outcome.finishReason !== null) {
+      finishReason = outcome.finishReason;
+    }
   };
 
   const handleLine = (lineRaw) => {
@@ -81,6 +85,9 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
     });
     emitted = emitted || outcome.emitted;
     terminalReached = terminalReached || outcome.terminalReached;
+    if (outcome.finishReason !== null) {
+      finishReason = outcome.finishReason;
+    }
   };
 
   const drainPendingLines = (flushRemainder) => {
@@ -124,5 +131,6 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
   return {
     emitted,
     terminalReached,
+    finishReason,
   };
 }

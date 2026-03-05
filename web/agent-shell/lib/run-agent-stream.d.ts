@@ -9,4 +9,5 @@ export function emitRunAgentStreamLine<TChunk = unknown>(params: {
 }): {
   emitted: boolean;
   terminalReached: boolean;
+  finishReason: 'stop' | 'error' | null;
 };

@@ -109,20 +109,29 @@ function isTerminalStreamFrame(frame) {
   return kind === 'done' || kind === 'completed' || kind === 'finish' || kind === 'finished';
 }
 
+function terminalFinishReason(frame) {
+  const payload = normalizeStreamPayload(frame);
+  const status = payload.status;
+  if (status === 'failed' || status === 'blocked') {
+    return 'error';
+  }
+  return 'stop';
+}
+
 export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
   let line = (lineRaw ?? '').trim();
   if (!line) {
-    return { emitted: false, terminalReached: false };
+    return { emitted: false, terminalReached: false, finishReason: null };
   }
 
   if (line.startsWith('data:')) {
     line = line.slice(5).trim();
   }
   if (!line) {
-    return { emitted: false, terminalReached: false };
+    return { emitted: false, terminalReached: false, finishReason: null };
   }
   if (line === '[DONE]') {
-    return { emitted: false, terminalReached: true };
+    return { emitted: false, terminalReached: true, finishReason: 'stop' };
   }
 
   let parsed;
@@ -130,7 +139,7 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
     parsed = JSON.parse(line);
   } catch {
     writer.write({ type: 'text-delta', id: textId, delta: line });
-    return { emitted: true, terminalReached: false };
+    return { emitted: true, terminalReached: false, finishReason: null };
   }
 
   const errorMessage = extractStreamError(parsed);
@@ -140,7 +149,7 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
       id: textId,
       delta: `RunAgent failed: ${errorMessage}`,
     });
-    return { emitted: true, terminalReached: true };
+    return { emitted: true, terminalReached: true, finishReason: 'error' };
   }
 
   let emitted = false;
@@ -164,8 +173,10 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
     emitted = true;
   }
 
+  const terminalReached = isTerminalStreamFrame(parsed);
   return {
     emitted,
-    terminalReached: isTerminalStreamFrame(parsed),
+    terminalReached,
+    finishReason: terminalReached ? terminalFinishReason(parsed) : null,
   };
 }

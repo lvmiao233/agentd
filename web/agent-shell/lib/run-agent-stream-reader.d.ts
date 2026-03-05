@@ -9,4 +9,5 @@ export function consumeRunAgentStream<TChunk = unknown>(params: {
 }): Promise<{
   emitted: boolean;
   terminalReached: boolean;
+  finishReason: 'stop' | 'error' | null;
 }>;
