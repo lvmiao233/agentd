@@ -28,6 +28,7 @@ use clap::Parser;
 use lifecycle::{FirecrackerRuntimeSpec, LifecycleManager, ManagedAgentSpec, ManagedRuntimeSpec};
 use mcp::{load_mcp_server_configs, McpHost};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -258,6 +259,8 @@ struct OneApiConfig {
     management_base_url: String,
     #[serde(default)]
     management_api_key: Option<String>,
+    #[serde(default = "default_one_api_management_db_path")]
+    management_db_path: String,
     #[serde(default = "default_one_api_management_timeout_secs")]
     management_timeout_secs: u64,
     #[serde(default = "default_one_api_management_retries")]
@@ -308,6 +311,7 @@ impl Default for OneApiConfig {
             management_enabled: false,
             management_base_url: default_one_api_management_base_url(),
             management_api_key: None,
+            management_db_path: default_one_api_management_db_path(),
             management_timeout_secs: default_one_api_management_timeout_secs(),
             management_retries: default_one_api_management_retries(),
             management_retry_backoff_secs: default_one_api_management_retry_backoff_secs(),
@@ -452,6 +456,10 @@ fn default_one_api_restart_backoff_secs() -> u64 {
 
 fn default_one_api_management_base_url() -> String {
     "http://127.0.0.1:3000".to_string()
+}
+
+fn default_one_api_management_db_path() -> String {
+    "data/one-api/one-api.db".to_string()
 }
 
 fn default_one_api_management_timeout_secs() -> u64 {
@@ -6559,6 +6567,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_agent_provisions_one_api_from_local_management_db_when_key_missing() {
+        let db_path = test_db_path();
+        let management_db_path = std::env::temp_dir().join(format!(
+            "agentd-daemon-one-api-mgmt-test-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("ready");
+
+        let connection = Connection::open(&management_db_path)
+            .expect("open temporary one-api management db");
+        connection
+            .execute(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, role INTEGER NOT NULL, status INTEGER NOT NULL, access_token TEXT)",
+                [],
+            )
+            .expect("create users table in one-api management db");
+        connection
+            .execute(
+                "INSERT INTO users (id, role, status, access_token) VALUES (1, 100, 1, 'db-mgmt-key-456')",
+                [],
+            )
+            .expect("insert management access token");
+        drop(connection);
+
+        let management_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind one-api management listener");
+        let management_addr = management_listener
+            .local_addr()
+            .expect("resolve one-api management listener address");
+
+        let management_task = tokio::spawn(async move {
+            let (mut socket, _) = management_listener
+                .accept()
+                .await
+                .expect("accept one-api management request");
+
+            let mut request_bytes = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let read = socket
+                    .read(&mut buf)
+                    .await
+                    .expect("read one-api management request bytes");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buf[..read]);
+
+                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request_bytes)
+                .expect("one-api management request should be utf8");
+            assert!(
+                request_text.contains("authorization: Bearer db-mgmt-key-456"),
+                "expected management authorization header from local db fallback: {request_text}"
+            );
+
+            let response_body = json!({
+                "success": true,
+                "data": {
+                    "id": "token-from-db-fallback",
+                    "key": "sk-from-db-fallback"
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write one-api management response");
+            let _ = socket.shutdown().await;
+        });
+
+        let one_api_config = OneApiConfig {
+            enabled: false,
+            management_enabled: true,
+            management_base_url: format!("http://{management_addr}"),
+            management_api_key: None,
+            management_db_path: management_db_path.to_string_lossy().to_string(),
+            management_timeout_secs: 1,
+            management_retries: 1,
+            management_retry_backoff_secs: 0,
+            ..OneApiConfig::default()
+        };
+
+        let created = handle_rpc_request(
+            create_agent_request("external-managed-agent-db", "claude-4-sonnet"),
+            store.clone(),
+            state,
+            one_api_config,
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create with local one-api management db fallback should succeed: {created:?}"
+        );
+        let created_result = created.result.expect("create result should exist");
+        assert_eq!(created_result["one_api"]["token_id"], json!("token-from-db-fallback"));
+
+        let mapping = store
+            .get_mapping_by_idempotency_key("external-managed-agent-db:one-api:claude-4-sonnet")
+            .await
+            .expect("query mapping should succeed")
+            .expect("one-api mapping should be persisted");
+        assert_eq!(mapping.one_api_token_id, "token-from-db-fallback");
+        assert_eq!(mapping.one_api_access_token, "sk-from-db-fallback");
+
+        management_task
+            .await
+            .expect("one-api management task should finish");
+        cleanup_sqlite_files(&db_path);
+        let _ = std::fs::remove_file(management_db_path);
+    }
+
+    #[tokio::test]
     async fn usage_query_and_quota_enforcement_work() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
@@ -9437,6 +9569,7 @@ async fn provision_one_api(
             AgentError::Config(format!("build one-api management client failed: {err}"))
         })?;
 
+    let management_api_key = resolve_one_api_management_api_key(config)?;
     let token_url = with_base_url(&config.management_base_url, &config.create_token_path);
     let quota_value: i64 = match profile.budget.token_limit {
         Some(limit) => i64::try_from(limit)
@@ -9456,7 +9589,7 @@ async fn provision_one_api(
         reqwest::Method::POST,
         &token_url,
         token_body,
-        config.management_api_key.as_deref(),
+        management_api_key.as_deref(),
         config.management_retries,
         config.management_retry_backoff_secs,
     )
@@ -9485,7 +9618,7 @@ async fn provision_one_api(
             reqwest::Method::POST,
             &channel_url,
             channel_body,
-            config.management_api_key.as_deref(),
+            management_api_key.as_deref(),
             config.management_retries,
             config.management_retry_backoff_secs,
         )
@@ -9501,6 +9634,47 @@ async fn provision_one_api(
         access_token,
         channel_id,
     })
+}
+
+fn resolve_one_api_management_api_key(config: &OneApiConfig) -> Result<Option<String>, AgentError> {
+    if let Some(key) = config.management_api_key.as_ref().map(|value| value.trim()) {
+        if !key.is_empty() {
+            return Ok(Some(key.to_string()));
+        }
+    }
+
+    let management_url = reqwest::Url::parse(&config.management_base_url)
+        .map_err(|err| AgentError::Config(format!("invalid one_api management_base_url: {err}")))?;
+    let is_loopback = matches!(management_url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
+    if !is_loopback {
+        return Ok(None);
+    }
+
+    let db_path = Path::new(&config.management_db_path);
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let connection = Connection::open(db_path).map_err(|err| {
+        AgentError::Runtime(format!(
+            "open one-api management db failed {}: {err}",
+            db_path.display()
+        ))
+    })?;
+    let token = connection
+        .query_row(
+            "SELECT access_token FROM users WHERE status = 1 AND access_token IS NOT NULL AND access_token != '' ORDER BY role DESC, id ASC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "query one-api management token failed {}: {err}",
+                db_path.display()
+            ))
+        })?;
+    Ok(token.filter(|value| !value.trim().is_empty()))
 }
 
 fn derive_one_api_chat_url(config: &OneApiConfig) -> Result<String, AgentError> {

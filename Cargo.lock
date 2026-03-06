@@ -45,6 +45,7 @@ dependencies = [
  "futures-util",
  "mdns-sd",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
