@@ -307,7 +307,7 @@ impl<'a> WsTextBridgeWriter<'a> {
             return Ok(());
         }
         let text = String::from_utf8(std::mem::take(&mut self.buffer))?;
-        self.ws.send(Message::Text(text.into())).await?;
+        self.ws.send(Message::Text(text)).await?;
         Ok(())
     }
 }
@@ -330,7 +330,7 @@ impl AsyncWrite for WsTextBridgeWriter<'_> {
         ready!(Pin::new(&mut *self.ws).poll_ready(cx)).map_err(io::Error::other)?;
         let text = String::from_utf8(std::mem::take(&mut self.buffer)).map_err(io::Error::other)?;
         Pin::new(&mut *self.ws)
-            .start_send(Message::Text(text.into()))
+            .start_send(Message::Text(text))
             .map_err(io::Error::other)?;
         ready!(Pin::new(&mut *self.ws).poll_flush(cx)).map_err(io::Error::other)?;
         Poll::Ready(Ok(()))
