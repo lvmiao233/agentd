@@ -1,8 +1,8 @@
 use agentd_core::AgentError;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 #[cfg(test)]
 use serde_json::Value;
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -19,6 +19,7 @@ const DEFAULT_VSOCK_TIMEOUT_SECS: u64 = 5;
 
 const API_POLL_INTERVAL_MS: u64 = 25;
 const READY_PROBE_PAYLOAD: &str = r#"{"rpc":"daemon.ready"}"#;
+const AGENTD_GUEST_VSOCK_PORT: u32 = 5252;
 const DEFAULT_FIRECRACKER_BINARY: &str = "/usr/bin/firecracker";
 const DEFAULT_FIRECRACKER_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
 
@@ -264,7 +265,8 @@ impl FirecrackerExecutor {
     pub fn api_socket_for_agent(&self, agent_id: Uuid) -> PathBuf {
         let compact = agent_id.simple().to_string();
         let suffix = &compact[..12];
-        self.api_socket_root_dir.join(format!("a-{suffix}.api.sock"))
+        self.api_socket_root_dir
+            .join(format!("a-{suffix}.api.sock"))
     }
 
     pub fn build_vm_config(
@@ -426,7 +428,9 @@ impl FirecrackerExecutor {
         let (read_half, write_half) = stream.into_split();
         let mut read_half = BufReader::new(read_half);
         let mut write_half = write_half;
-        if let Err(err) = probe_guest_readiness(&mut read_half, &mut write_half, spec.launch_timeout).await {
+        if let Err(err) =
+            probe_guest_readiness(&mut read_half, &mut write_half, spec.launch_timeout).await
+        {
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             return Err(err);
@@ -579,7 +583,9 @@ impl FirecrackerExecutor {
             return Err(err);
         }
 
-        if let Err(err) = wait_for_guest_readiness_on_vsock(&vm_config.vsock_path, spec.launch_timeout).await {
+        if let Err(err) =
+            wait_for_guest_readiness_on_vsock(&vm_config.vsock_path, spec.launch_timeout).await
+        {
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
@@ -631,57 +637,36 @@ impl FirecrackerVmHandle {
 
     #[cfg(test)]
     pub async fn roundtrip_json(&mut self, request: &Value) -> Result<Value, AgentError> {
-        let VmTransport::Mock {
-            read_half,
-            write_half,
-        } = &mut self.transport
-        else {
-            return Err(AgentError::Runtime(
-                "firecracker vsock roundtrip_json is only available in mock mode".to_string(),
-            ));
-        };
-
-        let encoded = serde_json::to_string(request).map_err(|err| {
-            AgentError::Protocol(format!("encode firecracker vsock request failed: {err}"))
-        })?;
-        write_half
-            .write_all(encoded.as_bytes())
-            .await
-            .map_err(|err| {
-                AgentError::Runtime(format!("write firecracker vsock request failed: {err}"))
-            })?;
-        write_half.write_all(b"\n").await.map_err(|err| {
-            AgentError::Runtime(format!("write firecracker vsock newline failed: {err}"))
-        })?;
-        write_half.flush().await.map_err(|err| {
-            AgentError::Runtime(format!("flush firecracker vsock request failed: {err}"))
-        })?;
-
-        let mut line = String::new();
-        let read = timeout(
-            Duration::from_secs(DEFAULT_VSOCK_TIMEOUT_SECS),
-            read_half.read_line(&mut line),
-        )
-        .await
-        .map_err(|_| {
-            AgentError::Runtime(format!(
-                "firecracker vsock roundtrip timeout after {}s",
-                DEFAULT_VSOCK_TIMEOUT_SECS
-            ))
-        })?
-        .map_err(|err| {
-            AgentError::Runtime(format!("read firecracker vsock response failed: {err}"))
-        })?;
-
-        if read == 0 {
-            return Err(AgentError::Runtime(
-                "firecracker vsock peer closed connection".to_string(),
-            ));
+        match &mut self.transport {
+            VmTransport::Mock {
+                read_half,
+                write_half,
+            } => roundtrip_json_over_stream(read_half, write_half, request).await,
+            VmTransport::Firecracker => {
+                let timeout_duration = Duration::from_secs(DEFAULT_VSOCK_TIMEOUT_SECS);
+                let stream = timeout(timeout_duration, UnixStream::connect(&self.config.vsock_path))
+                    .await
+                    .map_err(|_| {
+                        AgentError::Runtime(format!(
+                            "firecracker vsock connect timeout after {}s",
+                            DEFAULT_VSOCK_TIMEOUT_SECS
+                        ))
+                    })?
+                    .map_err(|err| {
+                        AgentError::Runtime(format!(
+                            "connect firecracker vsock failed: path={} error={err}",
+                            self.config.vsock_path.display()
+                        ))
+                    })?;
+                let stream =
+                    connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, timeout_duration)
+                        .await?;
+                let (read_half, write_half) = stream.into_split();
+                let mut read_half = BufReader::new(read_half);
+                let mut write_half = write_half;
+                roundtrip_json_over_stream(&mut read_half, &mut write_half, request).await
+            }
         }
-
-        serde_json::from_str::<Value>(line.trim_end()).map_err(|err| {
-            AgentError::Protocol(format!("decode firecracker vsock response failed: {err}"))
-        })
     }
 
     pub async fn shutdown(mut self) -> Result<(), AgentError> {
@@ -731,10 +716,7 @@ fn ensure_path_exists(path: &Path, label: &str) -> Result<(), AgentError> {
 
 fn prepare_socket_file(path: &Path, label: &str) -> Result<(), AgentError> {
     let parent = path.parent().ok_or_else(|| {
-        AgentError::Runtime(format!(
-            "{label} path has no parent: {}",
-            path.display()
-        ))
+        AgentError::Runtime(format!("{label} path has no parent: {}", path.display()))
     })?;
     std::fs::create_dir_all(parent).map_err(|err| {
         AgentError::Runtime(format!(
@@ -829,6 +811,18 @@ async fn wait_for_guest_readiness_on_vsock(
                     )));
                 }
 
+                let stream =
+                    match connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, remaining)
+                        .await
+                    {
+                        Ok(stream) => stream,
+                        Err(err) => {
+                            last_error = Some(err.to_string());
+                            sleep(Duration::from_millis(API_POLL_INTERVAL_MS)).await;
+                            continue;
+                        }
+                    };
+
                 let (read_half, write_half) = stream.into_split();
                 let mut read_half = BufReader::new(read_half);
                 let mut write_half = write_half;
@@ -884,15 +878,17 @@ async fn probe_guest_readiness(
     write_half
         .write_all(READY_PROBE_PAYLOAD.as_bytes())
         .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker ready probe failed: {err}")))?;
-    write_half
-        .write_all(b"\n")
-        .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker ready probe newline failed: {err}")))?;
-    write_half
-        .flush()
-        .await
-        .map_err(|err| AgentError::Runtime(format!("flush firecracker ready probe failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Runtime(format!("write firecracker ready probe failed: {err}"))
+        })?;
+    write_half.write_all(b"\n").await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write firecracker ready probe newline failed: {err}"
+        ))
+    })?;
+    write_half.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush firecracker ready probe failed: {err}"))
+    })?;
 
     let mut response_line = String::new();
     let read = timeout(timeout_duration, read_half.read_line(&mut response_line))
@@ -903,7 +899,9 @@ async fn probe_guest_readiness(
                 timeout_duration.as_millis()
             ))
         })?
-        .map_err(|err| AgentError::Runtime(format!("read firecracker ready probe failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Runtime(format!("read firecracker ready probe failed: {err}"))
+        })?;
 
     if read == 0 {
         return Err(AgentError::Runtime(
@@ -911,9 +909,12 @@ async fn probe_guest_readiness(
         ));
     }
 
-    let response = serde_json::from_str::<serde_json::Value>(response_line.trim_end()).map_err(|err| {
-        AgentError::Protocol(format!("decode firecracker ready probe response failed: {err}"))
-    })?;
+    let response =
+        serde_json::from_str::<serde_json::Value>(response_line.trim_end()).map_err(|err| {
+            AgentError::Protocol(format!(
+                "decode firecracker ready probe response failed: {err}"
+            ))
+        })?;
     let status = response
         .get("status")
         .and_then(|value| value.as_str())
@@ -925,6 +926,113 @@ async fn probe_guest_readiness(
     }
 
     Ok(())
+}
+
+async fn connect_to_guest_vsock_port(
+    mut stream: UnixStream,
+    port: u32,
+    timeout_duration: Duration,
+) -> Result<UnixStream, AgentError> {
+    let connect_command = format!("CONNECT {port}\n");
+    stream
+        .write_all(connect_command.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker vsock connect failed: {err}")))?;
+    stream.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush firecracker vsock connect failed: {err}"))
+    })?;
+
+    let mut ack = Vec::with_capacity(32);
+    let read_ack = timeout(timeout_duration, async {
+        loop {
+            let mut byte = [0u8; 1];
+            let bytes = stream.read(&mut byte).await?;
+            if bytes == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "firecracker vsock ack connection closed",
+                ));
+            }
+            ack.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
+            if ack.len() >= 64 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "firecracker vsock ack exceeded 64 bytes",
+                ));
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|_| {
+        AgentError::Runtime(format!(
+            "firecracker vsock connect ack timed out after {}ms",
+            timeout_duration.as_millis()
+        ))
+    })?;
+    read_ack.map_err(|err| {
+        AgentError::Runtime(format!("read firecracker vsock connect ack failed: {err}"))
+    })?;
+
+    let ack_text = String::from_utf8(ack).map_err(|err| {
+        AgentError::Protocol(format!("decode firecracker vsock connect ack failed: {err}"))
+    })?;
+    if !ack_text.starts_with("OK ") || !ack_text.ends_with('\n') {
+        return Err(AgentError::Runtime(format!(
+            "unexpected firecracker vsock connect ack: {}",
+            ack_text.trim_end()
+        )));
+    }
+
+    Ok(stream)
+}
+
+#[cfg(test)]
+async fn roundtrip_json_over_stream(
+    read_half: &mut BufReader<OwnedReadHalf>,
+    write_half: &mut OwnedWriteHalf,
+    request: &Value,
+) -> Result<Value, AgentError> {
+    let encoded = serde_json::to_string(request)
+        .map_err(|err| AgentError::Protocol(format!("encode firecracker vsock request failed: {err}")))?;
+    write_half
+        .write_all(encoded.as_bytes())
+        .await
+        .map_err(|err| AgentError::Runtime(format!("write firecracker vsock request failed: {err}")))?;
+    write_half.write_all(b"\n").await.map_err(|err| {
+        AgentError::Runtime(format!("write firecracker vsock newline failed: {err}"))
+    })?;
+    write_half.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush firecracker vsock request failed: {err}"))
+    })?;
+
+    let mut line = String::new();
+    let read = timeout(
+        Duration::from_secs(DEFAULT_VSOCK_TIMEOUT_SECS),
+        read_half.read_line(&mut line),
+    )
+    .await
+    .map_err(|_| {
+        AgentError::Runtime(format!(
+            "firecracker vsock roundtrip timeout after {}s",
+            DEFAULT_VSOCK_TIMEOUT_SECS
+        ))
+    })?
+    .map_err(|err| {
+        AgentError::Runtime(format!("read firecracker vsock response failed: {err}"))
+    })?;
+
+    if read == 0 {
+        return Err(AgentError::Runtime(
+            "firecracker vsock peer closed connection".to_string(),
+        ));
+    }
+
+    serde_json::from_str::<Value>(line.trim_end())
+        .map_err(|err| AgentError::Protocol(format!("decode firecracker vsock response failed: {err}")))
 }
 
 async fn firecracker_put_json(
@@ -945,24 +1053,21 @@ async fn firecracker_put_json(
             api_socket.display()
         ))
     })?;
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker api request failed: {err}")))?;
+    stream.write_all(request.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!("write firecracker api request failed: {err}"))
+    })?;
     stream
         .write_all(&body)
         .await
         .map_err(|err| AgentError::Runtime(format!("write firecracker api body failed: {err}")))?;
-    stream
-        .flush()
-        .await
-        .map_err(|err| AgentError::Runtime(format!("flush firecracker api request failed: {err}")))?;
+    stream.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush firecracker api request failed: {err}"))
+    })?;
 
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|err| AgentError::Runtime(format!("read firecracker api response failed: {err}")))?;
+    stream.read_to_end(&mut response).await.map_err(|err| {
+        AgentError::Runtime(format!("read firecracker api response failed: {err}"))
+    })?;
 
     let response_str = String::from_utf8_lossy(&response);
     let status_line = response_str.lines().next().unwrap_or_default();
@@ -980,10 +1085,11 @@ async fn firecracker_put_json(
     Ok(())
 }
 
-async fn firecracker_get_json(api_socket: &Path, path: &str) -> Result<serde_json::Value, AgentError> {
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    );
+async fn firecracker_get_json(
+    api_socket: &Path,
+    path: &str,
+) -> Result<serde_json::Value, AgentError> {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
 
     let mut stream = UnixStream::connect(api_socket).await.map_err(|err| {
         AgentError::Runtime(format!(
@@ -991,20 +1097,17 @@ async fn firecracker_get_json(api_socket: &Path, path: &str) -> Result<serde_jso
             api_socket.display()
         ))
     })?;
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker api request failed: {err}")))?;
-    stream
-        .flush()
-        .await
-        .map_err(|err| AgentError::Runtime(format!("flush firecracker api request failed: {err}")))?;
+    stream.write_all(request.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!("write firecracker api request failed: {err}"))
+    })?;
+    stream.flush().await.map_err(|err| {
+        AgentError::Runtime(format!("flush firecracker api request failed: {err}"))
+    })?;
 
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|err| AgentError::Runtime(format!("read firecracker api response failed: {err}")))?;
+    stream.read_to_end(&mut response).await.map_err(|err| {
+        AgentError::Runtime(format!("read firecracker api response failed: {err}"))
+    })?;
 
     let response_str = String::from_utf8_lossy(&response);
     let (head, body) = response_str.split_once("\r\n\r\n").ok_or_else(|| {
@@ -1082,7 +1185,8 @@ mod tests {
         let runtime_root = std::env::temp_dir().join(format!("agentd-fc-ready-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&runtime_root).expect("create runtime root");
         let socket_path = runtime_root.join("guest-ready.sock");
-        prepare_socket_file(&socket_path, "test guest readiness socket").expect("prepare socket path");
+        prepare_socket_file(&socket_path, "test guest readiness socket")
+            .expect("prepare socket path");
 
         let listener = UnixListener::bind(&socket_path).expect("bind guest readiness socket");
         let server = tokio::spawn(async move {
@@ -1091,6 +1195,20 @@ mod tests {
             let mut reader = BufReader::new(read_half);
 
             let mut line = String::new();
+            let read = reader
+                .read_line(&mut line)
+                .await
+                .expect("read vsock connect command");
+            assert!(read > 0, "connect command should be non-empty");
+            assert_eq!(line, format!("CONNECT {}\n", AGENTD_GUEST_VSOCK_PORT));
+
+            write_half
+                .write_all(b"OK 10000\n")
+                .await
+                .expect("write vsock connect ack");
+            write_half.flush().await.expect("flush vsock connect ack");
+
+            line.clear();
             let read = reader
                 .read_line(&mut line)
                 .await
@@ -1117,8 +1235,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_to_guest_vsock_port_requires_ok_ack() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-connect-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+        let socket_path = runtime_root.join("guest-connect.sock");
+        prepare_socket_file(&socket_path, "test guest connect socket")
+            .expect("prepare socket path");
+
+        let listener = UnixListener::bind(&socket_path).expect("bind guest connect socket");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept vsock connect");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .await
+                .expect("read connect command");
+            assert_eq!(line, format!("CONNECT {}\n", AGENTD_GUEST_VSOCK_PORT));
+
+            write_half
+                .write_all(b"OK 10001\n")
+                .await
+                .expect("write connect ack");
+            write_half.flush().await.expect("flush connect ack");
+        });
+
+        let stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("connect to vsock uds");
+        connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, Duration::from_millis(500))
+            .await
+            .expect("connect ack should succeed");
+
+        server.await.expect("server task should join");
+        let _ = cleanup_socket_file(&socket_path, "test guest connect socket");
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
+    async fn connect_to_guest_vsock_port_rejects_bad_ack() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-connect-bad-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+        let socket_path = runtime_root.join("guest-connect-bad.sock");
+        prepare_socket_file(&socket_path, "test guest connect socket")
+            .expect("prepare socket path");
+
+        let listener = UnixListener::bind(&socket_path).expect("bind guest connect socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept vsock connect");
+            stream
+                .write_all(b"ERR\n")
+                .await
+                .expect("write bad connect ack");
+            stream.flush().await.expect("flush bad connect ack");
+        });
+
+        let stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("connect to vsock uds");
+        let err =
+            connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, Duration::from_millis(500))
+                .await
+                .expect_err("bad ack should fail");
+        match err {
+            AgentError::Runtime(message) => {
+                assert!(
+                    message.contains("unexpected firecracker vsock connect ack"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected runtime error, got: {other}"),
+        }
+
+        server.await.expect("server task should join");
+        let _ = cleanup_socket_file(&socket_path, "test guest connect socket");
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
     async fn wait_for_guest_readiness_on_vsock_times_out_without_listener() {
-        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-ready-timeout-{}", Uuid::new_v4()));
+        let runtime_root =
+            std::env::temp_dir().join(format!("agentd-fc-ready-timeout-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&runtime_root).expect("create runtime root");
         let socket_path = runtime_root.join("missing.sock");
 
