@@ -9,6 +9,9 @@
 - `out/<tag>/rootfs/`：解包后的 rootfs 目录
 - `out/<tag>/rootfs.tar.gz`：可分发 rootfs 压缩包
 - `out/<tag>/rootfs.tar.gz.sha256`：压缩包校验和
+- `out/<tag>/rootfs.ext4`：可直接供 Firecracker 挂载的 ext4 镜像
+- `out/<tag>/rootfs.ext4.sha256`：ext4 镜像校验和
+- `data/firecracker/rootfs.ext4`：最近一次构建同步出的运行时 rootfs 镜像
 
 ## 使用方式
 
@@ -26,7 +29,7 @@ SOURCE_DATE_EPOCH=1700000000 bash scripts/firecracker/build-rootfs.sh --tag v0.1
 ## 验收映射（Task 19）
 
 - 构建成功：`bash scripts/firecracker/build-rootfs.sh` 退出码 0
-- 内容校验：`bash scripts/firecracker/verify-rootfs.sh` 报告 python + agent-lite 可用
+- 内容校验：`bash scripts/firecracker/verify-rootfs.sh` 报告 python + agent-lite 可用，且 ext4 镜像内路径存在
 - 证据文件：
   - `.sisyphus/evidence/task-19-rootfs-build.txt`
   - `.sisyphus/evidence/task-19-rootfs-missing-runtime.txt`
