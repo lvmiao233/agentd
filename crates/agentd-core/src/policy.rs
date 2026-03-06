@@ -891,8 +891,8 @@ fn has_higher_precedence(candidate: &TranspiledRule, current: &TranspiledRule) -
 fn decision_precedence_rank(decision: PolicyDecision) -> u8 {
     match decision {
         PolicyDecision::Deny => 0,
-        PolicyDecision::Ask => 1,
-        PolicyDecision::Allow => 2,
+        PolicyDecision::Allow => 1,
+        PolicyDecision::Ask => 2,
     }
 }
 
@@ -948,8 +948,8 @@ impl PolicyLayer {
 fn pick_winner(matches: &[RuleMatch]) -> Option<RuleMatch> {
     for decision in [
         PolicyDecision::Deny,
-        PolicyDecision::Ask,
         PolicyDecision::Allow,
+        PolicyDecision::Ask,
     ] {
         let mut candidates: Vec<&RuleMatch> =
             matches.iter().filter(|m| m.decision == decision).collect();
@@ -1037,6 +1037,37 @@ mod tests {
         let evaluation = PolicyLayer::evaluate_tool(&global, &profile, &session, "read:.env");
         assert_eq!(evaluation.decision, PolicyDecision::Deny);
         assert_eq!(evaluation.matched_rule.as_deref(), Some("read:*.env"));
+        assert_eq!(evaluation.source_layer.as_deref(), Some("profile"));
+    }
+
+    #[test]
+    fn allow_takes_precedence_over_ask_for_more_specific_rule() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "*".to_string(),
+                decision: PolicyDecision::Ask,
+            }],
+        };
+        let profile = PolicyLayer {
+            name: "profile".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "builtin.lite.upper".to_string(),
+                decision: PolicyDecision::Allow,
+            }],
+        };
+        let session = PolicyLayer {
+            name: "session_override".to_string(),
+            rules: vec![],
+        };
+
+        let evaluation =
+            PolicyLayer::evaluate_tool(&global, &profile, &session, "builtin.lite.upper");
+        assert_eq!(evaluation.decision, PolicyDecision::Allow);
+        assert_eq!(
+            evaluation.matched_rule.as_deref(),
+            Some("builtin.lite.upper")
+        );
         assert_eq!(evaluation.source_layer.as_deref(), Some("profile"));
     }
 
