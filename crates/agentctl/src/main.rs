@@ -10,6 +10,13 @@ mod tui;
 
 type DynError = Box<dyn std::error::Error>;
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DiscoveryRecord {
+    agent_id: String,
+    name: String,
+    endpoint: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "agentctl")]
 #[command(about = "CLI for agentd daemon")]
@@ -31,9 +38,15 @@ enum Commands {
         #[arg(long)]
         source_agent_id: String,
         #[arg(long)]
-        target_base_url: String,
+        target_base_url: Option<String>,
+        #[arg(long)]
+        discover_url: Option<String>,
+        #[arg(long)]
+        registry_url: Option<String>,
         #[arg(long)]
         target_agent_id: Option<String>,
+        #[arg(long)]
+        target_name: Option<String>,
         #[arg(long)]
         session_id: Option<String>,
         #[arg(long = "key-file")]
@@ -432,6 +445,68 @@ fn parse_working_files(entries: &[String]) -> Result<std::collections::BTreeMap<
     Ok(files)
 }
 
+fn select_migration_target_endpoint(
+    report: &Value,
+    target_agent_id: Option<&str>,
+    target_name: Option<&str>,
+) -> Result<String, DynError> {
+    let mut records = Vec::<DiscoveryRecord>::new();
+    for section in ["lan", "registry"] {
+        if let Some(items) = report.get(section).and_then(Value::as_array) {
+            for item in items {
+                records.push(serde_json::from_value(item.clone())?);
+            }
+        }
+    }
+
+    let selected = if let Some(agent_id) = target_agent_id.filter(|value| !value.trim().is_empty()) {
+        records.into_iter().find(|record| record.agent_id == agent_id)
+    } else if let Some(name) = target_name.filter(|value| !value.trim().is_empty()) {
+        records.into_iter().find(|record| record.name == name)
+    } else if records.len() == 1 {
+        records.into_iter().next()
+    } else {
+        None
+    };
+
+    let selected = selected.ok_or_else(|| -> DynError {
+        if target_agent_id.is_some() {
+            Box::<dyn std::error::Error>::from(format!(
+                "no discovered agent matched target-agent-id {:?}",
+                target_agent_id
+            ))
+        } else if target_name.is_some() {
+            Box::<dyn std::error::Error>::from(format!(
+                "no discovered agent matched target-name {:?}",
+                target_name
+            ))
+        } else {
+            Box::<dyn std::error::Error>::from(
+                "multiple discovered agents found; pass --target-agent-id or --target-name",
+            )
+        }
+    })?;
+
+    normalize_base_url(&selected.endpoint)
+}
+
+async fn resolve_migration_target_base_url(
+    target_base_url: Option<&str>,
+    discover_url: Option<&str>,
+    registry_url: Option<&str>,
+    target_agent_id: Option<&str>,
+    target_name: Option<&str>,
+) -> Result<String, DynError> {
+    if let Some(target_base_url) = target_base_url {
+        return normalize_base_url(target_base_url);
+    }
+
+    let discover_url =
+        discover_url.ok_or("either --target-base-url or --discover-url is required")?;
+    let report = fetch_discovery_report(discover_url, registry_url).await?;
+    select_migration_target_endpoint(&report, target_agent_id, target_name)
+}
+
 async fn follow_events(
     socket_path: &str,
     limit: Option<usize>,
@@ -595,7 +670,10 @@ async fn run_cli(
         Commands::Migrate {
             source_agent_id,
             target_base_url,
+            discover_url,
+            registry_url,
             target_agent_id,
+            target_name,
             session_id,
             key_files,
             messages,
@@ -608,6 +686,14 @@ async fn run_cli(
             let (messages, head_id) = build_migration_messages(&messages, head_id.as_deref())?;
             let tool_results_cache = parse_tool_cache_json(tool_cache_json.as_deref())?;
             let working_directory = parse_working_files(&working_files)?;
+            let target_base_url = resolve_migration_target_base_url(
+                target_base_url.as_deref(),
+                discover_url.as_deref(),
+                registry_url.as_deref(),
+                target_agent_id.as_deref(),
+                target_name.as_deref(),
+            )
+            .await?;
             let response = call_rpc(
                 &cli.socket_path,
                 "MigrateContext",
@@ -1002,6 +1088,33 @@ fn build_migration_messages_chains_parent_ids() {
 }
 
 #[cfg(test)]
+#[test]
+fn select_migration_target_endpoint_prefers_named_match() {
+    let report = json!({
+        "lan": [
+            {
+                "agent_id": "lan-a",
+                "name": "alpha",
+                "endpoint": "http://10.0.0.2:8080",
+                "source": "lan"
+            }
+        ],
+        "registry": [
+            {
+                "agent_id": "reg-b",
+                "name": "beta",
+                "endpoint": "https://registry.example.com/agents/reg-b",
+                "source": "registry"
+            }
+        ]
+    });
+
+    let endpoint = select_migration_target_endpoint(&report, None, Some("beta"))
+        .expect("target name should resolve");
+    assert_eq!(endpoint, "https://registry.example.com/agents/reg-b");
+}
+
+#[cfg(test)]
 #[tokio::test]
 async fn migrate_command_sends_rpc_request() {
     let socket_path = std::env::temp_dir().join(format!(
@@ -1064,6 +1177,99 @@ async fn migrate_command_sends_rpc_request() {
     run_cli(cli, |_socket_path| Ok(()))
         .await
         .expect("migrate command should succeed");
+    server.await.expect("rpc server should finish");
+    let _ = std::fs::remove_file(socket_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn migrate_command_can_resolve_target_from_discovery() {
+    let socket_path = std::env::temp_dir().join(format!(
+        "agentctl-migrate-discovery-test-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind test unix socket");
+
+    let discovery_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind discovery listener");
+    let discovery_addr = discovery_listener
+        .local_addr()
+        .expect("resolve discovery address");
+    let discovery_server = tokio::spawn(async move {
+        let (mut stream, _) = discovery_listener
+            .accept()
+            .await
+            .expect("accept discovery request");
+        let mut buf = [0_u8; 8192];
+        let read = stream.read(&mut buf).await.expect("read discovery request");
+        let request = String::from_utf8_lossy(&buf[..read]).to_string();
+        assert!(request.contains("GET /discover"));
+
+        let body = serde_json::to_string(&json!({
+            "lan": [{
+                "agent_id": "target-1",
+                "name": "target-node",
+                "endpoint": "http://127.0.0.1:18087",
+                "source": "lan"
+            }],
+            "registry": [],
+            "errors": []
+        }))
+        .expect("encode discovery body");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write discovery response");
+    });
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept rpc connection");
+        let mut buf = Vec::new();
+        stream
+            .read_to_end(&mut buf)
+            .await
+            .expect("read rpc request");
+        let request: JsonRpcRequest = serde_json::from_slice(&buf).expect("decode rpc request");
+        assert_eq!(request.method, "MigrateContext");
+        assert_eq!(request.params["target_base_url"], json!("http://127.0.0.1:18087"));
+
+        let response = JsonRpcResponse::success(json!(1), json!({"migration_level": "l1"}));
+        let encoded = serde_json::to_vec(&response).expect("encode rpc response");
+        stream
+            .write_all(&encoded)
+            .await
+            .expect("write rpc response");
+    });
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "--socket-path",
+        socket_path.to_str().expect("socket path should be utf8"),
+        "migrate",
+        "--source-agent-id",
+        "agent-1",
+        "--discover-url",
+        &format!("http://{discovery_addr}"),
+        "--target-name",
+        "target-node",
+        "--message",
+        "user:first prompt",
+        "--json",
+    ])
+    .expect("migrate discovery args should parse");
+
+    run_cli(cli, |_socket_path| Ok(()))
+        .await
+        .expect("migrate discovery command should succeed");
+    discovery_server
+        .await
+        .expect("discovery server should finish");
     server.await.expect("rpc server should finish");
     let _ = std::fs::remove_file(socket_path);
 }
