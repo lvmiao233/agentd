@@ -1,6 +1,6 @@
 [server]
 name = "mcp-search"
-command = "python"
+command = "/home/vipa/agentd/.venv/bin/python"
 args = ["-m", "agentd_mcp_search"]
 transport = "stdio"
 trust_level = "builtin"

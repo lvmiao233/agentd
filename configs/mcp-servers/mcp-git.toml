@@ -1,6 +1,6 @@
 [server]
 name = "mcp-git"
-command = "python"
+command = "/home/vipa/agentd/.venv/bin/python"
 args = ["-m", "agentd_mcp_git"]
 transport = "stdio"
 trust_level = "builtin"

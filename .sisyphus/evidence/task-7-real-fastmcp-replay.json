@@ -1,0 +1,27 @@
+{
+  "scenario": "default daemon boots builtin fastmcp servers and exposes live tool metadata",
+  "config": "configs/agentd.toml",
+  "result": {
+    "server_count": 4,
+    "tool_count": 14,
+    "sample_server": {
+      "server": "mcp-fs",
+      "health": "healthy",
+      "trust_level": "builtin",
+      "capabilities": [
+        "read_file",
+        "list_directory",
+        "search_files",
+        "patch_file",
+        "tree"
+      ]
+    },
+    "sample_tool": {
+      "server": "mcp-fs",
+      "tool": "read_file",
+      "policy_tool": "mcp.fs.read_file",
+      "description": "Read text content from a file.",
+      "decision": "allow"
+    }
+  }
+}
