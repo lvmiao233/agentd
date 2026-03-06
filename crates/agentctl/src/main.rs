@@ -598,6 +598,8 @@ async fn run_builtin_lite(
         json!({
             "name": name,
             "model": model,
+            "permission_policy": "allow",
+            "allowed_tools": [tool],
         }),
     )
     .await?;
@@ -1259,6 +1261,90 @@ async fn migrate_command_sends_rpc_request() {
     run_cli(cli, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("migrate command should succeed");
+    server.await.expect("rpc server should finish");
+    let _ = std::fs::remove_file(socket_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn builtin_lite_create_agent_allows_requested_tool() {
+    let socket_path = std::env::temp_dir().join(format!(
+        "agentctl-builtin-lite-test-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind test unix socket");
+
+    let server = tokio::spawn(async move {
+        let (mut create_stream, _) = listener.accept().await.expect("accept create rpc");
+        let mut create_buf = Vec::new();
+        create_stream
+            .read_to_end(&mut create_buf)
+            .await
+            .expect("read create rpc request");
+        let create_request: JsonRpcRequest =
+            serde_json::from_slice(&create_buf).expect("decode create rpc request");
+        assert_eq!(create_request.method, "CreateAgent");
+        assert_eq!(create_request.params["permission_policy"], json!("allow"));
+        assert_eq!(
+            create_request.params["allowed_tools"],
+            json!(["builtin.lite.echo"])
+        );
+
+        let create_response = JsonRpcResponse::success(
+            json!(1),
+            json!({
+                "agent": {"id": "agent-builtin-lite-test"}
+            }),
+        );
+        let encoded_create = serde_json::to_vec(&create_response).expect("encode create response");
+        create_stream
+            .write_all(&encoded_create)
+            .await
+            .expect("write create rpc response");
+        let _ = create_stream.shutdown().await;
+
+        let (mut start_stream, _) = listener.accept().await.expect("accept start rpc");
+        let mut start_buf = Vec::new();
+        start_stream
+            .read_to_end(&mut start_buf)
+            .await
+            .expect("read start rpc request");
+        let start_request: JsonRpcRequest =
+            serde_json::from_slice(&start_buf).expect("decode start rpc request");
+        assert_eq!(start_request.method, "StartManagedAgent");
+        assert_eq!(start_request.params["agent_id"], json!("agent-builtin-lite-test"));
+
+        let start_response = JsonRpcResponse::success(
+            json!(1),
+            json!({"agent_id": "agent-builtin-lite-test", "state": "starting"}),
+        );
+        let encoded_start = serde_json::to_vec(&start_response).expect("encode start response");
+        start_stream
+            .write_all(&encoded_start)
+            .await
+            .expect("write start rpc response");
+        let _ = start_stream.shutdown().await;
+    });
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "--socket-path",
+        socket_path.to_str().expect("socket path should be utf8"),
+        "agent",
+        "run",
+        "--builtin",
+        "lite",
+        "--name",
+        "builtin-lite-test",
+        "--model",
+        "gpt-5.3-codex",
+        "Reply with exactly OK",
+    ])
+    .expect("builtin lite args should parse");
+
+    run_cli(cli, |_socket_path, _agent_id, _model| Ok(()))
+        .await
+        .expect("builtin lite command should succeed");
     server.await.expect("rpc server should finish");
     let _ = std::fs::remove_file(socket_path);
 }
