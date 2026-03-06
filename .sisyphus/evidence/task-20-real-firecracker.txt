@@ -1,0 +1,10 @@
+task=20
+status=passed
+step=fetch-firecracker-assets
+release=v1.14.2
+arch=x86_64
+binary=data/firecracker/firecracker
+binary_sha256=36bccbe85a347307edfce2148f23191e8be55d08d287d9d3a6dccf037bed087e
+kernel=data/firecracker/vmlinux.bin
+kernel_sha256=e41c7048bd2475e7e788153823fcb9166a7e0b78c4c443bd6446d015fa735f53
+kernel_asset=firecracker-ci/v1.14/x86_64/vmlinux-6.1.155

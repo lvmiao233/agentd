@@ -12,10 +12,13 @@
 - `out/<tag>/rootfs.ext4`：可直接供 Firecracker 挂载的 ext4 镜像
 - `out/<tag>/rootfs.ext4.sha256`：ext4 镜像校验和
 - `data/firecracker/rootfs.ext4`：最近一次构建同步出的运行时 rootfs 镜像
+- `data/firecracker/firecracker`：可由 `fetch-assets.sh` 同步出的 Firecracker 二进制
+- `data/firecracker/vmlinux.bin`：可由 `fetch-assets.sh` 同步出的兼容内核
 
 ## 使用方式
 
 ```bash
+bash scripts/firecracker/fetch-assets.sh
 bash scripts/firecracker/build-rootfs.sh
 bash scripts/firecracker/verify-rootfs.sh
 ```
