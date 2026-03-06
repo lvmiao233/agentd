@@ -1,0 +1,28 @@
+Task 23 live A2A CLI send evidence
+=================================
+
+Date: 2026-03-06
+Command sequence:
+  1. target/debug/agentd --db-path /tmp/agentd-a2a.sqlite --health-port 18081 --one-api-enabled false
+  2. target/debug/agentctl --socket-path /tmp/agentd.sock agent create --name a2a-demo-2 --model claude-4-sonnet --json
+  3. target/debug/agentctl a2a discover --url http://127.0.0.1:18081 --json
+  4. target/debug/agentctl a2a send --target http://127.0.0.1:18081 --input "ping after lifecycle fix" --json
+
+Observed highlights:
+  - agent create returned agent id 1c41d59d-7243-4ad0-a102-9a7bd74b82a6
+  - a2a discover returned the live daemon's agent card
+  - a2a send returned completed status with structured output
+
+Returned stream states:
+  - submitted
+  - working
+  - completed
+
+Returned output summary:
+  - executor         = local-a2a-executor
+  - input_summary    = ping after lifecycle fix
+  - lifecycle states = creating -> running -> stopped
+  - result           = ok
+
+Conclusion:
+  Live daemon + live agentctl A2A flow worked end-to-end, and late stream subscribers still received full lifecycle replay.
