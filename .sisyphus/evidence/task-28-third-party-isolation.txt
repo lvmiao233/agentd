@@ -5,3 +5,6 @@ pytest=uv run pytest python/agentd-agent-lite/tests/test_third_party_mcp.py::tes
 --- test log ---
 .                                                                        [100%]
 1 passed in 0.02s
+
+manual_onboard=POST /api/mcp with args array succeeded and builtin servers remained listed
+settings_ui_verified=true

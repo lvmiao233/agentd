@@ -61,7 +61,24 @@ export default function SettingsPage() {
 
   const [name, setName] = useState('');
   const [command, setCommand] = useState('');
+  const [argsText, setArgsText] = useState('');
   const [trustLevel, setTrustLevel] = useState('community');
+
+  function parseArgs(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) return [] as string[];
+    if (trimmed.startsWith('[')) {
+      const parsed = JSON.parse(trimmed);
+      if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+        throw new Error('参数必须是字符串数组');
+      }
+      return parsed;
+    }
+    return trimmed
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
 
   const fetchServers = useCallback(async () => {
     try {
@@ -93,22 +110,29 @@ export default function SettingsPage() {
     setSubmitting(true);
     setFeedback(null);
     try {
+      const args = parseArgs(argsText);
       const res = await fetch('/api/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: n, command: c, trust_level: trustLevel }),
+        body: JSON.stringify({
+          name: n,
+          command: c,
+          args,
+          trust_level: trustLevel,
+        }),
       });
       const data = await res.json();
       if (res.ok) {
         setFeedback(`${n} 注册成功`);
         setName('');
         setCommand('');
+        setArgsText('');
         await fetchServers();
       } else {
         setFeedback(data.error ?? '注册失败');
       }
-    } catch {
-      setFeedback('请求失败');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '请求失败');
     } finally {
       setSubmitting(false);
     }
@@ -149,7 +173,7 @@ export default function SettingsPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           注册第三方 MCP 服务器
         </h2>
-        <form onSubmit={handleOnboard} className="space-y-3">
+        <form onSubmit={handleOnboard} className="mcp-onboarding-form space-y-3">
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">
@@ -168,7 +192,7 @@ export default function SettingsPage() {
               <Input
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
-                placeholder="npx -y @modelcontextprotocol/server-figma"
+                placeholder="npx"
               />
             </div>
             <div>
@@ -186,6 +210,17 @@ export default function SettingsPage() {
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              参数（JSON 数组或每行一个）
+            </label>
+            <textarea
+              className="min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              value={argsText}
+              onChange={(e) => setArgsText(e.target.value)}
+              placeholder={'["-y", "@modelcontextprotocol/server-figma"]'}
+            />
           </div>
           <Button type="submit" disabled={submitting}>
             {submitting ? (
@@ -211,7 +246,7 @@ export default function SettingsPage() {
             暂无 MCP 服务器 — daemon 启动后内置服务器将自动显示
           </p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="mcp-server-list space-y-2">
             {servers.map((server) => (
               <li
                 key={server.server}
