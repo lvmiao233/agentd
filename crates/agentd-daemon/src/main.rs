@@ -1463,19 +1463,45 @@ async fn fetch_remote_registry_agents(
         .map_err(|err| AgentError::Runtime(format!("decode registry entries failed: {err}")))
 }
 
-fn start_mdns_advertisement(bind_addr: SocketAddr) -> Result<ServiceDaemon, AgentError> {
+fn mdns_service_properties(
+    bind_addr: SocketAddr,
+    profile: Option<&AgentProfile>,
+) -> Vec<(String, String)> {
+    match profile {
+        Some(profile) => vec![
+            ("endpoint".to_string(), format!("http://{bind_addr}")),
+            ("agent_id".to_string(), profile.id.to_string()),
+            ("name".to_string(), profile.name.clone()),
+            ("model".to_string(), profile.model.model_name.clone()),
+            ("provider".to_string(), profile.model.provider.clone()),
+            ("health".to_string(), "ready".to_string()),
+        ],
+        None => {
+            let instance_name = format!("agentd-{}", bind_addr.port());
+            vec![
+                ("endpoint".to_string(), format!("http://{bind_addr}")),
+                ("agent_id".to_string(), instance_name),
+                ("name".to_string(), "agentd-daemon".to_string()),
+                ("model".to_string(), "daemon".to_string()),
+                ("provider".to_string(), "agentd".to_string()),
+                ("health".to_string(), "ready".to_string()),
+            ]
+        }
+    }
+}
+
+fn start_mdns_advertisement(
+    bind_addr: SocketAddr,
+    profile: Option<&AgentProfile>,
+) -> Result<ServiceDaemon, AgentError> {
     let daemon = ServiceDaemon::new()
         .map_err(|err| AgentError::Runtime(format!("create mdns daemon failed: {err}")))?;
-    let instance_name = format!("agentd-{}", bind_addr.port());
+    let instance_name = profile
+        .map(|profile| profile.name.replace(' ', "-").to_ascii_lowercase())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("agentd-{}", bind_addr.port()));
     let host_name = format!("{}.local.", bind_addr.ip());
-    let properties = [
-        ("endpoint", format!("http://{bind_addr}")),
-        ("agent_id", instance_name.clone()),
-        ("name", "agentd-daemon".to_string()),
-        ("model", "daemon".to_string()),
-        ("provider", "agentd".to_string()),
-        ("health", "ready".to_string()),
-    ];
+    let properties = mdns_service_properties(bind_addr, profile);
     let service = ServiceInfo::new(
         AGENTD_MDNS_SERVICE_TYPE,
         &instance_name,
@@ -1489,6 +1515,41 @@ fn start_mdns_advertisement(bind_addr: SocketAddr) -> Result<ServiceDaemon, Agen
         .register(service)
         .map_err(|err| AgentError::Runtime(format!("register mdns service failed: {err}")))?;
     Ok(daemon)
+}
+
+async fn hydrate_loaded_profiles(
+    store: &Arc<SqliteStore>,
+    agent_card_root: &Path,
+    loaded_profiles: &[AgentProfile],
+) -> Result<Vec<AgentProfile>, AgentError> {
+    let mut hydrated = Vec::with_capacity(loaded_profiles.len());
+    let mut existing_agents = store.list_agents().await?;
+
+    for profile in loaded_profiles {
+        if let Some(existing) = existing_agents
+            .iter()
+            .find(|candidate| {
+                candidate.name == profile.name
+                    && candidate.model.provider == profile.model.provider
+                    && candidate.model.model_name == profile.model.model_name
+            })
+            .cloned()
+        {
+            persist_agent_card(agent_card_root, &existing)?;
+            hydrated.push(existing);
+            continue;
+        }
+
+        store.create_agent(profile.clone()).await?;
+        let ready_agent = store
+            .update_agent_state(profile.id, AgentLifecycleState::Ready, None)
+            .await?;
+        persist_agent_card(agent_card_root, &ready_agent)?;
+        existing_agents.push(ready_agent.clone());
+        hydrated.push(ready_agent);
+    }
+
+    Ok(hydrated)
 }
 
 fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -3622,7 +3683,9 @@ async fn run_agent_non_stream_marks_usage_unavailable_when_provider_omits_usage(
         response.error.is_none(),
         "run-agent response should succeed: {response:?}"
     );
-    let result = response.result.expect("run-agent should include result payload");
+    let result = response
+        .result
+        .expect("run-agent should include result payload");
     assert_eq!(result["output"], json!("hello"));
     assert!(
         result["usage"].is_null(),
@@ -3756,7 +3819,9 @@ async fn run_agent_non_stream_reports_provider_usage_and_persists_summary() {
         response.error.is_none(),
         "run-agent response should succeed: {response:?}"
     );
-    let result = response.result.expect("run-agent should include result payload");
+    let result = response
+        .result
+        .expect("run-agent should include result payload");
     assert_eq!(result["output"], json!("usage available"));
     assert_eq!(
         result["usage"],
@@ -3970,11 +4035,11 @@ async fn orchestrator_splits_and_aggregates_tasks() {
             let agent_id = agent_id.to_string();
             let work = child_input["work"].clone();
             async move {
-            Ok(json!({
-                "agent_id": agent_id,
-                "child_index": child_index,
-                "work": work,
-            }))
+                Ok(json!({
+                    "agent_id": agent_id,
+                    "child_index": child_index,
+                    "work": work,
+                }))
             }
         },
     )
@@ -4027,22 +4092,22 @@ async fn orchestrator_retries_failed_child_once() {
                 let attempts_by_child = attempts_by_child.clone();
                 let work = child_input["work"].clone();
                 async move {
-            let mut attempts_by_child = attempts_by_child.lock().await;
-            let entry = attempts_by_child.entry(child_index).or_insert(0);
-            *entry = entry.saturating_add(1);
-            let attempts_seen = *entry;
-            drop(attempts_by_child);
+                    let mut attempts_by_child = attempts_by_child.lock().await;
+                    let entry = attempts_by_child.entry(child_index).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    let attempts_seen = *entry;
+                    drop(attempts_by_child);
 
-            if work == json!("flaky") && attempts_seen == 1 {
-                return Err(AgentError::Runtime(
-                    "temporary child execution failure".to_string(),
-                ));
-            }
+                    if work == json!("flaky") && attempts_seen == 1 {
+                        return Err(AgentError::Runtime(
+                            "temporary child execution failure".to_string(),
+                        ));
+                    }
 
-            Ok(json!({
-                "work": work,
-                "attempts_seen": attempts_seen,
-            }))
+                    Ok(json!({
+                        "work": work,
+                        "attempts_seen": attempts_seen,
+                    }))
                 }
             }
         },
@@ -4207,15 +4272,26 @@ async fn orchestrate_task_rpc_executes_delegate_agents() {
     )
     .await;
 
-    assert!(response.error.is_none(), "orchestrate rpc should succeed: {response:?}");
-    let result = response.result.expect("orchestrate rpc should return result");
+    assert!(
+        response.error.is_none(),
+        "orchestrate rpc should succeed: {response:?}"
+    );
+    let result = response
+        .result
+        .expect("orchestrate rpc should return result");
     assert_eq!(result["state"], json!("completed"));
     let children = result["children"]
         .as_array()
         .expect("children should be an array");
     assert_eq!(children.len(), 2);
-    assert_eq!(children[0]["output"]["result"], json!("delegated:decompose requirement"));
-    assert_eq!(children[1]["output"]["result"], json!("delegated:aggregate output"));
+    assert_eq!(
+        children[0]["output"]["result"],
+        json!("delegated:decompose requirement")
+    );
+    assert_eq!(
+        children[1]["output"]["result"],
+        json!("delegated:aggregate output")
+    );
     assert_eq!(children[0]["output"]["usage_source"], json!("provider"));
     assert_eq!(children[1]["output"]["usage_source"], json!("provider"));
 
@@ -4285,6 +4361,78 @@ async fn mdns_peer_discovery_finds_remote_agent() {
         serde_json::from_str(body).expect("discover response body should be valid json");
     assert_eq!(payload["lan"][0]["agent_id"], json!("remote-agent-1"));
     assert_eq!(payload["lan"][0]["source"], json!("lan"));
+
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn discover_registry_fallback_keeps_lan_results() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task25-registry-fallback-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    state
+        .set_lan_discovery_for_test(Arc::new(StaticLanDiscovery {
+            records: vec![DiscoveryAgentRecord {
+                agent_id: "remote-agent-1".to_string(),
+                name: "remote-agent".to_string(),
+                model: "claude-4-sonnet".to_string(),
+                provider: "one-api".to_string(),
+                endpoint: "http://10.0.0.2:8080".to_string(),
+                source: "lan".to_string(),
+                health: "ready".to_string(),
+            }],
+        }))
+        .await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test health listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve listener socket address");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store,
+        state,
+        OneApiConfig::default(),
+        shutdown_rx,
+    ));
+
+    let mut conn = tokio::net::TcpStream::connect(bind_addr)
+        .await
+        .expect("connect discover endpoint");
+    let req = "GET /discover?registry_url=http%3A%2F%2F127.0.0.1%3A9 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    conn.write_all(req.as_bytes())
+        .await
+        .expect("send discover request");
+    let mut resp = Vec::new();
+    conn.read_to_end(&mut resp)
+        .await
+        .expect("read discover response");
+    let text = String::from_utf8(resp).expect("discover response should be utf8");
+    assert!(text.starts_with("HTTP/1.1 200 OK"));
+    let body = text
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("discover response body should exist");
+    let payload: Value =
+        serde_json::from_str(body).expect("discover response body should be valid json");
+    assert_eq!(payload["lan"][0]["agent_id"], json!("remote-agent-1"));
+    assert_eq!(payload["registry"], json!([]));
+    assert!(
+        payload["errors"][0]
+            .as_str()
+            .is_some_and(|error| error.contains("registry query failed")),
+        "expected registry fallback error: {payload}"
+    );
 
     let _ = shutdown_tx.send(true);
     let _ = server_task.await;
@@ -5063,11 +5211,9 @@ fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
 
 fn query_param(query: Option<&str>, key: &str) -> Option<String> {
     let query = query?;
-    query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| v.to_string())
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
 }
 
 fn request_body(request: &str) -> &str {
@@ -5089,7 +5235,9 @@ fn summarize_a2a_input(value: &Value) -> Option<String> {
                 }
             }
             Value::Object(map) => {
-                for key in ["prompt", "input", "content", "message", "task", "summary", "work"] {
+                for key in [
+                    "prompt", "input", "content", "message", "task", "summary", "work",
+                ] {
                     if let Some(item) = map.get(key) {
                         collect_fragments(item, fragments);
                     }
@@ -5191,10 +5339,7 @@ async fn drive_a2a_task_lifecycle(
     store: Arc<SqliteStore>,
     task_id: uuid::Uuid,
 ) {
-    let Some(task) = state
-        .get_a2a_task(task_id)
-        .await
-    else {
+    let Some(task) = state.get_a2a_task(task_id).await else {
         return;
     };
     let task_input = task.input.clone();
@@ -5274,7 +5419,9 @@ async fn drive_a2a_task_lifecycle(
                 task_id,
                 A2ATaskState::Failed,
                 None,
-                Some("a2a task input must include prompt, message, content, or summary".to_string()),
+                Some(
+                    "a2a task input must include prompt, message, content, or summary".to_string(),
+                ),
                 json!({
                     "kind": task_kind,
                     "phase": "validation-failed",
@@ -8201,6 +8348,84 @@ edit = "allow"
         let dir = temp_profiles_dir();
         let profiles = load_agent_profiles(&dir).expect("missing dir should be skipped");
         assert!(profiles.is_empty());
+    }
+
+    #[cfg(test)]
+    #[tokio::test]
+    async fn hydrate_loaded_profiles_populates_store_without_duplicates() {
+        let db_path = std::env::temp_dir().join(format!(
+            "agentd-hydrate-profiles-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let card_root = std::env::temp_dir().join(format!(
+            "agentd-hydrate-cards-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&card_root).expect("create card root");
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+
+        let loaded_profiles = vec![AgentProfile::new(
+            "seeded-agent".to_string(),
+            ModelConfig {
+                provider: "one-api".to_string(),
+                model_name: "gpt-4.1-mini".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        )];
+
+        let first = hydrate_loaded_profiles(&store, &card_root, &loaded_profiles)
+            .await
+            .expect("first hydration should succeed");
+        let second = hydrate_loaded_profiles(&store, &card_root, &loaded_profiles)
+            .await
+            .expect("second hydration should reuse existing agent");
+        let listed = store.list_agents().await.expect("list hydrated agents");
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(listed.len(), 1, "hydration should not duplicate agents");
+        assert_eq!(listed[0].status, AgentLifecycleState::Ready);
+        assert_eq!(
+            first[0].id, second[0].id,
+            "second hydration should reuse same agent"
+        );
+        assert!(
+            card_root
+                .join(listed[0].id.to_string())
+                .join("agent.json")
+                .exists(),
+            "hydration should persist agent card"
+        );
+
+        cleanup_sqlite_files(&db_path);
+        let _ = std::fs::remove_dir_all(&card_root);
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn mdns_service_properties_prefer_real_agent_metadata() {
+        let bind_addr: SocketAddr = "127.0.0.1:18082".parse().expect("parse bind addr");
+        let profile = AgentProfile::new(
+            "seeded-agent".to_string(),
+            ModelConfig {
+                provider: "one-api".to_string(),
+                model_name: "gpt-4.1-mini".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        );
+
+        let properties = mdns_service_properties(bind_addr, Some(&profile));
+        let props = properties.into_iter().collect::<HashMap<_, _>>();
+        assert_eq!(
+            props.get("endpoint"),
+            Some(&"http://127.0.0.1:18082".to_string())
+        );
+        assert_eq!(props.get("agent_id"), Some(&profile.id.to_string()));
+        assert_eq!(props.get("name"), Some(&"seeded-agent".to_string()));
+        assert_eq!(props.get("model"), Some(&"gpt-4.1-mini".to_string()));
+        assert_eq!(props.get("provider"), Some(&"one-api".to_string()));
     }
 }
 
@@ -11745,9 +11970,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mcp_host.clone(),
         firecracker_executor,
     );
+    let hydrated_profiles = hydrate_loaded_profiles(
+        &store,
+        Path::new(&config.daemon.agent_card_root),
+        &loaded_profiles,
+    )
+    .await?;
 
     let health_listener = TcpListener::bind(bind_addr).await?;
-    let mdns_daemon = match start_mdns_advertisement(bind_addr) {
+    let mdns_daemon = match start_mdns_advertisement(bind_addr, hydrated_profiles.first()) {
         Ok(daemon) => {
             info!(%bind_addr, service_type = AGENTD_MDNS_SERVICE_TYPE, "mDNS advertisement registered");
             Some(daemon)

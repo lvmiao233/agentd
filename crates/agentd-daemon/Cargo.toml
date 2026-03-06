@@ -30,3 +30,4 @@ uuid.workspace = true
 mdns-sd = "0.18"
 futures-util = "0.3"
 tokio-tungstenite = "0.24"
+url = "2"
