@@ -3332,7 +3332,8 @@ async fn ws_bridge_streams_run_agent_frames() {
         };
 
         if payload.starts_with('{') {
-            let decoded: Value = serde_json::from_str(payload.as_ref()).expect("decode ws json ack");
+            let decoded: Value =
+                serde_json::from_str(payload.as_ref()).expect("decode ws json ack");
             if decoded.get("id") == Some(&json!(9003)) {
                 ack_seen = true;
             }
@@ -3346,7 +3347,10 @@ async fn ws_bridge_streams_run_agent_frames() {
     }
 
     assert!(ack_seen, "expected run-agent websocket ack");
-    assert!(stream_frame_seen, "expected run-agent websocket stream frame");
+    assert!(
+        stream_frame_seen,
+        "expected run-agent websocket stream frame"
+    );
 
     let _ = socket.close(None).await;
     let _ = shutdown_tx.send(true);

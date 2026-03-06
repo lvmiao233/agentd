@@ -1,4 +1,6 @@
-use super::{handle_rpc_request, stream_run_agent_over_uds, OneApiConfig, RunAgentParams, RuntimeState};
+use super::{
+    handle_rpc_request, stream_run_agent_over_uds, OneApiConfig, RunAgentParams, RuntimeState,
+};
 use agentd_protocol::{
     A2AStreamParams, A2ATaskEvent, A2ATaskState, JsonRpcRequest, JsonRpcResponse,
 };
@@ -150,7 +152,11 @@ async fn handle_run_agent_stream_over_ws(
         }
     };
 
-    send_rpc_response(ws, &JsonRpcResponse::success(request.id, json!({"stream": true}))).await?;
+    send_rpc_response(
+        ws,
+        &JsonRpcResponse::success(request.id, json!({"stream": true})),
+    )
+    .await?;
 
     let mut writer = WsTextBridgeWriter::new(ws);
     stream_run_agent_over_uds(&mut writer, store, one_api_config, params).await;
@@ -316,17 +322,13 @@ impl AsyncWrite for WsTextBridgeWriter<'_> {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         if self.buffer.is_empty() {
             return Poll::Ready(Ok(()));
         }
 
         ready!(Pin::new(&mut *self.ws).poll_ready(cx)).map_err(io::Error::other)?;
-        let text = String::from_utf8(std::mem::take(&mut self.buffer))
-            .map_err(io::Error::other)?;
+        let text = String::from_utf8(std::mem::take(&mut self.buffer)).map_err(io::Error::other)?;
         Pin::new(&mut *self.ws)
             .start_send(Message::Text(text.into()))
             .map_err(io::Error::other)?;
@@ -334,10 +336,7 @@ impl AsyncWrite for WsTextBridgeWriter<'_> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         self.poll_flush(cx)
     }
 }
