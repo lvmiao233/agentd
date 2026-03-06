@@ -1732,7 +1732,7 @@ fn mcp_valid_stdio_server(name: &str, capability: &str) -> mcp::McpServerConfig 
         args: vec![
             "-c".to_string(),
             format!(
-                "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/call\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"tool-ok\"}}],\"isError\":false}}}}'; fi; done"
+                "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/call\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"tool-ok\"}}],\"isError\":false}}}}'; fi; done"
             ),
         ],
         transport: mcp::McpTransport::Stdio,
@@ -1762,7 +1762,7 @@ fn mcp_short_lived_stdio_server(name: &str, capability: &str) -> mcp::McpServerC
         args: vec![
             "-c".to_string(),
             format!(
-                "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 0.1"
+                "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; fi; done; sleep 0.1"
             ),
         ],
         transport: mcp::McpTransport::Stdio,
@@ -1793,7 +1793,14 @@ async fn mcp_host_starts_declared_servers() {
     let fs_handle = host
         .server_handle("mcp-fs")
         .expect("mcp-fs handle should exist");
-    assert_eq!(fs_handle.initialize_capabilities, vec!["fs.read_file"]);
+    assert_eq!(
+        fs_handle
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["fs.read_file"]
+    );
 
     host.stop_all().await.expect("host stop should succeed");
     assert_eq!(host.server_count(), 0);
@@ -2131,7 +2138,7 @@ async fn onboard_mcp_server_registers_server_for_settings_management() {
                 "command": "/bin/sh",
                 "args": [
                     "-c",
-                    "read _line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"tools\":[\"figma.export_frame\"]}}}'; sleep 30"
+                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"mcp-figma\",\"version\":\"0.1.0\"}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"figma.export_frame\",\"description\":\"export frame\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}'; fi; done; sleep 30"
                 ],
                 "transport": "stdio",
                 "trust_level": "community"
@@ -8591,6 +8598,32 @@ fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
     Ok(format!("mcp.{normalized}"))
 }
 
+fn canonical_mcp_server_tool_name(server: &str, tool: &str) -> Result<String, AgentError> {
+    let normalized_server = server.trim();
+    let normalized = tool.trim();
+    if normalized_server.is_empty() {
+        return Err(AgentError::InvalidInput(
+            "server must be non-empty".to_string(),
+        ));
+    }
+    if normalized.is_empty() {
+        return Err(AgentError::InvalidInput(
+            "tool must be non-empty".to_string(),
+        ));
+    }
+
+    if normalized.starts_with("mcp.") || normalized.contains('.') {
+        return canonical_mcp_tool_name(normalized);
+    }
+
+    let server_scope = normalized_server
+        .strip_prefix("mcp-")
+        .unwrap_or(normalized_server)
+        .replace('-', ".");
+
+    Ok(format!("mcp.{server_scope}.{normalized}"))
+}
+
 fn parse_onboard_mcp_transport(value: Option<&str>) -> Result<mcp::McpTransport, AgentError> {
     let Some(raw) = value else {
         return Ok(mcp::McpTransport::Stdio);
@@ -9840,7 +9873,11 @@ async fn handle_rpc_request(
 
             let mut tools = Vec::new();
             for available_tool in available_tools {
-                let policy_tool_name = match canonical_mcp_tool_name(&available_tool.tool_name) {
+                let policy_tool_name =
+                    match canonical_mcp_server_tool_name(
+                        &available_tool.server_id,
+                        &available_tool.tool_name,
+                    ) {
                     Ok(name) => name,
                     Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
                 };
@@ -9873,6 +9910,8 @@ async fn handle_rpc_request(
                 tools.push(json!({
                     "server": available_tool.server_id,
                     "tool": available_tool.tool_name,
+                    "description": available_tool.description,
+                    "input_schema": available_tool.input_schema,
                     "policy_tool": policy_tool_name,
                     "trust_level": format!("{:?}", available_tool.trust_level).to_ascii_lowercase(),
                     "health": format!("{:?}", available_tool.health).to_ascii_lowercase(),
@@ -9947,7 +9986,9 @@ async fn handle_rpc_request(
                 );
             };
 
-            let policy_tool_name = match canonical_mcp_tool_name(&resolved_tool.tool_name) {
+            let policy_tool_name =
+                match canonical_mcp_server_tool_name(&resolved_tool.server_id, &resolved_tool.tool_name)
+                {
                 Ok(name) => name,
                 Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
             };

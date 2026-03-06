@@ -1,7 +1,7 @@
 use agentd_core::profile::TrustLevel;
 use agentd_core::AgentError;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
@@ -25,10 +25,19 @@ pub(crate) enum McpServerHealth {
     Unreachable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpToolDescriptor {
+    pub(crate) name: String,
+    pub(crate) description: Option<String>,
+    pub(crate) input_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct McpAvailableTool {
     pub(crate) server_id: String,
     pub(crate) tool_name: String,
+    pub(crate) description: Option<String>,
+    pub(crate) input_schema: Option<Value>,
     pub(crate) trust_level: McpTrustLevel,
     pub(crate) health: McpServerHealth,
 }
@@ -108,7 +117,7 @@ pub(crate) struct McpServerHandle {
     pub(crate) trust_level: McpTrustLevel,
     pub(crate) health: McpServerHealth,
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) initialize_capabilities: Vec<String>,
+    pub(crate) tools: Vec<McpToolDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +148,7 @@ impl Default for McpHost {
             initialize_timeout: Duration::from_secs(3),
             call_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(2),
-            next_request_id: AtomicU64::new(2),
+            next_request_id: AtomicU64::new(3),
         }
     }
 }
@@ -242,7 +251,7 @@ impl McpHost {
                     }
                 };
 
-                handle.health = if is_running && handle.initialize_capabilities.is_empty() {
+                handle.health = if is_running && handle.tools.is_empty() {
                     McpServerHealth::Degraded
                 } else if is_running {
                     McpServerHealth::Healthy
@@ -272,19 +281,20 @@ impl McpHost {
     }
 
     pub(crate) fn list_available_tools(&self) -> Vec<McpAvailableTool> {
-        self.registry
-            .entries
-            .values()
-            .filter(|entry| entry.health == McpServerHealth::Healthy)
-            .flat_map(|entry| {
-                entry
-                    .capabilities
+        self.servers
+            .iter()
+            .filter(|(_, handle)| handle.health == McpServerHealth::Healthy)
+            .flat_map(|(server_id, handle)| {
+                handle
+                    .tools
                     .iter()
-                    .map(move |capability| McpAvailableTool {
-                        server_id: entry.server_id.clone(),
-                        tool_name: capability.clone(),
-                        trust_level: entry.trust_level,
-                        health: entry.health,
+                    .map(move |tool| McpAvailableTool {
+                        server_id: server_id.clone(),
+                        tool_name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        input_schema: tool.input_schema.clone(),
+                        trust_level: handle.trust_level,
+                        health: handle.health,
                     })
             })
             .collect()
@@ -342,18 +352,19 @@ impl McpHost {
         })?;
 
         let mut response_line = String::new();
-        let read = timeout(self.call_timeout, handle.stdout.read_line(&mut response_line))
-            .await
-            .map_err(|_| {
-                AgentError::Runtime(format!(
-                    "tools/call timed out for {server_id}:{tool_name}"
-                ))
-            })?
-            .map_err(|err| {
-                AgentError::Runtime(format!(
-                    "read tools/call response failed for {server_id}:{tool_name}: {err}"
-                ))
-            })?;
+        let read = timeout(
+            self.call_timeout,
+            handle.stdout.read_line(&mut response_line),
+        )
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!("tools/call timed out for {server_id}:{tool_name}"))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read tools/call response failed for {server_id}:{tool_name}: {err}"
+            ))
+        })?;
 
         if read == 0 {
             return Err(AgentError::Runtime(format!(
@@ -465,13 +476,16 @@ impl McpHost {
         let mut stdin = child.stdin.take().ok_or_else(|| {
             AgentError::Runtime(format!("mcp server {} missing stdin pipe", config.name))
         })?;
-        let mut stdout = child.stdout.take().ok_or_else(|| {
+        let stdout = child.stdout.take().ok_or_else(|| {
             AgentError::Runtime(format!("mcp server {} missing stdout pipe", config.name))
         })?;
 
-        let initialize_capabilities =
-            match self.perform_initialize(&mut stdin, &mut stdout, config).await {
-            Ok(capabilities) => capabilities,
+        let mut stdout = BufReader::new(stdout);
+        let tools = match self
+            .perform_initialize(&mut stdin, &mut stdout, config)
+            .await
+        {
+            Ok(tools) => tools,
             Err(err) => {
                 let _ = terminate_child_process(&mut child, self.stop_timeout).await;
                 return Err(err);
@@ -490,11 +504,11 @@ impl McpHost {
             McpServerHandle {
                 process: child,
                 stdin,
-                stdout: BufReader::new(stdout),
+                stdout,
                 transport: config.transport,
                 trust_level: config.trust_level,
                 health: McpServerHealth::Healthy,
-                initialize_capabilities,
+                tools,
             },
         );
         self.sync_registry_entry_from_handle(&config.name);
@@ -505,7 +519,7 @@ impl McpHost {
     fn sync_registry_entry_from_handle(&mut self, server_id: &str) {
         let Some((capabilities, trust_level, health)) = self.servers.get(server_id).map(|handle| {
             (
-                handle.initialize_capabilities.clone(),
+                handle.tools.iter().map(|tool| tool.name.clone()).collect(),
                 handle.trust_level,
                 handle.health,
             )
@@ -525,15 +539,16 @@ impl McpHost {
     async fn perform_initialize(
         &self,
         stdin: &mut ChildStdin,
-        stdout: &mut ChildStdout,
+        stdout: &mut BufReader<ChildStdout>,
         config: &McpServerConfig,
-    ) -> Result<Vec<String>, AgentError> {
-        let init_request = serde_json::to_string(&serde_json::json!({
+    ) -> Result<Vec<McpToolDescriptor>, AgentError> {
+        let init_request = serde_json::to_string(&json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
                 "protocolVersion": "2025-03-26",
+                "capabilities": {},
                 "clientInfo": {
                     "name": "agentd",
                     "version": "0.1.0"
@@ -547,33 +562,12 @@ impl McpHost {
             ))
         })?;
 
-        stdin
-            .write_all(init_request.as_bytes())
-            .await
-            .map_err(|err| {
-                AgentError::Runtime(format!(
-                    "write initialize request to {} failed: {err}",
-                    config.name
-                ))
-            })?;
-        stdin.write_all(b"\n").await.map_err(|err| {
-            AgentError::Runtime(format!(
-                "write initialize delimiter to {} failed: {err}",
-                config.name
-            ))
-        })?;
-        stdin.flush().await.map_err(|err| {
-            AgentError::Runtime(format!(
-                "flush initialize request to {} failed: {err}",
-                config.name
-            ))
-        })?;
+        write_json_line(stdin, &init_request, &config.name, "initialize request").await?;
 
-        let mut reader = BufReader::new(stdout);
         let mut response_line = String::new();
         let bytes = timeout(
             self.initialize_timeout,
-            reader.read_line(&mut response_line),
+            stdout.read_line(&mut response_line),
         )
         .await
         .map_err(|_| {
@@ -602,7 +596,75 @@ impl McpHost {
             ))
         })?;
 
-        parse_initialize_capabilities(&response_json)
+        validate_initialize_response(&response_json, config)?;
+
+        let initialized_request = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "serialize initialized notification for {} failed: {err}",
+                config.name
+            ))
+        })?;
+        write_json_line(
+            stdin,
+            &initialized_request,
+            &config.name,
+            "initialized notification",
+        )
+        .await?;
+
+        let tools_list_request = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "serialize tools/list request for {} failed: {err}",
+                config.name
+            ))
+        })?;
+        write_json_line(stdin, &tools_list_request, &config.name, "tools/list request").await?;
+
+        let mut tools_list_response_line = String::new();
+        let bytes = timeout(
+            self.initialize_timeout,
+            stdout.read_line(&mut tools_list_response_line),
+        )
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "tools/list timed out for {}",
+                config.name
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read tools/list response from {} failed: {err}",
+                config.name
+            ))
+        })?;
+        if bytes == 0 {
+            return Err(AgentError::Runtime(format!(
+                "tools/list returned empty response for {}",
+                config.name
+            )));
+        }
+
+        let tools_list_response_json: Value =
+            serde_json::from_str(tools_list_response_line.trim()).map_err(|err| {
+                AgentError::Runtime(format!(
+                    "parse tools/list response for {} failed: {err}",
+                    config.name
+                ))
+            })?;
+
+        parse_tools_list_response(&tools_list_response_json, config)
     }
 
     async fn rollback_started_servers(&mut self, server_ids: &[String]) -> Result<(), AgentError> {
@@ -637,6 +699,30 @@ impl McpHost {
     }
 }
 
+async fn write_json_line(
+    stdin: &mut ChildStdin,
+    payload: &str,
+    server_name: &str,
+    operation: &str,
+) -> Result<(), AgentError> {
+    stdin.write_all(payload.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write {operation} to {server_name} failed: {err}"
+        ))
+    })?;
+    stdin.write_all(b"\n").await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write {operation} delimiter to {server_name} failed: {err}"
+        ))
+    })?;
+    stdin.flush().await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "flush {operation} to {server_name} failed: {err}"
+        ))
+    })?;
+    Ok(())
+}
+
 async fn terminate_child_process(
     child: &mut Child,
     stop_timeout: Duration,
@@ -656,34 +742,85 @@ async fn terminate_child_process(
     }
 }
 
-fn parse_initialize_capabilities(response_json: &Value) -> Result<Vec<String>, AgentError> {
-    let capabilities = response_json
-        .get("result")
-        .and_then(|result| result.get("capabilities"))
-        .ok_or_else(|| {
-            AgentError::Runtime("initialize response missing result.capabilities".to_string())
-        })?;
-
-    let mut parsed = Vec::new();
-
-    if let Some(tools) = capabilities.get("tools").and_then(Value::as_array) {
-        for tool in tools {
-            if let Some(name) = tool.as_str() {
-                parsed.push(name.to_string());
-            } else if let Some(name) = tool.get("name").and_then(Value::as_str) {
-                parsed.push(name.to_string());
-            }
-        }
+fn validate_initialize_response(response_json: &Value, config: &McpServerConfig) -> Result<(), AgentError> {
+    if let Some(error) = response_json.get("error") {
+        return Err(AgentError::Runtime(format!(
+            "initialize returned error for {}: {error}",
+            config.name
+        )));
     }
 
-    if parsed.is_empty() {
-        if let Some(array) = capabilities.as_array() {
-            for item in array {
-                if let Some(name) = item.as_str() {
-                    parsed.push(name.to_string());
-                }
-            }
+    let response_id = response_json.get("id").and_then(Value::as_u64).unwrap_or_default();
+    if response_id != 1 {
+        return Err(AgentError::Runtime(format!(
+            "initialize response id mismatch for {} (expected=1, got={response_id})",
+            config.name
+        )));
+    }
+
+    response_json
+        .get("result")
+        .ok_or_else(|| {
+            AgentError::Runtime(format!(
+                "initialize response missing result for {}",
+                config.name
+            ))
+        })?;
+
+    Ok(())
+}
+
+fn parse_tools_list_response(
+    response_json: &Value,
+    config: &McpServerConfig,
+) -> Result<Vec<McpToolDescriptor>, AgentError> {
+    if let Some(error) = response_json.get("error") {
+        return Err(AgentError::Runtime(format!(
+            "tools/list returned error for {}: {error}",
+            config.name
+        )));
+    }
+
+    let response_id = response_json.get("id").and_then(Value::as_u64).unwrap_or_default();
+    if response_id != 2 {
+        return Err(AgentError::Runtime(format!(
+            "tools/list response id mismatch for {} (expected=2, got={response_id})",
+            config.name
+        )));
+    }
+
+    let tools = response_json
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AgentError::Runtime(format!(
+                "tools/list response missing result.tools for {}",
+                config.name
+            ))
+        })?;
+
+    let mut parsed = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let Some(name) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if name.trim().is_empty() {
+            continue;
         }
+
+        parsed.push(McpToolDescriptor {
+            name: name.to_string(),
+            description: tool
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            input_schema: tool
+                .get("inputSchema")
+                .cloned()
+                .or_else(|| tool.get("input_schema").cloned())
+                .or_else(|| tool.get("parameters").cloned()),
+        });
     }
 
     Ok(parsed)
@@ -835,7 +972,7 @@ mod tests {
             args: vec![
                 "-c".to_string(),
                 format!(
-                    "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 30"
+                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/call\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"tool-ok\"}}],\"isError\":false}}}}'; fi; done"
                 ),
             ],
             transport: McpTransport::Stdio,
@@ -912,7 +1049,7 @@ mod tests {
             args: vec![
                 "-c".to_string(),
                 format!(
-                    "read _line; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"capabilities\":{{\"tools\":[\"{capability}\"]}}}}}}'; sleep 0.1"
+                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; fi; done; sleep 0.1"
                 ),
             ],
             transport: McpTransport::Stdio,
@@ -949,7 +1086,14 @@ mod tests {
         let fs_handle = host
             .server_handle("mcp-fs")
             .expect("mcp-fs handle should be cached");
-        assert_eq!(fs_handle.initialize_capabilities, vec!["fs.read_file"]);
+        assert_eq!(
+            fs_handle
+                .tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["fs.read_file"]
+        );
         assert_eq!(fs_handle.health, McpServerHealth::Healthy);
         assert_eq!(fs_handle.transport, McpTransport::Stdio);
         assert_eq!(fs_handle.trust_level, McpTrustLevel::Builtin);
@@ -1066,7 +1210,7 @@ mod tests {
                 command: "/bin/sh".to_string(),
                 args: vec![
                     "-c".to_string(),
-                    "read _line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"tools\":[\"figma.export_frame\"]}}}'; sleep 30"
+                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"mcp-figma\",\"version\":\"0.1.0\"}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"figma.export_frame\",\"description\":\"export frame\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}'; fi; done; sleep 30"
                         .to_string(),
                 ],
                 transport: McpTransport::Stdio,
