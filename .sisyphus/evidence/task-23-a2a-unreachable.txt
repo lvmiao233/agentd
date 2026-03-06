@@ -1,12 +1,6 @@
-Task 23 unreachable A2A discover evidence
-=========================================
-
-Date: 2026-03-06
-Command:
-  target/debug/agentctl a2a discover --url http://127.0.0.1:9 --json
-
-Observed error:
-  reqwest::Error { kind: Request, url: "http://127.0.0.1:9/.well-known/agent.json", source: ... ConnectionRefused ... }
-
-Conclusion:
-  The CLI now fails with a stable connection-refused error against an unreachable target instead of shell/path invocation failures.
+task=23
+status=passed
+step=a2a-unreachable
+command=cargo run -q -p agentctl -- a2a discover --url http://127.0.0.1:9 --json
+exit_code=1
+stderr=reqwest connection refused to /.well-known/agent.json
