@@ -1330,4 +1330,47 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn repository_default_rego_module_compiles_and_evaluates() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "*".to_string(),
+                decision: PolicyDecision::Ask,
+            }],
+        };
+        let profile = PolicyLayer {
+            name: "agent_profile".to_string(),
+            rules: vec![],
+        };
+        let session = PolicyLayer {
+            name: "session_override".to_string(),
+            rules: vec![],
+        };
+
+        let policies_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../policies");
+        let engine = RegorusPolicyEngine::from_policy_dir(
+            PolicyEngineLayers::new(global, profile, session),
+            policies_dir,
+        )
+        .expect("repository rego modules should compile");
+
+        let evaluation = engine.evaluate(&PolicyInputContext {
+            agent: PolicyAgentContext {
+                id: Some("agent-rego-repo".to_string()),
+                trust_level: Some("ask".to_string()),
+            },
+            tool: PolicyToolContext {
+                name: "builtin.lite.upper".to_string(),
+            },
+            resource: PolicyResourceContext { uri: None },
+            time: PolicyTimeContext {
+                timestamp_rfc3339: Some("2026-03-01T00:00:00Z".to_string()),
+            },
+            request_meta: BTreeMap::from([("trace_id".to_string(), "trace-rego-repo".to_string())]),
+        });
+
+        assert_eq!(evaluation.decision, PolicyDecision::Ask);
+    }
 }
