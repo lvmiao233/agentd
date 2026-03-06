@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, Fragment, useEffect, useRef } from 'react';
-import { useChat } from '@ai-sdk/react';
 import {
   Conversation,
   ConversationContent,
@@ -31,18 +30,109 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
-import type { ToolUIPart } from 'ai';
-import { createDaemonWs } from '@/lib/daemon-rpc';
+import { createDaemonWs, sendWsRpc } from '@/lib/daemon-rpc';
+
+type ChatStatus = 'ready' | 'streaming' | 'error';
+
+type UserOrAssistantMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  streamTokens?: string[];
+};
+
+type ToolCallMessage = {
+  id: string;
+  role: 'tool';
+  toolName: string;
+  input: unknown;
+};
+
+type ChatMessage = UserOrAssistantMessage | ToolCallMessage;
+
+function nextMessageId() {
+  return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
+}
+
+function extractErrorMessage(payload: any): string | null {
+  const error = payload?.error;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object' && typeof error.message === 'string' && error.message.trim()) {
+    return error.message;
+  }
+  const message = payload?.message;
+  if (typeof message === 'string' && message.trim()) return message;
+  if (payload?.status === 'failed' || payload?.status === 'blocked') {
+    return 'RunAgent streaming failed.';
+  }
+  return null;
+}
+
+function extractTextDelta(payload: any): string {
+  const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
+  const llmOutput = normalized?.llm?.output;
+  if (typeof llmOutput === 'string' && llmOutput.length > 0) return llmOutput;
+  for (const field of ['delta', 'token', 'text', 'content', 'output']) {
+    const value = normalized?.[field];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
+
+function extractToolCalls(payload: any): Array<{ id: string; name: string; input: unknown }> {
+  const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
+  const calls = normalized?.tool?.calls;
+  if (!Array.isArray(calls)) return [];
+  return calls
+    .map((call: any, index: number) => {
+      const id = typeof call?.id === 'string' && call.id.trim() ? call.id : `call-${index}`;
+      const name = typeof call?.function?.name === 'string' && call.function.name.trim()
+        ? call.function.name
+        : 'unknown_tool';
+      const argsRaw = typeof call?.function?.arguments === 'string' ? call.function.arguments : '';
+      let input: unknown = {};
+      if (argsRaw.trim()) {
+        try {
+          input = JSON.parse(argsRaw);
+        } catch {
+          input = argsRaw;
+        }
+      }
+      return { id, name, input };
+    });
+}
 
 export default function ChatPage() {
   const [input, setInput] = useState('');
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
-  const { messages, sendMessage, status, regenerate } = useChat();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [status, setStatus] = useState<ChatStatus>('ready');
+  const [agentId, setAgentId] = useState<string | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const activeRequestIdRef = useRef<number | null>(null);
+  const lastSubmittedInputRef = useRef('');
+
+  const resolvePreferredAgentId = async () => {
+    const response = await fetch('/api/agents');
+    if (!response.ok) {
+      throw new Error('load agents failed');
+    }
+    const payload = (await response.json()) as { agents?: Array<{ agent_id: string; model: string; status: string }> };
+    const agents = payload.agents ?? [];
+    if (agents.length === 0) {
+      return null;
+    }
+    const preferred =
+      agents.find(
+        (agent) => agent.status === 'ready' && agent.model === 'gpt-5.3-codex',
+      ) ?? agents.find((agent) => agent.status === 'ready') ?? agents[0];
+    setAgentId(preferred.agent_id);
+    return preferred.agent_id;
+  };
 
   useEffect(() => {
     let closed = false;
-    let socket: WebSocket | null = null;
 
     const clearReconnectTimer = () => {
       if (reconnectTimerRef.current) {
@@ -54,7 +144,94 @@ export default function ChatPage() {
     const connect = () => {
       clearReconnectTimer();
       const ws = createDaemonWs();
-      socket = ws;
+      wsRef.current = ws;
+
+      const appendAssistantError = (message: string) => {
+        setMessages((prev) => [
+          ...prev,
+          { id: nextMessageId(), role: 'assistant', text: message },
+        ]);
+        setStatus('error');
+        activeRequestIdRef.current = null;
+      };
+
+      const applyStreamPayload = (payload: any) => {
+        const errorMessage = extractErrorMessage(payload);
+        if (errorMessage) {
+          appendAssistantError(`RunAgent failed: ${errorMessage}`);
+          return;
+        }
+
+        const delta = extractTextDelta(payload);
+        if (delta) {
+          setMessages((prev) => {
+            const last = prev.at(-1);
+            if (last && last.role === 'assistant') {
+              return prev.map((message, index) => {
+                if (index !== prev.length - 1) {
+                  return message;
+                }
+                const assistant = message as UserOrAssistantMessage;
+                return {
+                  ...assistant,
+                  text: assistant.text + delta,
+                  streamTokens: [...(assistant.streamTokens ?? []), delta],
+                };
+              });
+            }
+
+            return [
+              ...prev,
+              {
+                id: nextMessageId(),
+                role: 'assistant',
+                text: delta,
+                streamTokens: [delta],
+              },
+            ];
+          });
+        }
+
+        const toolCalls = extractToolCalls(payload);
+        if (toolCalls.length > 0) {
+          setMessages((prev) => [
+            ...prev,
+            ...toolCalls.map((toolCall) => ({
+              id: toolCall.id,
+              role: 'tool' as const,
+              toolName: toolCall.name,
+              input: toolCall.input,
+            })),
+          ]);
+        }
+
+        const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
+        if (normalized?.status === 'completed' || normalized?.type === 'done') {
+          setStatus('ready');
+          activeRequestIdRef.current = null;
+        }
+      };
+
+      const handleStreamFrame = (frameText: string) => {
+        const frames = frameText
+          .split(/\n\n+/)
+          .map((frame) => frame.trim())
+          .filter(Boolean);
+        for (const frame of frames) {
+          if (!frame.startsWith('data:')) continue;
+          const payloadText = frame.slice(5).trim();
+          if (!payloadText || payloadText === '[DONE]') {
+            setStatus('ready');
+            activeRequestIdRef.current = null;
+            continue;
+          }
+          try {
+            applyStreamPayload(JSON.parse(payloadText));
+          } catch {
+            appendAssistantError('RunAgent failed: invalid websocket stream payload');
+          }
+        }
+      };
 
       ws.onopen = () => {
         if (!closed) {
@@ -71,7 +248,33 @@ export default function ChatPage() {
       ws.onclose = () => {
         if (closed) return;
         setShowReconnectBanner(true);
+        wsRef.current = null;
         reconnectTimerRef.current = setTimeout(connect, 1000);
+      };
+
+      ws.onmessage = (event) => {
+        if (closed || typeof event.data !== 'string') return;
+        const payloadText = event.data.trim();
+        if (!payloadText) return;
+        if (payloadText.startsWith('data:')) {
+          handleStreamFrame(payloadText);
+          return;
+        }
+        if (!payloadText.startsWith('{')) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(payloadText);
+          if (payload?.id === activeRequestIdRef.current && payload?.error) {
+            appendAssistantError(
+              typeof payload.error?.message === 'string'
+                ? payload.error.message
+                : 'websocket rpc request failed',
+            );
+          }
+        } catch {
+          appendAssistantError('websocket returned invalid rpc payload');
+        }
       };
     };
 
@@ -80,15 +283,69 @@ export default function ChatPage() {
     return () => {
       closed = true;
       clearReconnectTimer();
-      socket?.close();
+      wsRef.current?.close();
+      wsRef.current = null;
     };
   }, []);
 
-  const handleSubmit = () => {
-    const text = input.trim();
+  useEffect(() => {
+    let cancelled = false;
+    resolvePreferredAgentId()
+      .then((agents) => {
+        if (cancelled) {
+          return;
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentId(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const submitPrompt = async (raw: string) => {
+    const text = raw.trim();
     if (!text) return;
-    sendMessage({ text });
+    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', text }]);
+    lastSubmittedInputRef.current = text;
+    setStatus('streaming');
+
+    const resolvedAgentId = agentId ?? (await resolvePreferredAgentId().catch(() => null));
+
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextMessageId(),
+          role: 'assistant',
+          text: 'RunAgent websocket transport unavailable.',
+        },
+      ]);
+      setStatus('error');
+      return;
+    }
+
+    activeRequestIdRef.current = sendWsRpc(ws, 'RunAgent', {
+      input: text,
+      model: 'gpt-5.3-codex',
+      ...(resolvedAgentId ? { agent_id: resolvedAgentId } : {}),
+      stream: true,
+    });
+  };
+
+  const handleSubmit = () => {
+    void submitPrompt(input);
     setInput('');
+  };
+
+  const handleRegenerate = () => {
+    if (!lastSubmittedInputRef.current) return;
+    void submitPrompt(lastSubmittedInputRef.current);
   };
 
   return (
@@ -110,92 +367,49 @@ export default function ChatPage() {
             ) : (
               messages.map((message, messageIndex) => (
                 <Fragment key={message.id}>
-                  {message.parts.map((part, i) => {
-                    switch (part.type) {
-                      case 'text':
-                        return (
-                          <Fragment key={`${message.id}-${i}`}>
-                            <Message from={message.role}>
-                              <MessageContent>
-                                <div
-                                  className={
-                                    message.role === 'assistant' &&
-                                    messageIndex === messages.length - 1 &&
-                                    status === 'streaming'
-                                      ? 'stream-token'
-                                      : undefined
-                                  }
-                                >
-                                  <MessageResponse>{part.text}</MessageResponse>
-                                </div>
-                              </MessageContent>
-                            </Message>
-                            {message.role === 'assistant' &&
+                  {message.role === 'tool' && (
+                    <Tool key={message.id} defaultOpen>
+                      <ToolHeader type={`tool-${message.toolName}`} state="input-available" />
+                      <ToolContent>
+                        <ToolInput input={message.input} />
+                        <ToolOutput output={undefined} errorText={undefined} />
+                      </ToolContent>
+                    </Tool>
+                  )}
+                  {(message.role === 'user' || message.role === 'assistant') && (
+                    <Fragment>
+                      <Message from={message.role}>
+                        <MessageContent>
+                          <div
+                            className={
+                              message.role === 'assistant' &&
                               messageIndex === messages.length - 1 &&
-                              status === 'ready' && (
-                                <MessageActions>
-                                  <MessageAction
-                                    onClick={() => regenerate()}
-                                    label="重新生成"
-                                  >
-                                    <RefreshCcw className="size-3" />
-                                  </MessageAction>
-                                  <MessageAction
-                                    onClick={() =>
-                                      navigator.clipboard.writeText(part.text)
-                                    }
-                                    label="复制"
-                                  >
-                                    <Copy className="size-3" />
-                                  </MessageAction>
-                                </MessageActions>
-                              )}
-                          </Fragment>
-                        );
-                      default: {
-                        const toolPart = part as ToolUIPart;
-                        if (
-                          toolPart.type?.startsWith?.('tool-') ||
-                          toolPart.state
-                        ) {
-                          return (
-                            <Tool
-                              key={`${message.id}-tool-${i}`}
-                              defaultOpen={
-                                toolPart.state === 'output-available' ||
-                                toolPart.state === 'output-error'
-                              }
+                              status === 'streaming'
+                                ? 'stream-token'
+                                : undefined
+                            }
+                          >
+                            <MessageResponse>{message.text}</MessageResponse>
+                          </div>
+                        </MessageContent>
+                      </Message>
+                      {message.role === 'assistant' &&
+                        messageIndex === messages.length - 1 &&
+                        status !== 'streaming' && (
+                          <MessageActions>
+                            <MessageAction onClick={handleRegenerate} label="重新生成">
+                              <RefreshCcw className="size-3" />
+                            </MessageAction>
+                            <MessageAction
+                              onClick={() => navigator.clipboard.writeText(message.text)}
+                              label="复制"
                             >
-                              <ToolHeader
-                                type={toolPart.type}
-                                state={toolPart.state}
-                              />
-                              <ToolContent>
-                                <ToolInput input={toolPart.input} />
-                                <ToolOutput
-                                  output={
-                                    toolPart.output ? (
-                                      <MessageResponse>
-                                        {typeof toolPart.output === 'string'
-                                          ? toolPart.output
-                                          : JSON.stringify(
-                                              toolPart.output,
-                                              null,
-                                              2,
-                                            )}
-                                      </MessageResponse>
-                                    ) : undefined
-                                  }
-                                  errorText={toolPart.errorText}
-                                />
-                              </ToolContent>
-                            </Tool>
-                          );
-                        }
-                        return null;
-                      }
-                    }
-                  })}
+                              <Copy className="size-3" />
+                            </MessageAction>
+                          </MessageActions>
+                        )}
+                    </Fragment>
+                  )}
                 </Fragment>
               ))
             )}
@@ -215,7 +429,7 @@ export default function ChatPage() {
             <PromptInputTools />
             <PromptInputSubmit
               className="send-button"
-              status={status === 'streaming' ? 'streaming' : 'ready'}
+              status={status}
               disabled={!input.trim() && status !== 'streaming'}
             />
           </PromptInputFooter>
