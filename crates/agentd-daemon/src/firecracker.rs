@@ -4,6 +4,7 @@ use serde_json::json;
 #[cfg(test)]
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
@@ -472,12 +473,27 @@ impl FirecrackerExecutor {
         let api_socket = self.api_socket_for_agent(spec.agent_id);
         prepare_socket_file(&api_socket, "firecracker api")?;
 
+        let stdout_log = api_socket.with_extension("stdout.log");
+        let stderr_log = api_socket.with_extension("stderr.log");
+        let stdout_file = File::create(&stdout_log).map_err(|err| {
+            AgentError::Runtime(format!(
+                "create firecracker stdout log failed: path={} error={err}",
+                stdout_log.display()
+            ))
+        })?;
+        let stderr_file = File::create(&stderr_log).map_err(|err| {
+            AgentError::Runtime(format!(
+                "create firecracker stderr log failed: path={} error={err}",
+                stderr_log.display()
+            ))
+        })?;
+
         let mut child = match Command::new(&self.firecracker_binary)
             .arg("--api-sock")
             .arg(&api_socket)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file))
             .kill_on_drop(true)
             .spawn()
         {
@@ -496,7 +512,11 @@ impl FirecrackerExecutor {
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
-            return Err(err);
+            return Err(AgentError::Runtime(format!(
+                "{}{}",
+                err,
+                firecracker_log_context(&stdout_log, &stderr_log)
+            )));
         }
 
         let guest_cid = guest_cid_for_agent(spec.agent_id);
@@ -571,8 +591,9 @@ impl FirecrackerExecutor {
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
             return Err(AgentError::Runtime(format!(
-                "configure firecracker vm failed: agent_id={} error={err}",
-                spec.agent_id
+                "configure firecracker vm failed: agent_id={} error={err}{}",
+                spec.agent_id,
+                firecracker_log_context(&stdout_log, &stderr_log)
             )));
         }
 
@@ -580,7 +601,11 @@ impl FirecrackerExecutor {
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
-            return Err(err);
+            return Err(AgentError::Runtime(format!(
+                "{}{}",
+                err,
+                firecracker_log_context(&stdout_log, &stderr_log)
+            )));
         }
 
         if let Err(err) = wait_for_path_exists(
@@ -599,10 +624,15 @@ impl FirecrackerExecutor {
         if let Err(err) =
             wait_for_guest_readiness_on_vsock(&vm_config.vsock_path, spec.launch_timeout).await
         {
+            let child_status = child.try_wait().ok().flatten();
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
-            return Err(err);
+            return Err(AgentError::Runtime(format!(
+                "{} child_status={child_status:?}{}",
+                err,
+                firecracker_log_context(&stdout_log, &stderr_log)
+            )));
         }
 
         if let Err(err) =
@@ -611,7 +641,11 @@ impl FirecrackerExecutor {
             let _ = terminate_child(&mut child).await;
             let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
             let _ = cleanup_socket_file(&api_socket, "firecracker api");
-            return Err(err);
+            return Err(AgentError::Runtime(format!(
+                "{}{}",
+                err,
+                firecracker_log_context(&stdout_log, &stderr_log)
+            )));
         }
 
         Ok(FirecrackerVmHandle {
@@ -621,6 +655,30 @@ impl FirecrackerExecutor {
             api_socket_path: Some(api_socket),
             transport: VmTransport::Firecracker,
         })
+    }
+}
+
+fn firecracker_log_context(stdout_log: &Path, stderr_log: &Path) -> String {
+    let stdout_excerpt = read_log_excerpt(stdout_log);
+    let stderr_excerpt = read_log_excerpt(stderr_log);
+    format!(
+        " stdout_log={} stderr_log={} stdout_excerpt={:?} stderr_excerpt={:?}",
+        stdout_log.display(),
+        stderr_log.display(),
+        stdout_excerpt,
+        stderr_excerpt
+    )
+}
+
+fn read_log_excerpt(path: &Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    let take = data.len().min(4096);
+    let start = data.len().saturating_sub(take);
+    let excerpt = String::from_utf8_lossy(&data[start..]).to_string();
+    if excerpt.trim().is_empty() {
+        None
+    } else {
+        Some(excerpt)
     }
 }
 

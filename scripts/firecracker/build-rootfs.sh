@@ -108,24 +108,27 @@ copy_python_runtime_deps() {
 
     local loader=""
     while IFS= read -r line; do
-        if [[ "$line" == *"=>"* ]]; then
-            local dep="${line#*=> }"
+        local trimmed="$line"
+        trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+
+        if [[ "$trimmed" == *"=>"* ]]; then
+            local dep="${trimmed#*=> }"
             dep="${dep%% (*}"
             if [[ -f "$dep" ]]; then
                 copy_file_with_parents "$dep" "$dst_root"
             fi
-        elif [[ "$line" == /*" ("* ]]; then
-            local dep2="${line%% (*}"
+        elif [[ "$trimmed" == /*" ("* ]]; then
+            local dep2="${trimmed%% (*}"
             if [[ -f "$dep2" ]]; then
                 copy_file_with_parents "$dep2" "$dst_root"
             fi
         fi
 
-        if [[ "$line" == *"ld-linux"* || "$line" == *"ld-musl"* ]]; then
-            loader="${line##*=> }"
+        if [[ "$trimmed" == *"ld-linux"* || "$trimmed" == *"ld-musl"* ]]; then
+            loader="${trimmed##*=> }"
             loader="${loader%% (*}"
             if [[ ! -f "$loader" ]]; then
-                loader="${line%% (*}"
+                loader="${trimmed%% (*}"
             fi
         fi
     done < <(ldd "$python_bin")

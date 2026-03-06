@@ -194,6 +194,21 @@ if [[ -z "$PYTHON_VERSION" ]]; then
     fail "python runtime failed to report version"
 fi
 
+if command -v readelf >/dev/null 2>&1; then
+    PYTHON_INTERPRETER_PATH="$(readelf -l "$PYTHON_ROOTFS" 2>/dev/null | python3 - <<'PY'
+import re
+import sys
+
+text = sys.stdin.read()
+match = re.search(r"Requesting program interpreter:\s*([^\]]+)", text)
+print(match.group(1).strip() if match else "")
+PY
+)"
+    if [[ -n "$PYTHON_INTERPRETER_PATH" ]]; then
+        require_file "$ROOTFS_DIR$PYTHON_INTERPRETER_PATH" "python dynamic loader"
+    fi
+fi
+
 if ! PYTHONPATH="$ROOTFS_DIR/opt/agent-lite/src" "$PYTHON_ROOTFS" -c "import agentd_agent_lite.cli; print('agent-lite-import-ok')" >/tmp/agentd-task19-import.out 2>/tmp/agentd-task19-import.err; then
     IMPORT_ERR="$(tr '\n' ' ' </tmp/agentd-task19-import.err)"
     fail "agent-lite import failed: $IMPORT_ERR"
