@@ -1,0 +1,7 @@
+task=28
+status=passed
+step=third-party-isolation
+pytest=uv run pytest python/agentd-agent-lite/tests/test_third_party_mcp.py::test_third_party_mcp_handshake_failure_isolated -q
+--- test log ---
+.                                                                        [100%]
+1 passed in 0.02s
