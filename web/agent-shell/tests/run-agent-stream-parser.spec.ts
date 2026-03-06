@@ -64,6 +64,36 @@ export async function run() {
   });
 
   writes.length = 0;
+  const mixedFailedOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"failed","llm":{"output":"partial tail"},"error":{"message":"budget exceeded"}}}',
+    textId: 'text-3b',
+    writer,
+  });
+
+  assert.equal(mixedFailedOutcome.emitted, true, 'mixed output+error frame should emit visible chunks');
+  assert.equal(
+    mixedFailedOutcome.terminalReached,
+    true,
+    'mixed output+error frame should still terminate the stream'
+  );
+  assert.equal(
+    mixedFailedOutcome.finishReason,
+    'error',
+    'mixed output+error frame should map to error finish reason'
+  );
+  assert.deepEqual(writes[0], {
+    type: 'text-delta',
+    id: 'text-3b',
+    delta: 'partial tail',
+  });
+  assert.deepEqual(writes[1], {
+    type: 'text-delta',
+    id: 'text-3b',
+    delta: 'RunAgent failed: budget exceeded',
+  });
+
+  writes.length = 0;
   const doneOutcome = emitRunAgentStreamLine({
     lineRaw: 'data: {"result":{"status":"completed","type":"done"}}',
     textId: 'text-4',

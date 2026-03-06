@@ -142,16 +142,6 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
     return { emitted: true, terminalReached: false, finishReason: null };
   }
 
-  const errorMessage = extractStreamError(parsed);
-  if (errorMessage) {
-    writer.write({
-      type: 'text-delta',
-      id: textId,
-      delta: `RunAgent failed: ${errorMessage}`,
-    });
-    return { emitted: true, terminalReached: true, finishReason: 'error' };
-  }
-
   let emitted = false;
 
   const chunk = extractStreamText(parsed);
@@ -171,6 +161,16 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
       });
     }
     emitted = true;
+  }
+
+  const errorMessage = extractStreamError(parsed);
+  if (errorMessage) {
+    writer.write({
+      type: 'text-delta',
+      id: textId,
+      delta: `RunAgent failed: ${errorMessage}`,
+    });
+    return { emitted: true, terminalReached: true, finishReason: 'error' };
   }
 
   const terminalReached = isTerminalStreamFrame(parsed);
