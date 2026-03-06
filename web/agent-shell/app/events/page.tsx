@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { createDaemonWs, sendWsRpc } from '@/lib/daemon-rpc';
 import {
   Activity,
   AlertTriangle,
@@ -26,6 +27,31 @@ type RuntimeEvent = {
   created_at: string;
 };
 
+function normalizeRuntimeEvent(event: Record<string, unknown>): RuntimeEvent {
+  const payload =
+    event.payload && typeof event.payload === 'object'
+      ? (event.payload as Record<string, unknown>)
+      : {};
+  return {
+    id: typeof event.id === 'string' ? event.id : String(event.event_id ?? 'unknown'),
+    event_type:
+      typeof event.event_type === 'string' ? event.event_type : String(event.type ?? 'unknown'),
+    agent_id: typeof event.agent_id === 'string' ? event.agent_id : undefined,
+    severity: typeof event.severity === 'string' ? event.severity : 'info',
+    result: typeof event.result === 'string' ? event.result : 'success',
+    tool_name: typeof payload.tool_name === 'string' ? payload.tool_name : undefined,
+    message: typeof payload.message === 'string' ? payload.message : undefined,
+    metadata:
+      payload.metadata && typeof payload.metadata === 'object'
+        ? (payload.metadata as Record<string, unknown>)
+        : payload,
+    created_at:
+      typeof event.created_at === 'string'
+        ? event.created_at
+        : String(event.timestamp ?? new Date().toISOString()),
+  };
+}
+
 function eventIcon(eventType: string) {
   if (eventType.includes('Denied')) return <ShieldX className="size-4 text-red-400" />;
   if (eventType.includes('Approved')) return <ShieldCheck className="size-4 text-green-400" />;
@@ -48,36 +74,145 @@ export default function EventsPage() {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  const [connected, setConnected] = useState(false);
   const cursorRef = useRef<string | undefined>(undefined);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchEvents = useCallback(async () => {
+  const mergeEvents = (incoming: RuntimeEvent[]) => {
+    if (incoming.length === 0) {
+      return;
+    }
+    setEvents((prev) => {
+      const seen = new Set(prev.map((event) => event.id));
+      const merged = [...incoming.filter((event) => !seen.has(event.id)), ...prev];
+      return merged.slice(0, 200);
+    });
+  };
+
+  const refreshOnce = async () => {
     try {
-      const params = new URLSearchParams({ limit: '50' });
-      if (cursorRef.current) params.set('cursor', cursorRef.current);
-      const res = await fetch(`/api/events?${params}`);
-      if (!res.ok) throw new Error('fetch failed');
-      const data = await res.json();
-      const newEvents: RuntimeEvent[] = data.events ?? [];
-      if (data.next_cursor) cursorRef.current = data.next_cursor;
-      if (newEvents.length > 0) {
-        setEvents((prev) => {
-          const seen = new Set(prev.map((e) => e.id));
-          const merged = [...newEvents.filter((e) => !seen.has(e.id)), ...prev];
-          return merged.slice(0, 200);
-        });
+      const params = new URLSearchParams({ limit: '50', wait_timeout_secs: '0' });
+      if (cursorRef.current) {
+        params.set('cursor', cursorRef.current);
       }
+      const response = await fetch(`/api/events?${params}`);
+      if (!response.ok) {
+        throw new Error('fetch failed');
+      }
+      const payload = (await response.json()) as {
+        events?: RuntimeEvent[];
+        next_cursor?: string;
+      };
+      if (payload.next_cursor) {
+        cursorRef.current = payload.next_cursor;
+      }
+      mergeEvents((payload.events ?? []).map((event) => normalizeRuntimeEvent(event as Record<string, unknown>)));
       setError(null);
     } catch {
       setError('无法从 daemon 获取事件');
     }
-  }, []);
+  };
+
+  const requestNextBatch = () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || paused) {
+      return;
+    }
+    sendWsRpc(wsRef.current, 'SubscribeEvents', {
+      cursor: cursorRef.current,
+      limit: 50,
+      wait_timeout_secs: 30,
+    });
+  };
 
   useEffect(() => {
-    fetchEvents();
-    if (paused) return;
-    const timer = setInterval(fetchEvents, 3000);
-    return () => clearInterval(timer);
-  }, [fetchEvents, paused]);
+    let closed = false;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const connect = () => {
+      clearReconnectTimer();
+      const ws = createDaemonWs();
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (closed) {
+          return;
+        }
+        setConnected(true);
+        setError(null);
+        void refreshOnce().then(requestNextBatch);
+      };
+
+      ws.onmessage = (event) => {
+        if (closed || typeof event.data !== 'string') {
+          return;
+        }
+        try {
+          const payload = JSON.parse(event.data) as {
+            result?: { events?: RuntimeEvent[]; next_cursor?: string };
+            error?: { message?: string };
+          };
+          if (payload.error?.message) {
+            setError(payload.error.message);
+            return;
+          }
+          const result = payload.result;
+          if (!result) {
+            return;
+          }
+          if (result.next_cursor) {
+            cursorRef.current = result.next_cursor;
+          }
+          mergeEvents(
+            (result.events ?? []).map((event) =>
+              normalizeRuntimeEvent(event as Record<string, unknown>),
+            ),
+          );
+          setError(null);
+          requestNextBatch();
+        } catch {
+          setError('无法解析 daemon 事件流');
+        }
+      };
+
+      ws.onerror = () => {
+        if (!closed) {
+          setConnected(false);
+          setError('daemon WebSocket 连接失败');
+        }
+      };
+
+      ws.onclose = () => {
+        if (closed) {
+          return;
+        }
+        setConnected(false);
+        wsRef.current = null;
+        if (!paused) {
+          reconnectTimerRef.current = setTimeout(connect, 1000);
+        }
+      };
+    };
+
+    void refreshOnce();
+    if (!paused) {
+      connect();
+    }
+
+    return () => {
+      closed = true;
+      clearReconnectTimer();
+      wsRef.current?.close();
+      wsRef.current = null;
+      setConnected(false);
+    };
+  }, [paused]);
 
   return (
     <div className="space-y-6">
@@ -85,14 +220,14 @@ export default function EventsPage() {
         <div>
           <h1 className="text-2xl font-bold">Events &amp; Audit</h1>
           <p className="text-sm text-muted-foreground">
-            来自 daemon SubscribeEvents 的实时事件流与策略审计
+            来自 daemon SubscribeEvents 的实时运行时事件流
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setPaused((p) => !p)}
+            onClick={() => setPaused((current) => !current)}
           >
             {paused ? (
               <Play className="mr-1 size-3" />
@@ -101,7 +236,7 @@ export default function EventsPage() {
             )}
             {paused ? '恢复' : '暂停'}
           </Button>
-          <Button variant="outline" size="sm" onClick={fetchEvents}>
+          <Button variant="outline" size="sm" onClick={() => void refreshOnce()}>
             <RefreshCw className="mr-1 size-3" />
             刷新
           </Button>
@@ -115,7 +250,6 @@ export default function EventsPage() {
         </div>
       )}
 
-      {/* Summary */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <div className="rounded-xl border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground">事件总数</p>
@@ -124,18 +258,17 @@ export default function EventsPage() {
         <div className="rounded-xl border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground">策略拒绝</p>
           <p className="mt-1 text-2xl font-bold text-red-400">
-            {events.filter((e) => e.event_type.includes('Denied')).length}
+            {events.filter((event) => event.event_type.includes('Denied')).length}
           </p>
         </div>
         <div className="rounded-xl border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground">状态</p>
+          <p className="text-xs text-muted-foreground">连接状态</p>
           <p className="mt-1 text-2xl font-bold">
-            {paused ? '已暂停' : '监听中'}
+            {paused ? '已暂停' : connected ? '实时连接' : '重连中'}
           </p>
         </div>
       </div>
 
-      {/* Event stream */}
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           事件流
