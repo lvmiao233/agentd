@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
 import {
   Tool,
   ToolHeader,
@@ -37,7 +38,11 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
-import { createDaemonWs, sendWsRpc } from '@/lib/daemon-rpc';
+import {
+  createDaemonWs,
+  sendWsRpc,
+  type ApprovalItem,
+} from '@/lib/daemon-rpc';
 import {
   WebAgentChatModel,
   type WebAgentChatMessage,
@@ -113,10 +118,13 @@ export default function ChatPage() {
   const [status, setStatus] = useState<ChatStatus>('ready');
   const [agentId, setAgentId] = useState<string | null>(null);
   const [availableAgents, setAvailableAgents] = useState<AgentOption[]>([]);
+  const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const activeRequestIdRef = useRef<number | null>(null);
   const lastSubmittedInputRef = useRef('');
+  const agentIdRef = useRef<string | null>(null);
   const chatModelRef = useRef(new WebAgentChatModel());
 
   const syncChatModel = () => {
@@ -152,6 +160,29 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
+    agentIdRef.current = agentId;
+  }, [agentId]);
+
+  const refreshApprovalQueue = async (targetAgentId: string | null) => {
+    if (!targetAgentId) {
+      setApprovalQueue([]);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/approvals?agent_id=${encodeURIComponent(targetAgentId)}`,
+      );
+      if (!response.ok) {
+        throw new Error('load approvals failed');
+      }
+      const payload = (await response.json()) as { approvals?: ApprovalItem[] };
+      setApprovalQueue(payload.approvals ?? []);
+    } catch {
+      setApprovalQueue([]);
+    }
+  };
+
+  useEffect(() => {
     let closed = false;
 
     const clearReconnectTimer = () => {
@@ -171,6 +202,9 @@ export default function ChatPage() {
         syncChatModel();
         setStatus('error');
         activeRequestIdRef.current = null;
+        if (message.includes('policy.ask') && agentIdRef.current) {
+          void refreshApprovalQueue(agentIdRef.current);
+        }
       };
 
       const applyStreamPayload = (payload: any) => {
@@ -303,6 +337,54 @@ export default function ChatPage() {
     };
   }, []);
 
+  useEffect(() => {
+    void refreshApprovalQueue(agentId);
+    if (!agentId) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void refreshApprovalQueue(agentId);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [agentId]);
+
+  const handleApprovalDecision = async (
+    approvalId: string,
+    decision: 'approve' | 'deny',
+  ) => {
+    if (!agentId) {
+      return;
+    }
+    setApprovalBusyId(approvalId);
+    try {
+      const response = await fetch('/api/approvals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agentId,
+          approval_id: approvalId,
+          decision,
+        }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error ?? 'approval resolution failed');
+      }
+      chatModelRef.current.appendAssistantMessage(
+        `Approval resolved: ${decision} (${approvalId})`,
+      );
+      syncChatModel();
+      await refreshApprovalQueue(agentId);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'approval resolution failed';
+      chatModelRef.current.appendAssistantMessage(`Approval failed: ${message}`);
+      syncChatModel();
+    } finally {
+      setApprovalBusyId(null);
+    }
+  };
+
   const submitPrompt = async (raw: string) => {
     const text = raw.trim();
     if (!text) return;
@@ -369,6 +451,44 @@ export default function ChatPage() {
             </Select>
           </div>
         </div>
+        {approvalQueue.length > 0 && (
+          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+            <div className="mb-2 font-medium">Pending approvals</div>
+            <div className="space-y-2">
+              {approvalQueue.map((approval) => (
+                <div
+                  key={approval.id}
+                  className="rounded-md border border-amber-500/30 bg-background/30 p-3"
+                >
+                  <div className="font-medium text-foreground">{approval.tool}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    reason: {approval.reason}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    requested: {approval.requested_at}
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void handleApprovalDecision(approval.id, 'approve')}
+                      disabled={approvalBusyId === approval.id}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleApprovalDecision(approval.id, 'deny')}
+                      disabled={approvalBusyId === approval.id}
+                    >
+                      Deny
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {showReconnectBanner && (
           <div className="reconnect-banner mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
             Daemon WebSocket disconnected. Reconnecting…

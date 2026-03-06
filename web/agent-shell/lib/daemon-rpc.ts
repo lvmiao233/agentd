@@ -295,6 +295,32 @@ export async function listAvailableTools(agentId: string): Promise<AvailableTool
   return result.tools;
 }
 
+export type ApprovalItem = {
+  id: string;
+  tool: string;
+  reason: string;
+  trace_id?: string;
+  requested_at: string;
+};
+
+export async function listApprovalQueue(agentId: string): Promise<ApprovalItem[]> {
+  const result = await rpcCall<{ approvals: ApprovalItem[] }>('ListApprovalQueue', {
+    agent_id: agentId,
+  });
+  return result.approvals ?? [];
+}
+
+export async function resolveApproval(params: {
+  agent_id: string;
+  approval_id: string;
+  decision: 'approve' | 'deny';
+}): Promise<{ resolved: boolean; decision: string; approval_id: string }> {
+  return rpcCall<{ resolved: boolean; decision: string; approval_id: string }>(
+    'ResolveApproval',
+    params,
+  );
+}
+
 // --- Events ---
 
 export type RuntimeEvent = {
