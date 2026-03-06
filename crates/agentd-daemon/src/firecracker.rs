@@ -1064,13 +1064,8 @@ async fn firecracker_put_json(
         AgentError::Runtime(format!("flush firecracker api request failed: {err}"))
     })?;
 
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await.map_err(|err| {
-        AgentError::Runtime(format!("read firecracker api response failed: {err}"))
-    })?;
-
-    let response_str = String::from_utf8_lossy(&response);
-    let status_line = response_str.lines().next().unwrap_or_default();
+    let response = read_firecracker_http_response(&mut stream).await?;
+    let status_line = response.status_line.as_str();
     let status_code = status_line
         .split_whitespace()
         .nth(1)
@@ -1078,7 +1073,8 @@ async fn firecracker_put_json(
         .unwrap_or_default();
     if !(200..300).contains(&status_code) {
         return Err(AgentError::Runtime(format!(
-            "firecracker api returned non-success status: path={path} status_line={status_line} response={response_str}"
+            "firecracker api returned non-success status: path={path} status_line={status_line} response={}",
+            String::from_utf8_lossy(&response.body)
         )));
     }
 
@@ -1104,16 +1100,8 @@ async fn firecracker_get_json(
         AgentError::Runtime(format!("flush firecracker api request failed: {err}"))
     })?;
 
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await.map_err(|err| {
-        AgentError::Runtime(format!("read firecracker api response failed: {err}"))
-    })?;
-
-    let response_str = String::from_utf8_lossy(&response);
-    let (head, body) = response_str.split_once("\r\n\r\n").ok_or_else(|| {
-        AgentError::Runtime(format!("invalid firecracker api response: path={path}"))
-    })?;
-    let status_line = head.lines().next().unwrap_or_default();
+    let response = read_firecracker_http_response(&mut stream).await?;
+    let status_line = response.status_line.as_str();
     let status_code = status_line
         .split_whitespace()
         .nth(1)
@@ -1121,15 +1109,76 @@ async fn firecracker_get_json(
         .unwrap_or_default();
     if !(200..300).contains(&status_code) {
         return Err(AgentError::Runtime(format!(
-            "firecracker api returned non-success status: path={path} status_line={status_line} response={response_str}"
+            "firecracker api returned non-success status: path={path} status_line={status_line} response={}",
+            String::from_utf8_lossy(&response.body)
         )));
     }
 
+    let body = String::from_utf8(response.body)
+        .map_err(|err| AgentError::Protocol(format!("decode firecracker api body failed: {err}")))?;
     serde_json::from_str::<serde_json::Value>(body.trim()).map_err(|err| {
         AgentError::Protocol(format!(
             "decode firecracker api json failed: path={path} error={err}"
         ))
     })
+}
+
+struct FirecrackerHttpResponse {
+    status_line: String,
+    body: Vec<u8>,
+}
+
+async fn read_firecracker_http_response(
+    stream: &mut UnixStream,
+) -> Result<FirecrackerHttpResponse, AgentError> {
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let read = stream.read(&mut byte).await.map_err(|err| {
+            AgentError::Runtime(format!("read firecracker api response failed: {err}"))
+        })?;
+        if read == 0 {
+            return Err(AgentError::Protocol(
+                "firecracker api response ended before headers completed".to_string(),
+            ));
+        }
+        header.push(byte[0]);
+        if header.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if header.len() > 64 * 1024 {
+            return Err(AgentError::Protocol(
+                "firecracker api response headers exceeded 64KiB".to_string(),
+            ));
+        }
+    }
+
+    let header_text = String::from_utf8(header).map_err(|err| {
+        AgentError::Protocol(format!("decode firecracker api headers failed: {err}"))
+    })?;
+    let mut lines = header_text.split("\r\n");
+    let status_line = lines.next().unwrap_or_default().to_string();
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().map_err(|err| {
+                    AgentError::Protocol(format!(
+                        "decode firecracker api content-length failed: {err}"
+                    ))
+                })?;
+            }
+        }
+    }
+
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        stream.read_exact(&mut body).await.map_err(|err| {
+            AgentError::Runtime(format!("read firecracker api body failed: {err}"))
+        })?;
+    }
+
+    Ok(FirecrackerHttpResponse { status_line, body })
 }
 
 fn guest_cid_for_agent(agent_id: Uuid) -> u32 {
