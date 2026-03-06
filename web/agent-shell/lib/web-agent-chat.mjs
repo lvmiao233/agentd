@@ -5,30 +5,60 @@ export class WebAgentChatModel {
     this.showReconnectBanner = false;
   }
 
-  appendUserMessage(text) {
-    this.messages.push({ role: 'user', content: text });
+  nextId() {
+    if (globalThis.crypto?.randomUUID) {
+      return globalThis.crypto.randomUUID();
+    }
+    return `msg-${Date.now()}-${Math.random()}`;
+  }
+
+  appendUserMessage(text, id = this.nextId()) {
+    this.messages.push({ id, role: 'user', text, content: text });
+    return id;
+  }
+
+  appendAssistantMessage(text, id = this.nextId()) {
+    this.messages.push({
+      id,
+      role: 'assistant',
+      text,
+      content: text,
+      streamTokens: [text],
+    });
+    return id;
   }
 
   appendAssistantToken(token) {
     const last = this.messages[this.messages.length - 1];
     if (!last || last.role !== 'assistant') {
-      this.messages.push({ role: 'assistant', content: token, streamTokens: [token] });
+      this.messages.push({
+        id: this.nextId(),
+        role: 'assistant',
+        text: token,
+        content: token,
+        streamTokens: [token],
+      });
       return;
     }
 
-    last.content += token;
+    last.text = `${last.text ?? last.content ?? ''}${token}`;
+    last.content = last.text;
     if (!Array.isArray(last.streamTokens)) {
       last.streamTokens = [];
     }
     last.streamTokens.push(token);
   }
 
-  appendToolCall(toolName, args) {
+  appendToolCall(toolName, args, id = this.nextId()) {
     this.messages.push({
+      id,
       role: 'tool',
+      toolName,
+      input: args,
       tool: toolName,
       args,
     });
+    return id;
   }
 
   handleDisconnect() {
@@ -53,5 +83,18 @@ export class WebAgentChatModel {
     if (method === 'Tool.Call') {
       this.appendToolCall(params.tool ?? 'unknown', params.args ?? {});
     }
+  }
+
+  snapshot() {
+    return {
+      connected: this.connected,
+      showReconnectBanner: this.showReconnectBanner,
+      messages: this.messages.map((message) => ({
+        ...message,
+        ...(Array.isArray(message.streamTokens)
+          ? { streamTokens: [...message.streamTokens] }
+          : {}),
+      })),
+    };
   }
 }

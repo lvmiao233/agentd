@@ -31,24 +31,14 @@ import {
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
 import { createDaemonWs, sendWsRpc } from '@/lib/daemon-rpc';
+import {
+  WebAgentChatModel,
+  type WebAgentChatMessage,
+} from '@/lib/web-agent-chat';
 
 type ChatStatus = 'ready' | 'streaming' | 'error';
 
-type UserOrAssistantMessage = {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  streamTokens?: string[];
-};
-
-type ToolCallMessage = {
-  id: string;
-  role: 'tool';
-  toolName: string;
-  input: unknown;
-};
-
-type ChatMessage = UserOrAssistantMessage | ToolCallMessage;
+type ChatMessage = WebAgentChatMessage;
 
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
@@ -112,6 +102,13 @@ export default function ChatPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const activeRequestIdRef = useRef<number | null>(null);
   const lastSubmittedInputRef = useRef('');
+  const chatModelRef = useRef(new WebAgentChatModel());
+
+  const syncChatModel = () => {
+    const snapshot = chatModelRef.current.snapshot();
+    setMessages(snapshot.messages);
+    setShowReconnectBanner(snapshot.showReconnectBanner);
+  };
 
   const resolvePreferredAgentId = async () => {
     const response = await fetch('/api/agents');
@@ -147,10 +144,8 @@ export default function ChatPage() {
       wsRef.current = ws;
 
       const appendAssistantError = (message: string) => {
-        setMessages((prev) => [
-          ...prev,
-          { id: nextMessageId(), role: 'assistant', text: message },
-        ]);
+        chatModelRef.current.appendAssistantMessage(`RunAgent failed: ${message}`);
+        syncChatModel();
         setStatus('error');
         activeRequestIdRef.current = null;
       };
@@ -158,51 +153,26 @@ export default function ChatPage() {
       const applyStreamPayload = (payload: any) => {
         const errorMessage = extractErrorMessage(payload);
         if (errorMessage) {
-          appendAssistantError(`RunAgent failed: ${errorMessage}`);
+          appendAssistantError(errorMessage);
           return;
         }
 
         const delta = extractTextDelta(payload);
         if (delta) {
-          setMessages((prev) => {
-            const last = prev.at(-1);
-            if (last && last.role === 'assistant') {
-              return prev.map((message, index) => {
-                if (index !== prev.length - 1) {
-                  return message;
-                }
-                const assistant = message as UserOrAssistantMessage;
-                return {
-                  ...assistant,
-                  text: assistant.text + delta,
-                  streamTokens: [...(assistant.streamTokens ?? []), delta],
-                };
-              });
-            }
-
-            return [
-              ...prev,
-              {
-                id: nextMessageId(),
-                role: 'assistant',
-                text: delta,
-                streamTokens: [delta],
-              },
-            ];
-          });
+          chatModelRef.current.appendAssistantToken(delta);
+          syncChatModel();
         }
 
         const toolCalls = extractToolCalls(payload);
         if (toolCalls.length > 0) {
-          setMessages((prev) => [
-            ...prev,
-            ...toolCalls.map((toolCall) => ({
-              id: toolCall.id,
-              role: 'tool' as const,
-              toolName: toolCall.name,
-              input: toolCall.input,
-            })),
-          ]);
+          for (const toolCall of toolCalls) {
+            chatModelRef.current.appendToolCall(
+              toolCall.name,
+              toolCall.input,
+              toolCall.id,
+            );
+          }
+          syncChatModel();
         }
 
         const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
@@ -228,26 +198,29 @@ export default function ChatPage() {
           try {
             applyStreamPayload(JSON.parse(payloadText));
           } catch {
-            appendAssistantError('RunAgent failed: invalid websocket stream payload');
+            appendAssistantError('invalid websocket stream payload');
           }
         }
       };
 
       ws.onopen = () => {
         if (!closed) {
-          setShowReconnectBanner(false);
+          chatModelRef.current.handleReconnect();
+          syncChatModel();
         }
       };
 
       ws.onerror = () => {
         if (!closed) {
-          setShowReconnectBanner(true);
+          chatModelRef.current.handleDisconnect();
+          syncChatModel();
         }
       };
 
       ws.onclose = () => {
         if (closed) return;
-        setShowReconnectBanner(true);
+        chatModelRef.current.handleDisconnect();
+        syncChatModel();
         wsRef.current = null;
         reconnectTimerRef.current = setTimeout(connect, 1000);
       };
@@ -310,7 +283,8 @@ export default function ChatPage() {
   const submitPrompt = async (raw: string) => {
     const text = raw.trim();
     if (!text) return;
-    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', text }]);
+    chatModelRef.current.appendUserMessage(text, nextMessageId());
+    syncChatModel();
     lastSubmittedInputRef.current = text;
     setStatus('streaming');
 
@@ -318,14 +292,10 @@ export default function ChatPage() {
 
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextMessageId(),
-          role: 'assistant',
-          text: 'RunAgent websocket transport unavailable.',
-        },
-      ]);
+      chatModelRef.current.appendAssistantMessage(
+        'RunAgent websocket transport unavailable.',
+      );
+      syncChatModel();
       setStatus('error');
       return;
     }
@@ -389,10 +359,10 @@ export default function ChatPage() {
                                 : undefined
                             }
                           >
-                            <MessageResponse>{message.text}</MessageResponse>
-                          </div>
-                        </MessageContent>
-                      </Message>
+                             <MessageResponse>{message.text}</MessageResponse>
+                           </div>
+                         </MessageContent>
+                       </Message>
                       {message.role === 'assistant' &&
                         messageIndex === messages.length - 1 &&
                         status !== 'streaming' && (
