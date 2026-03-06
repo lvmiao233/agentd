@@ -12,6 +12,25 @@ function parseSseDataLine(line) {
   return payload;
 }
 
+function isCompleteEventData(eventData) {
+  const payload = eventData.trim();
+  if (!payload) {
+    return false;
+  }
+  if (payload === '[DONE]') {
+    return true;
+  }
+  if (payload.startsWith('{') || payload.startsWith('[')) {
+    try {
+      JSON.parse(payload);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function consumeRunAgentStream({ responseBody, textId, writer }) {
   const reader = responseBody.getReader();
   const decoder = new TextDecoder();
@@ -56,7 +75,10 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
 
     const data = parseSseDataLine(line);
     if (data !== null) {
-      if (pendingDataLines.length > 0) {
+      if (
+        pendingDataLines.length > 0 &&
+        isCompleteEventData(pendingDataLines.join('\n'))
+      ) {
         commitEvent();
         if (terminalReached) {
           return;

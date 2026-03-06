@@ -118,6 +118,35 @@ export async function run() {
   });
 
   writes.length = 0;
+  const multilineSseOutcome = await consumeRunAgentStream({
+    responseBody: createReadableStream([
+      'data: {"result":\n',
+      'data: {"llm":{"output":"multiline"}}}\n',
+      '\n',
+      'data: {"result":{"status":"completed"}}\n\n',
+    ]),
+    textId: 'text-multiline-sse',
+    writer,
+  });
+
+  assert.equal(multilineSseOutcome.emitted, true, 'multi-line SSE event should emit content');
+  assert.equal(
+    multilineSseOutcome.terminalReached,
+    true,
+    'multi-line SSE stream should terminate on completed frame'
+  );
+  assert.equal(
+    multilineSseOutcome.finishReason,
+    'stop',
+    'multi-line SSE completed frame should map to stop finish reason'
+  );
+  assert.deepEqual(writes[0], {
+    type: 'text-delta',
+    id: 'text-multiline-sse',
+    delta: 'multiline',
+  });
+
+  writes.length = 0;
   const trailingOutcome = await consumeRunAgentStream({
     responseBody: createReadableStream(['data: {"result":{"llm":{"output":"tail"}}}']),
     textId: 'text-trailing',
