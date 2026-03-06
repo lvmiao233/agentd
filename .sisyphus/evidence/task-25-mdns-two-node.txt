@@ -1,24 +1,14 @@
-Task 25 live mDNS two-node evidence
-===================================
-
-Date: 2026-03-06
-Setup:
-  - daemon A config: /tmp/agentd-discovery.toml on 127.0.0.1:18084
-  - daemon B config: /tmp/agentd-discovery-b.toml on 127.0.0.1:18085
-  - daemon A startup profile: my-coding-agent
-  - daemon B startup profile: peer-agent
-
-Observed startup validation:
-  - target/debug/agentctl a2a discover --url http://127.0.0.1:18084 --json
-  - returned agent card for my-coding-agent without calling CreateAgent first
-
-Observed LAN discovery response:
-  - GET http://127.0.0.1:18084/discover
-  - lan[0].name = peer-agent
-  - lan[0].endpoint = http://127.0.0.1:18085
-  - lan[1].name = my-coding-agent
-  - lan[1].endpoint = http://127.0.0.1:18084
-  - errors = []
-
-Conclusion:
-  Two live daemon instances discovered each other over mDNS, and the advertised records now carry real agent metadata instead of daemon placeholder values.
+{
+  "task": 25,
+  "status": "passed",
+  "step": "mdns-two-node-live",
+  "lan_count": 2,
+  "sources": [
+    "lan",
+    "lan"
+  ],
+  "endpoints": [
+    "http://127.0.0.1:7024",
+    "http://127.0.0.1:7023"
+  ]
+}
