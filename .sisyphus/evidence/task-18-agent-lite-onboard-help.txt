@@ -1,0 +1,51 @@
+usage: agentd-agent-lite [-h] [--mode {chat,onboard-mcp}]
+                         [--socket-path SOCKET_PATH] --agent-id AGENT_ID
+                         [--prompt PROMPT] [--model MODEL] [--tool TOOL]
+                         [--base-url BASE_URL] [--api-key API_KEY]
+                         [--timeout TIMEOUT] [--dry-run]
+                         [--max-iterations MAX_ITERATIONS]
+                         [--max-retries MAX_RETRIES]
+                         [--max-context-tokens MAX_CONTEXT_TOKENS]
+                         [--session-load SESSION_LOAD]
+                         [--session-save SESSION_SAVE]
+                         [--onboard-name ONBOARD_NAME]
+                         [--onboard-command ONBOARD_COMMAND]
+                         [--onboard-arg ONBOARD_ARG]
+                         [--onboard-transport ONBOARD_TRANSPORT]
+                         [--onboard-trust-level ONBOARD_TRUST_LEVEL]
+
+options:
+  -h, --help            show this help message and exit
+  --mode {chat,onboard-mcp}
+                        Execution mode: normal chat loop or third-party MCP
+                        onboarding
+  --socket-path SOCKET_PATH
+  --agent-id AGENT_ID
+  --prompt PROMPT
+  --model MODEL
+  --tool TOOL
+  --base-url BASE_URL   OpenAI-compatible API base URL
+  --api-key API_KEY     OpenAI-compatible API key
+  --timeout TIMEOUT     Request timeout in seconds
+  --dry-run             Dry run mode - skip LLM call, for config validation
+                        only
+  --max-iterations MAX_ITERATIONS
+                        Maximum tool-calling iterations
+  --max-retries MAX_RETRIES
+                        Maximum retries for retryable provider errors
+  --max-context-tokens MAX_CONTEXT_TOKENS
+                        Session context token budget, 0 means disabled
+  --session-load SESSION_LOAD
+                        Load session JSONL before running the turn
+  --session-save SESSION_SAVE
+                        Save session JSONL after completing the turn
+  --onboard-name ONBOARD_NAME
+                        Third-party MCP server name when --mode=onboard-mcp
+  --onboard-command ONBOARD_COMMAND
+                        Third-party MCP launch command when --mode=onboard-mcp
+  --onboard-arg ONBOARD_ARG
+                        Repeatable MCP launch argument when --mode=onboard-mcp
+  --onboard-transport ONBOARD_TRANSPORT
+                        MCP transport for onboarding mode
+  --onboard-trust-level ONBOARD_TRUST_LEVEL
+                        Trust level for onboarding mode
