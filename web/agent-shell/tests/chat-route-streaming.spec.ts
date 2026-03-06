@@ -176,4 +176,77 @@ export async function run() {
     'error',
     'failed daemon stream should surface error finish reason through route response'
   );
+
+  let emptyInputFetchCalls = 0;
+  const emptyInputResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-4',
+            role: 'user',
+            parts: [{ type: 'text', text: '   ' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async () => {
+        emptyInputFetchCalls += 1;
+        throw new Error('empty input should not call fetch');
+      },
+    }
+  );
+
+  const emptyInputEvents = await readResponseEvents(emptyInputResponse);
+  const emptyInputPayloads = emptyInputEvents.filter((event) => event !== '[DONE]');
+  assert.equal(emptyInputFetchCalls, 0, 'empty input should short-circuit before daemon request');
+  assert.equal(
+    emptyInputPayloads.find((event) => event.type === 'text-delta')?.delta,
+    'Please provide a message to run.',
+    'empty input should return the route fallback text'
+  );
+  assert.equal(
+    emptyInputPayloads.at(-1).finishReason,
+    'stop',
+    'empty input fallback should finish successfully'
+  );
+
+  const transportFailureResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-5',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查 transport' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async () =>
+        new Response('gateway timeout', {
+          status: 504,
+          headers: { 'Content-Type': 'text/plain' },
+        }),
+    }
+  );
+
+  const transportFailureEvents = await readResponseEvents(transportFailureResponse);
+  const transportFailurePayloads = transportFailureEvents.filter((event) => event !== '[DONE]');
+  assert.equal(
+    transportFailurePayloads.find((event) => event.type === 'text-delta')?.delta,
+    'RunAgent HTTP transport failed (504).',
+    'transport failure should surface route fallback text'
+  );
+  assert.equal(
+    transportFailurePayloads.at(-1).finishReason,
+    'stop',
+    'transport failure fallback should finish as stop'
+  );
 }
