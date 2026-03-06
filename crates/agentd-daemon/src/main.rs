@@ -430,6 +430,7 @@ struct RuntimeState {
     mcp_host: Arc<Mutex<McpHost>>,
     firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
     a2a_tasks: Arc<RwLock<HashMap<uuid::Uuid, A2ATask>>>,
+    a2a_event_history: Arc<RwLock<HashMap<uuid::Uuid, Vec<A2ATaskEvent>>>>,
     a2a_stream_tx: broadcast::Sender<A2ATaskEvent>,
     registry_agents: Arc<RwLock<HashMap<String, RegistryAgentEntry>>>,
     lan_discovery: Arc<RwLock<Arc<dyn LanDiscovery>>>,
@@ -498,6 +499,7 @@ impl RuntimeState {
             mcp_host,
             firecracker_executor,
             a2a_tasks: Arc::new(RwLock::new(HashMap::new())),
+            a2a_event_history: Arc::new(RwLock::new(HashMap::new())),
             a2a_stream_tx,
             registry_agents: Arc::new(RwLock::new(HashMap::new())),
             lan_discovery: Arc::new(RwLock::new(Arc::new(MdnsLanDiscovery))),
@@ -527,6 +529,15 @@ impl RuntimeState {
 
     fn subscribe_a2a_stream(&self) -> broadcast::Receiver<A2ATaskEvent> {
         self.a2a_stream_tx.subscribe()
+    }
+
+    async fn a2a_event_history(&self, task_id: uuid::Uuid) -> Vec<A2ATaskEvent> {
+        self.a2a_event_history
+            .read()
+            .await
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn create_a2a_task(&self, request: CreateA2ATaskRequest) -> A2ATask {
@@ -600,6 +611,10 @@ impl RuntimeState {
             timestamp: Utc::now(),
             payload,
         };
+        {
+            let mut history = self.a2a_event_history.write().await;
+            history.entry(task_id).or_default().push(event.clone());
+        }
         let _ = self.a2a_stream_tx.send(event);
     }
 
@@ -2841,7 +2856,7 @@ async fn a2a_server_task_crud_and_stream() {
     let server_task = tokio::spawn(health_server(
         listener,
         bind_addr,
-        store,
+        store.clone(),
         state.clone(),
         OneApiConfig::default(),
         shutdown_rx,
@@ -2927,6 +2942,109 @@ async fn a2a_server_task_crud_and_stream() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn a2a_task_execution_returns_structured_output() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task22-execution-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({"prompt": "ping remote agent"}),
+        })
+        .await;
+
+    drive_a2a_task_lifecycle(state.clone(), store.clone(), created.id).await;
+
+    let completed = state
+        .get_a2a_task(created.id)
+        .await
+        .expect("completed task should exist");
+    assert_eq!(completed.state, A2ATaskState::Completed);
+    let output = completed.output.expect("completed task should have output");
+    assert_eq!(output["executor"], json!("local-a2a-executor"));
+    assert_eq!(output["input_summary"], json!("ping remote agent"));
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_task_with_unknown_agent_fails_terminally() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task22-missing-agent-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: Some(uuid::Uuid::new_v4()),
+            input: json!({"prompt": "ping missing agent"}),
+        })
+        .await;
+
+    drive_a2a_task_lifecycle(state.clone(), store.clone(), created.id).await;
+
+    let failed = state
+        .get_a2a_task(created.id)
+        .await
+        .expect("failed task should exist");
+    assert_eq!(failed.state, A2ATaskState::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("load delegated agent failed")),
+        "expected delegated agent failure error: {failed:?}"
+    );
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn a2a_task_with_invalid_migration_context_fails_terminally() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task22-invalid-migration-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({
+                "kind": "context_migration",
+                "migration_context": {
+                    "summary": "broken"
+                }
+            }),
+        })
+        .await;
+
+    drive_a2a_task_lifecycle(state.clone(), store.clone(), created.id).await;
+
+    let failed = state
+        .get_a2a_task(created.id)
+        .await
+        .expect("failed task should exist");
+    assert_eq!(failed.state, A2ATaskState::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid migration_context")),
+        "expected invalid migration context error: {failed:?}"
+    );
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn ws_bridge_forwards_rpc_and_stream() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -2948,7 +3066,7 @@ async fn ws_bridge_forwards_rpc_and_stream() {
     let server_task = tokio::spawn(health_server(
         listener,
         bind_addr,
-        store,
+        store.clone(),
         state.clone(),
         OneApiConfig::default(),
         shutdown_rx,
@@ -3009,7 +3127,11 @@ async fn ws_bridge_forwards_rpc_and_stream() {
             input: json!({"prompt": "ws stream"}),
         })
         .await;
-    tokio::spawn(drive_a2a_task_lifecycle(state.clone(), created.id));
+    tokio::spawn(drive_a2a_task_lifecycle(
+        state.clone(),
+        store.clone(),
+        created.id,
+    ));
 
     socket
         .send(Message::Text(
@@ -4543,27 +4665,54 @@ async fn health_server(
                     let sse_headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
                     stream.write_all(sse_headers.as_bytes()).await?;
 
-                    let initial = A2ATaskEvent {
-                        task_id: task.id,
-                        state: task.state,
-                        lifecycle_state: task.state.to_agent_lifecycle_state(),
-                        timestamp: Utc::now(),
-                        payload: json!({"task": task}),
-                    };
-                    let encoded_initial = serde_json::to_string(&initial)?;
-                    stream
-                        .write_all(format!("event: task\ndata: {encoded_initial}\n\n").as_bytes())
-                        .await?;
-
                     let mut subscription = state.subscribe_a2a_stream();
+                    let history = state.a2a_event_history(task.id).await;
+                    let mut replay_cursor = history.last().map(|event| event.timestamp);
+                    if history.is_empty() {
+                        let initial = A2ATaskEvent {
+                            task_id: task.id,
+                            state: task.state,
+                            lifecycle_state: task.state.to_agent_lifecycle_state(),
+                            timestamp: Utc::now(),
+                            payload: json!({"task": task}),
+                        };
+                        let encoded_initial = serde_json::to_string(&initial)?;
+                        stream
+                            .write_all(format!("event: task\ndata: {encoded_initial}\n\n").as_bytes())
+                            .await?;
+                    } else {
+                        for event in &history {
+                            let encoded = serde_json::to_string(event)?;
+                            stream
+                                .write_all(format!("event: task\ndata: {encoded}\n\n").as_bytes())
+                                .await?;
+                        }
+                    }
+
+                    if history.last().is_some_and(|event| {
+                        matches!(
+                            event.state,
+                            A2ATaskState::Completed
+                                | A2ATaskState::Failed
+                                | A2ATaskState::Canceled
+                        )
+                    }) {
+                        let _ = stream.shutdown().await;
+                        continue;
+                    }
+
                     let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
                     while tokio::time::Instant::now() < stream_deadline {
                         match tokio::time::timeout(Duration::from_millis(800), subscription.recv()).await {
                             Ok(Ok(event)) if event.task_id == task_id => {
+                                if replay_cursor.is_some_and(|cursor| event.timestamp <= cursor) {
+                                    continue;
+                                }
                                 let encoded = serde_json::to_string(&event)?;
                                 stream
                                     .write_all(format!("event: task\ndata: {encoded}\n\n").as_bytes())
                                     .await?;
+                                replay_cursor = Some(event.timestamp);
                                 if matches!(event.state, A2ATaskState::Completed | A2ATaskState::Failed | A2ATaskState::Canceled) {
                                     break;
                                 }
@@ -4679,7 +4828,11 @@ async fn health_server(
                         }
                     };
                     let created = state.create_a2a_task(payload).await;
-                    tokio::spawn(drive_a2a_task_lifecycle(state.clone(), created.id));
+                    tokio::spawn(drive_a2a_task_lifecycle(
+                        state.clone(),
+                        store.clone(),
+                        created.id,
+                    ));
                     json_http_response("201 Created", &json!({"task": created}))?
                 } else if method == "GET" && path.starts_with("/a2a/tasks/") {
                     let task_id_raw = path.trim_start_matches("/a2a/tasks/");
@@ -4742,45 +4895,229 @@ fn request_body(request: &str) -> &str {
     request.split("\r\n\r\n").nth(1).unwrap_or("")
 }
 
-async fn drive_a2a_task_lifecycle(state: RuntimeState, task_id: uuid::Uuid) {
-    let task_input = state
+fn summarize_a2a_input(value: &Value) -> Option<String> {
+    fn collect_fragments(value: &Value, fragments: &mut Vec<String>) {
+        match value {
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    fragments.push(trimmed.to_string());
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter().take(4) {
+                    collect_fragments(item, fragments);
+                }
+            }
+            Value::Object(map) => {
+                for key in ["prompt", "input", "content", "message", "task", "summary", "work"] {
+                    if let Some(item) = map.get(key) {
+                        collect_fragments(item, fragments);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut fragments = Vec::new();
+    collect_fragments(value, &mut fragments);
+    let joined = fragments.join(" ");
+    let normalized = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.len() <= 160 {
+        return Some(normalized);
+    }
+
+    let mut truncated = normalized.chars().take(157).collect::<String>();
+    truncated.push_str("...");
+    Some(truncated)
+}
+
+fn classify_a2a_task_kind(task_input: &Value) -> &'static str {
+    if task_input
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "context_migration")
+        || task_input.get("migration_context").is_some()
+    {
+        "context_migration"
+    } else {
+        "generic"
+    }
+}
+
+fn build_generic_a2a_output(
+    task_id: uuid::Uuid,
+    task_input: &Value,
+    agent_profile: Option<&AgentProfile>,
+    input_summary: &str,
+) -> Value {
+    json!({
+        "result": "ok",
+        "executor": "local-a2a-executor",
+        "task_id": task_id,
+        "input_summary": input_summary,
+        "received_input": task_input,
+        "agent": agent_profile.map(|profile| {
+            json!({
+                "id": profile.id,
+                "name": profile.name,
+                "model": profile.model.model_name,
+                "provider": profile.model.provider,
+            })
+        }),
+    })
+}
+
+async fn transition_a2a_task_to_failed(
+    state: &RuntimeState,
+    task_id: uuid::Uuid,
+    task_kind: &str,
+    agent_id: Option<uuid::Uuid>,
+    input_summary: Option<&str>,
+    error: String,
+    payload: Value,
+) {
+    if matches!(
+        state.get_a2a_task(task_id).await.map(|task| task.state),
+        Some(A2ATaskState::Submitted)
+    ) {
+        let _ = state
+            .transition_a2a_task(
+                task_id,
+                A2ATaskState::Working,
+                None,
+                None,
+                json!({
+                    "kind": task_kind,
+                    "phase": "starting",
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "input_summary": input_summary,
+                }),
+            )
+            .await;
+    }
+
+    let _ = state
+        .transition_a2a_task(task_id, A2ATaskState::Failed, None, Some(error), payload)
+        .await;
+}
+
+async fn drive_a2a_task_lifecycle(
+    state: RuntimeState,
+    store: Arc<SqliteStore>,
+    task_id: uuid::Uuid,
+) {
+    let Some(task) = state
         .get_a2a_task(task_id)
         .await
-        .map(|task| task.input)
-        .unwrap_or_else(|| json!({}));
+    else {
+        return;
+    };
+    let task_input = task.input.clone();
+    let task_kind = classify_a2a_task_kind(&task_input);
+    let input_summary = summarize_a2a_input(&task_input);
+    let agent_profile = match task.agent_id {
+        Some(agent_id) => match store.get_agent(agent_id).await {
+            Ok(profile) => Some(profile),
+            Err(err) => {
+                transition_a2a_task_to_failed(
+                    &state,
+                    task_id,
+                    task_kind,
+                    task.agent_id,
+                    input_summary.as_deref(),
+                    format!("load delegated agent failed: {err}"),
+                    json!({
+                        "kind": task_kind,
+                        "phase": "agent-resolution-failed",
+                        "agent_id": agent_id,
+                    }),
+                )
+                .await;
+                return;
+            }
+        },
+        None => None,
+    };
     let restored_context = match restore_task_migration_context(&task_input) {
         Ok(context) => context,
         Err(err) => {
-            let _ = state
-                .transition_a2a_task(
-                    task_id,
-                    A2ATaskState::Failed,
-                    None,
-                    Some(err.to_string()),
-                    json!({"migration_restore_error": err.to_string()}),
-                )
-                .await;
+            transition_a2a_task_to_failed(
+                &state,
+                task_id,
+                task_kind,
+                task.agent_id,
+                input_summary.as_deref(),
+                err.to_string(),
+                json!({
+                    "kind": task_kind,
+                    "phase": "restore-failed",
+                    "migration_restore_error": err.to_string(),
+                }),
+            )
+            .await;
             return;
         }
     };
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
     let _ = state
-        .transition_a2a_task(task_id, A2ATaskState::Working, None, None, json!({}))
+        .transition_a2a_task(
+            task_id,
+            A2ATaskState::Working,
+            None,
+            None,
+            json!({
+                "kind": task_kind,
+                "phase": "started",
+                "task_id": task_id,
+                "agent_id": task.agent_id,
+                "input_summary": input_summary,
+            }),
+        )
         .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let completion_output = if let Some(context) = restored_context.clone() {
         json!({
             "result": "ok",
+            "executor": "local-a2a-executor",
+            "migration_restore": context,
+        })
+    } else if let Some(summary) = input_summary.clone() {
+        build_generic_a2a_output(task_id, &task_input, agent_profile.as_ref(), &summary)
+    } else {
+        let _ = state
+            .transition_a2a_task(
+                task_id,
+                A2ATaskState::Failed,
+                None,
+                Some("a2a task input must include prompt, message, content, or summary".to_string()),
+                json!({
+                    "kind": task_kind,
+                    "phase": "validation-failed",
+                }),
+            )
+            .await;
+        return;
+    };
+    let completion_payload = if let Some(context) = restored_context {
+        json!({
+            "kind": task_kind,
+            "phase": "completed",
             "migration_restore": context,
         })
     } else {
-        json!({"result": "ok"})
+        json!({
+            "kind": task_kind,
+            "phase": "completed",
+            "input_summary": input_summary,
+            "agent_id": task.agent_id,
+        })
     };
-    let completion_payload = restored_context
-        .map(|context| json!({"migration_restore": context}))
-        .unwrap_or_else(|| json!({}));
 
     let _ = state
         .transition_a2a_task(

@@ -245,6 +245,32 @@ impl AgentctlA2AClient {
             .map_err(|err| format!("invalid get task response: {err}"))?;
         Ok(task)
     }
+
+    async fn stream_task(
+        &self,
+        target: &str,
+        task_id: uuid::Uuid,
+    ) -> Result<Vec<agentd_protocol::A2ATaskEvent>, DynError> {
+        let url = format!(
+            "{}/a2a/stream?task_id={}",
+            normalize_base_url(target)?,
+            task_id
+        );
+        let response = self.http.get(url).send().await?;
+        let response = response.error_for_status()?;
+        let body = response.text().await?;
+
+        let mut events = Vec::new();
+        for line in body.lines() {
+            if let Some(payload) = line.strip_prefix("data: ") {
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                events.push(serde_json::from_str(payload)?);
+            }
+        }
+        Ok(events)
+    }
 }
 
 fn normalize_base_url(input: &str) -> Result<String, DynError> {
@@ -551,12 +577,14 @@ async fn run_cli(
                         )
                         .await?;
 
+                    let stream = client.stream_task(&target, task.id).await.ok();
                     let status = client.get_task(&target, &task.id.to_string()).await?;
                     if json {
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&json!({
                                 "task": task,
+                                "stream": stream,
                                 "status": status,
                             }))?
                         );
@@ -872,7 +900,7 @@ async fn a2a_cli_discover_send_status_flow() {
     let addr = listener.local_addr().expect("resolve mock listener addr");
 
     let server = tokio::spawn(async move {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().await.expect("accept mock request");
             let mut buf = [0_u8; 8192];
             let read = stream.read(&mut buf).await.expect("read mock request");
@@ -909,6 +937,32 @@ async fn a2a_cli_discover_send_status_flow() {
                         }
                     }),
                 )
+            } else if request_line.starts_with(&format!("GET /a2a/stream?task_id={task_id} ")) {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: task\ndata: {}\n\nevent: task\ndata: {}\n\nevent: task\ndata: {}\n\n",
+                    json!({
+                        "task_id": task_id,
+                        "state": "submitted",
+                        "lifecycle_state": "creating",
+                        "timestamp": now,
+                        "payload": {"phase": "submitted"}
+                    }),
+                    json!({
+                        "task_id": task_id,
+                        "state": "working",
+                        "lifecycle_state": "running",
+                        "timestamp": now,
+                        "payload": {"phase": "started"}
+                    }),
+                    json!({
+                        "task_id": task_id,
+                        "state": "completed",
+                        "lifecycle_state": "stopped",
+                        "timestamp": now,
+                        "payload": {"phase": "completed"}
+                    })
+                )
+                .into_bytes()
             } else if request_line.starts_with(&format!("GET /a2a/tasks/{task_id} ")) {
                 test_json_http_response(
                     "200 OK",

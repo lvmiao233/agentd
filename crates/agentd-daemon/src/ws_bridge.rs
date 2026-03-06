@@ -162,25 +162,37 @@ async fn handle_a2a_stream_subscription(
     )
     .await?;
 
-    let initial_event = A2ATaskEvent {
-        task_id: task.id,
-        state: task.state,
-        lifecycle_state: task.state.to_agent_lifecycle_state(),
-        timestamp: Utc::now(),
-        payload: json!({"task": task}),
-    };
-    send_stream_event(ws, &initial_event).await?;
+    let mut subscription = state.subscribe_a2a_stream();
+    let history = state.a2a_event_history(task.id).await;
+    let mut replay_cursor = history.last().map(|event| event.timestamp);
+    if history.is_empty() {
+        let initial_event = A2ATaskEvent {
+            task_id: task.id,
+            state: task.state,
+            lifecycle_state: task.state.to_agent_lifecycle_state(),
+            timestamp: Utc::now(),
+            payload: json!({"task": task}),
+        };
+        send_stream_event(ws, &initial_event).await?;
+    } else {
+        for event in &history {
+            send_stream_event(ws, event).await?;
+        }
+    }
 
-    if is_terminal_state(task.state) {
+    if history.last().is_some_and(|event| is_terminal_state(event.state)) || is_terminal_state(task.state) {
         return Ok(());
     }
 
-    let mut subscription = state.subscribe_a2a_stream();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(800), subscription.recv()).await {
             Ok(Ok(event)) if event.task_id == task_id => {
+                if replay_cursor.is_some_and(|cursor| event.timestamp <= cursor) {
+                    continue;
+                }
                 send_stream_event(ws, &event).await?;
+                replay_cursor = Some(event.timestamp);
                 if is_terminal_state(event.state) {
                     break;
                 }
