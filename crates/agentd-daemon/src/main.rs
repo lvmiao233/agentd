@@ -3703,6 +3703,61 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn run_agent_rejects_profile_without_one_api_token_mapping() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-run-agent-missing-token-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let profile = store
+        .create_agent(AgentProfile::new(
+            "missing-token-agent".to_string(),
+            ModelConfig {
+                provider: "one-api".to_string(),
+                model_name: "gpt-5.3-codex".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        ))
+        .await
+        .expect("create missing token profile");
+
+    let response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(92003),
+            "RunAgent",
+            json!({
+                "input": "should fail before upstream request",
+                "agent_id": profile.id.to_string(),
+                "stream": false,
+            }),
+        ),
+        store,
+        state,
+        OneApiConfig::default(),
+    )
+    .await;
+
+    let error = response
+        .error
+        .expect("run-agent should fail without one-api token mapping");
+    assert_eq!(error.code, -32030);
+    assert!(
+        error.message.contains("one-api access token unavailable for agent"),
+        "expected stable missing-token error, got: {error:?}"
+    );
+    assert!(
+        error.message.contains(&profile.id.to_string()),
+        "expected missing-token error to identify the agent, got: {error:?}"
+    );
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn run_agent_stream_marks_usage_unavailable_when_provider_omits_usage() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-run-agent-stream-no-usage-test-{}.sqlite",
@@ -3951,6 +4006,21 @@ async fn run_agent_non_stream_reports_provider_usage_and_persists_summary() {
         ))
         .await
         .expect("create usage agent profile");
+    store
+        .save_mapping(agentd_store::OneApiMapping {
+            agent_id: profile.id,
+            idempotency_key: format!(
+                "{}:{}:{}",
+                profile.name, profile.model.provider, profile.model.model_name
+            ),
+            one_api_token_id: "token-usage-agent".to_string(),
+            one_api_access_token: "sk-usage-agent".to_string(),
+            one_api_channel_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .expect("persist usage agent one-api mapping");
 
     let provider_listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -9429,6 +9499,15 @@ async fn resolve_run_agent_context(
     } else {
         None
     };
+
+    if let Some(profile) = profile.as_ref() {
+        if profile.model.provider == "one-api" && access_token.is_none() {
+            return Err(AgentError::Runtime(format!(
+                "one-api access token unavailable for agent {} ({}); provision the agent through one-api management or persist a token mapping before RunAgent",
+                profile.id, profile.name
+            )));
+        }
+    }
 
     Ok(RunAgentResolvedContext {
         profile,
