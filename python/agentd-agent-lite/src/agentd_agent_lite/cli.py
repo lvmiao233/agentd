@@ -1412,6 +1412,16 @@ def run_chat(
     )
 
 
+def emit_result(payload: dict[str, Any], *, result_path: str | None = None) -> None:
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if isinstance(result_path, str) and result_path:
+        path = Path(result_path)
+        if path.parent != Path(""):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(encoded, encoding="utf-8")
+    print(encoded)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="agentd-agent-lite")
     parser.add_argument(
@@ -1466,6 +1476,11 @@ def parse_args() -> argparse.Namespace:
         help="Save session JSONL after completing the turn",
     )
     parser.add_argument(
+        "--result-path",
+        default=None,
+        help="Write final result JSON to a file before exiting",
+    )
+    parser.add_argument(
         "--onboard-name",
         default=None,
         help="Third-party MCP server name when --mode=onboard-mcp",
@@ -1495,34 +1510,31 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_once(args: argparse.Namespace) -> int:
+    result_path = getattr(args, "result_path", None)
     mode = str(getattr(args, "mode", "chat"))
     if mode == "onboard-mcp":
         onboard_name = getattr(args, "onboard_name", None)
         onboard_command = getattr(args, "onboard_command", None)
         if not isinstance(onboard_name, str) or not onboard_name.strip():
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "onboard_mcp",
-                        "error": "invalid_onboard_request",
-                        "message": "--onboard-name is required when --mode=onboard-mcp",
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "onboard_mcp",
+                    "error": "invalid_onboard_request",
+                    "message": "--onboard-name is required when --mode=onboard-mcp",
+                },
+                result_path=result_path,
             )
             return 1
         if not isinstance(onboard_command, str) or not onboard_command.strip():
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "onboard_mcp",
-                        "error": "invalid_onboard_request",
-                        "message": "--onboard-command is required when --mode=onboard-mcp",
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "onboard_mcp",
+                    "error": "invalid_onboard_request",
+                    "message": "--onboard-command is required when --mode=onboard-mcp",
+                },
+                result_path=result_path,
             )
             return 1
 
@@ -1539,21 +1551,19 @@ def run_once(args: argparse.Namespace) -> int:
             transport=str(getattr(args, "onboard_transport", "stdio")),
             trust_level=str(getattr(args, "onboard_trust_level", "community")),
         )
-        print(json.dumps(result, ensure_ascii=False))
+        emit_result(result, result_path=result_path)
         return 0 if result.get("status") == "onboarded" else 1
 
     prompt = getattr(args, "prompt", None)
     if not isinstance(prompt, str) or not prompt.strip():
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "stage": "input",
-                    "error": "missing_prompt",
-                    "message": "--prompt is required when --mode=chat",
-                },
-                ensure_ascii=False,
-            )
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "input",
+                "error": "missing_prompt",
+                "message": "--prompt is required when --mode=chat",
+            },
+            result_path=result_path,
         )
         return 1
 
@@ -1576,33 +1586,29 @@ def run_once(args: argparse.Namespace) -> int:
             reason_code = "MISSING_API_KEY"
         elif "timeout" in err_text:
             reason_code = "INVALID_TIMEOUT"
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "stage": "config",
-                    "error": "invalid_config",
-                    "reason_code": reason_code,
-                    "message": str(err),
-                },
-                ensure_ascii=False,
-            )
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "config",
+                "error": "invalid_config",
+                "reason_code": reason_code,
+                "message": str(err),
+            },
+            result_path=result_path,
         )
         return 1
 
     if args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "status": "dry_run",
-                    "config": {
-                        "base_url": llm_config.base_url,
-                        "model": llm_config.model,
-                        "timeout": llm_config.timeout,
-                    },
+        emit_result(
+            {
+                "status": "dry_run",
+                "config": {
+                    "base_url": llm_config.base_url,
+                    "model": llm_config.model,
+                    "timeout": llm_config.timeout,
                 },
-                ensure_ascii=False,
-            )
+            },
+            result_path=result_path,
         )
         return 0
 
@@ -1619,16 +1625,14 @@ def run_once(args: argparse.Namespace) -> int:
                 max_context_tokens=max_context_tokens,
             )
         except ValueError as err:
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "session_load",
-                        "error": "invalid_session",
-                        "message": str(err),
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "session_load",
+                    "error": "invalid_session",
+                    "message": str(err),
+                },
+                result_path=result_path,
             )
             return 1
     else:
@@ -1648,63 +1652,55 @@ def run_once(args: argparse.Namespace) -> int:
         )
     except RpcError as err:
         if err.code == -32016:
-            print(
-                json.dumps(
-                    {
-                        "status": "blocked",
-                        "agent_id": args.agent_id,
-                        "tool": args.tool,
-                        "error": "policy.deny",
-                        "code": err.code,
-                        "message": err.message,
-                        "provider_call_attempted": False,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 2
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "stage": "authorize",
-                    "code": err.code,
-                    "message": err.message,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 1
-
-    decision = str(authorization.get("decision", "ask"))
-    if decision == "deny":
-        print(
-            json.dumps(
+            emit_result(
                 {
                     "status": "blocked",
                     "agent_id": args.agent_id,
                     "tool": args.tool,
                     "error": "policy.deny",
-                    "message": "tool denied by policy engine",
+                    "code": err.code,
+                    "message": err.message,
                     "provider_call_attempted": False,
                 },
-                ensure_ascii=False,
+                result_path=result_path,
             )
+            return 2
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "authorize",
+                "code": err.code,
+                "message": err.message,
+            },
+            result_path=result_path,
+        )
+        return 1
+
+    decision = str(authorization.get("decision", "ask"))
+    if decision == "deny":
+        emit_result(
+            {
+                "status": "blocked",
+                "agent_id": args.agent_id,
+                "tool": args.tool,
+                "error": "policy.deny",
+                "message": "tool denied by policy engine",
+                "provider_call_attempted": False,
+            },
+            result_path=result_path,
         )
         return 2
     if decision == "ask":
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "agent_id": args.agent_id,
-                    "tool": args.tool,
-                    "error": "policy.ask",
-                    "message": "tool requires explicit approval",
-                    "provider_call_attempted": False,
-                },
-                ensure_ascii=False,
-            )
+        emit_result(
+            {
+                "status": "blocked",
+                "agent_id": args.agent_id,
+                "tool": args.tool,
+                "error": "policy.ask",
+                "message": "tool requires explicit approval",
+                "provider_call_attempted": False,
+            },
+            result_path=result_path,
         )
         return 2
 
@@ -1758,67 +1754,59 @@ def run_once(args: argparse.Namespace) -> int:
         compact_triggered = bool(chat_result.get("compact_triggered", False))
     except RuntimeError as err:
         if str(err) == "MAX_ITERATIONS_REACHED":
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "llm",
-                        "error": "MAX_ITERATIONS_REACHED",
-                        "message": "tool-calling loop exceeded max_iterations",
-                        "max_iterations": max_iterations,
-                        "provider_call_attempted": True,
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "llm",
+                    "error": "MAX_ITERATIONS_REACHED",
+                    "message": "tool-calling loop exceeded max_iterations",
+                    "max_iterations": max_iterations,
+                    "provider_call_attempted": True,
+                },
+                result_path=result_path,
             )
             return 1
         raise
     except RpcError as err:
         if err.code == -32016:
-            print(
-                json.dumps(
-                    {
-                        "status": "blocked",
-                        "agent_id": args.agent_id,
-                        "tool": args.tool,
-                        "error": "policy.deny",
-                        "code": err.code,
-                        "message": err.message,
-                        "provider_call_attempted": provider_call_attempted,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 2
-        if err.code == -32024:
-            print(
-                json.dumps(
-                    {
-                        "status": "blocked",
-                        "agent_id": args.agent_id,
-                        "tool": args.tool,
-                        "error": "policy.ask",
-                        "code": err.code,
-                        "message": err.message,
-                        "provider_call_attempted": provider_call_attempted,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 2
-
-        print(
-            json.dumps(
+            emit_result(
                 {
-                    "status": "failed",
-                    "stage": "authorize",
+                    "status": "blocked",
+                    "agent_id": args.agent_id,
                     "tool": args.tool,
+                    "error": "policy.deny",
                     "code": err.code,
                     "message": err.message,
                     "provider_call_attempted": provider_call_attempted,
                 },
-                ensure_ascii=False,
+                result_path=result_path,
             )
+            return 2
+        if err.code == -32024:
+            emit_result(
+                {
+                    "status": "blocked",
+                    "agent_id": args.agent_id,
+                    "tool": args.tool,
+                    "error": "policy.ask",
+                    "code": err.code,
+                    "message": err.message,
+                    "provider_call_attempted": provider_call_attempted,
+                },
+                result_path=result_path,
+            )
+            return 2
+
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "authorize",
+                "tool": args.tool,
+                "code": err.code,
+                "message": err.message,
+                "provider_call_attempted": provider_call_attempted,
+            },
+            result_path=result_path,
         )
         return 1
     except Exception as err:
@@ -1829,24 +1817,20 @@ def run_once(args: argparse.Namespace) -> int:
             classified_error = err.last_error
 
         error_code, error_category = _classify_llm_error(classified_error)
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "stage": "llm",
-                    "error": error_code,
-                    "error_category": error_category,
-                    "message": str(classified_error),
-                    "provider_request_id": getattr(
-                        classified_error, "request_id", None
-                    ),
-                    "transport_mode": "real",
-                    "provider_call_attempted": provider_call_attempted,
-                    "attempts": attempts,
-                    "max_retries": max_retries,
-                },
-                ensure_ascii=False,
-            )
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "llm",
+                "error": error_code,
+                "error_category": error_category,
+                "message": str(classified_error),
+                "provider_request_id": getattr(classified_error, "request_id", None),
+                "transport_mode": "real",
+                "provider_call_attempted": provider_call_attempted,
+                "attempts": attempts,
+                "max_retries": max_retries,
+            },
+            result_path=result_path,
         )
         return 1
 
@@ -1859,16 +1843,14 @@ def run_once(args: argparse.Namespace) -> int:
                 session=session,
             )
         except ValueError as err:
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "stage": "session_save",
-                        "error": "persist_failed",
-                        "message": str(err),
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "session_save",
+                    "error": "persist_failed",
+                    "message": str(err),
+                },
+                result_path=result_path,
             )
             return 1
 
@@ -1890,57 +1872,53 @@ def run_once(args: argparse.Namespace) -> int:
             },
         )
     except RpcError as err:
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "stage": "record_usage",
-                    "code": err.code,
-                    "message": err.message,
-                },
-                ensure_ascii=False,
-            )
+        emit_result(
+            {
+                "status": "failed",
+                "stage": "record_usage",
+                "code": err.code,
+                "message": err.message,
+            },
+            result_path=result_path,
         )
         return 3
 
-    print(
-        json.dumps(
-            {
-                "status": "completed",
-                "agent_id": args.agent_id,
-                "prompt": args.prompt,
-                "model": llm_config.model,
-                "tool": {
-                    "name": args.tool,
-                    "decision": decision,
-                    "output": legacy_tool_output,
-                    "calls": tool_call_records,
-                },
-                "llm": {
-                    "output": response_text,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                    "estimated_cost_usd": cost_usd,
-                    "provider_request_id": last_provider_request_id,
-                    "request_id_source": last_request_id_source,
-                    "provider_model": last_provider_model,
-                    "usage_source": last_usage_source,
-                    "transport_mode": last_transport_mode,
-                    "context_window_tokens": session.context_window_tokens,
-                    "max_context_tokens": session.max_context_tokens,
-                    "compact_triggered": compact_triggered,
-                },
-                "session": {
-                    "head_id": session.head_id,
-                    "message_count": len(session.messages),
-                    "load_path": session_load_path,
-                    "save_path": session_save_path,
-                },
-                "usage": usage,
+    emit_result(
+        {
+            "status": "completed",
+            "agent_id": args.agent_id,
+            "prompt": args.prompt,
+            "model": llm_config.model,
+            "tool": {
+                "name": args.tool,
+                "decision": decision,
+                "output": legacy_tool_output,
+                "calls": tool_call_records,
             },
-            ensure_ascii=False,
-        )
+            "llm": {
+                "output": response_text,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost_usd": cost_usd,
+                "provider_request_id": last_provider_request_id,
+                "request_id_source": last_request_id_source,
+                "provider_model": last_provider_model,
+                "usage_source": last_usage_source,
+                "transport_mode": last_transport_mode,
+                "context_window_tokens": session.context_window_tokens,
+                "max_context_tokens": session.max_context_tokens,
+                "compact_triggered": compact_triggered,
+            },
+            "session": {
+                "head_id": session.head_id,
+                "message_count": len(session.messages),
+                "load_path": session_load_path,
+                "save_path": session_save_path,
+            },
+            "usage": usage,
+        },
+        result_path=result_path,
     )
     return 0
 

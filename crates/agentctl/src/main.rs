@@ -612,6 +612,10 @@ async fn run_builtin_lite(
         .to_string();
 
     let command = "uv";
+    let result_path = std::env::temp_dir().join(format!(
+        "agentctl-builtin-lite-result-{}.json",
+        uuid::Uuid::new_v4()
+    ));
     let args = vec![
         "run".to_string(),
         "--project".to_string(),
@@ -627,6 +631,8 @@ async fn run_builtin_lite(
         model.to_string(),
         "--tool".to_string(),
         tool.to_string(),
+        "--result-path".to_string(),
+        result_path.to_string_lossy().to_string(),
     ];
 
     let started = call_rpc(
@@ -644,20 +650,75 @@ async fn run_builtin_lite(
         }),
     )
     .await?;
-    let started_result = rpc_result_or_error(started)?;
+    let _started_result = rpc_result_or_error(started)?;
 
-    let output = json!({
-        "builtin": "lite",
-        "prompt": prompt,
-        "agent": created_result.get("agent").cloned().unwrap_or(json!(null)),
-        "managed": started_result,
-    });
+    let terminal_state = wait_for_managed_agent_terminal_state(socket_path, &agent_id).await?;
+    let result = read_builtin_lite_result(&result_path)?;
+    let _ = std::fs::remove_file(&result_path);
 
-    if as_json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("{}", output);
+    print_builtin_lite_result(&result, as_json)?;
+    if terminal_state == "failed" {
+        return Err("builtin lite agent exited in failed state".into());
     }
+    Ok(())
+}
+
+async fn wait_for_managed_agent_terminal_state(
+    socket_path: &str,
+    agent_id: &str,
+) -> Result<String, DynError> {
+    let started = tokio::time::Instant::now();
+    let timeout = Duration::from_secs(120);
+
+    while started.elapsed() < timeout {
+        let response = call_rpc(socket_path, "ListManagedAgents", json!({})).await?;
+        let result = rpc_result_or_error(response)?;
+        let agents = result
+            .get("agents")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(agent) = agents.iter().find(|entry| {
+            entry
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == agent_id)
+        }) {
+            if let Some(state) = agent.get("state").and_then(Value::as_str) {
+                if matches!(state, "stopped" | "failed") {
+                    return Ok(state.to_string());
+                }
+            }
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    Err(format!("timed out waiting for builtin lite agent {agent_id} to finish").into())
+}
+
+fn read_builtin_lite_result(result_path: &std::path::Path) -> Result<Value, DynError> {
+    let content = std::fs::read_to_string(result_path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn print_builtin_lite_result(result: &Value, as_json: bool) -> Result<(), DynError> {
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+        return Ok(());
+    }
+
+    if let Some(output) = result
+        .get("llm")
+        .and_then(|llm| llm.get("output"))
+        .and_then(Value::as_str)
+    {
+        println!("{output}");
+        return Ok(());
+    }
+
+    println!("{}", serde_json::to_string_pretty(result)?);
     Ok(())
 }
 
@@ -1313,6 +1374,18 @@ async fn builtin_lite_create_agent_allows_requested_tool() {
             serde_json::from_slice(&start_buf).expect("decode start rpc request");
         assert_eq!(start_request.method, "StartManagedAgent");
         assert_eq!(start_request.params["agent_id"], json!("agent-builtin-lite-test"));
+        let result_path = start_request.params["args"]
+            .as_array()
+            .and_then(|args| {
+                args.windows(2).find_map(|window| {
+                    if window[0] == json!("--result-path") {
+                        window[1].as_str().map(ToString::to_string)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .expect("start rpc should include --result-path");
 
         let start_response = JsonRpcResponse::success(
             json!(1),
@@ -1324,6 +1397,41 @@ async fn builtin_lite_create_agent_allows_requested_tool() {
             .await
             .expect("write start rpc response");
         let _ = start_stream.shutdown().await;
+
+        std::fs::write(
+            &result_path,
+            serde_json::to_string(&json!({
+                "status": "completed",
+                "llm": {"output": "OK"}
+            }))
+            .expect("encode result payload"),
+        )
+        .expect("write builtin lite result file");
+
+        let (mut list_stream, _) = listener.accept().await.expect("accept list rpc");
+        let mut list_buf = Vec::new();
+        list_stream
+            .read_to_end(&mut list_buf)
+            .await
+            .expect("read list rpc request");
+        let list_request: JsonRpcRequest =
+            serde_json::from_slice(&list_buf).expect("decode list rpc request");
+        assert_eq!(list_request.method, "ListManagedAgents");
+        let list_response = JsonRpcResponse::success(
+            json!(1),
+            json!({
+                "agents": [{
+                    "agent_id": "agent-builtin-lite-test",
+                    "state": "stopped"
+                }]
+            }),
+        );
+        let encoded_list = serde_json::to_vec(&list_response).expect("encode list response");
+        list_stream
+            .write_all(&encoded_list)
+            .await
+            .expect("write list rpc response");
+        let _ = list_stream.shutdown().await;
     });
 
     let cli = Cli::try_parse_from([
