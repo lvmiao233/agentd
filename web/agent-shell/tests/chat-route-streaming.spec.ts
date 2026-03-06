@@ -249,4 +249,38 @@ export async function run() {
     'stop',
     'transport failure fallback should finish as stop'
   );
+
+  const rejectedTransportResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-6',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查 daemon 连接失败' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async () => {
+        throw new TypeError('connection refused');
+      },
+    }
+  );
+
+  const rejectedTransportEvents = await readResponseEvents(rejectedTransportResponse);
+  const rejectedTransportPayloads = rejectedTransportEvents.filter((event) => event !== '[DONE]');
+  assert.equal(
+    rejectedTransportPayloads.find((event) => event.type === 'text-delta')?.delta,
+    'RunAgent HTTP transport failed (connection refused).',
+    'transport exceptions should degrade into fallback text instead of throwing'
+  );
+  assert.equal(
+    rejectedTransportPayloads.at(-1).finishReason,
+    'stop',
+    'transport exception fallback should finish as stop'
+  );
 }

@@ -39,6 +39,16 @@ export function buildSingleTextStreamResponse(text) {
   return createUIMessageStreamResponse({ stream });
 }
 
+function describeTransportFailure(error) {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return `RunAgent HTTP transport failed (${message}).`;
+    }
+  }
+  return 'RunAgent HTTP transport failed.';
+}
+
 export async function handleChatPost(
   req,
   { fetchImpl = fetch, daemonUrl = DEFAULT_DAEMON_URL } = {}
@@ -55,21 +65,26 @@ export async function handleChatPost(
     return buildSingleTextStreamResponse('Please provide a message to run.');
   }
 
-  const response = await fetchImpl(`${daemonUrl}/rpc`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: Date.now(),
-      method: 'RunAgent',
-      params: {
-        input,
-        model: selectedModel,
-        ...(agentId ? { agent_id: agentId } : {}),
-        stream: true,
-      },
-    }),
-  });
+  let response;
+  try {
+    response = await fetchImpl(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'RunAgent',
+        params: {
+          input,
+          model: selectedModel,
+          ...(agentId ? { agent_id: agentId } : {}),
+          stream: true,
+        },
+      }),
+    });
+  } catch (error) {
+    return buildSingleTextStreamResponse(describeTransportFailure(error));
+  }
 
   if (!response.ok || !response.body) {
     return buildSingleTextStreamResponse(`RunAgent HTTP transport failed (${response.status}).`);
