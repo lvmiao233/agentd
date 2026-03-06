@@ -149,15 +149,18 @@ export async function listAgents(): Promise<AgentProfile[]> {
 }
 
 export async function getAgent(agentId: string, auditLimit?: number): Promise<AgentProfile> {
-  const result = await rpcCall<RawAgentProfile>('GetAgent', {
+  const result = await rpcCall<{ profile?: RawAgentProfile }>('GetAgent', {
     agent_id: agentId,
     ...(auditLimit !== undefined && { audit_limit: auditLimit }),
   });
-  return normalizeAgentProfile(result);
+  return normalizeAgentProfile(result.profile ?? {});
 }
 
 export async function deleteAgent(agentId: string): Promise<{ deleted: boolean }> {
-  return rpcCall<{ deleted: boolean }>('DeleteAgent', { agent_id: agentId });
+  const result = await rpcCall<{ deleted?: boolean; success?: boolean }>('DeleteAgent', {
+    agent_id: agentId,
+  });
+  return { deleted: result.deleted ?? result.success ?? false };
 }
 
 // --- Usage ---
