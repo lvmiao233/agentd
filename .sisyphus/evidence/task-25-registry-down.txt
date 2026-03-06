@@ -1,0 +1,14 @@
+Task 25 registry fallback evidence
+==================================
+
+Date: 2026-03-06
+Command:
+  target/debug/agentctl discover --url http://127.0.0.1:18084 --registry-url http://127.0.0.1:9 --json
+
+Observed result:
+  - lan count = 2
+  - registry count = 0
+  - errors[0] = registry query failed: runtime error: fetch registry agents failed: error sending request for url (http://127.0.0.1:9/registry/agents)
+
+Conclusion:
+  Query-string decoding now works for registry_url, and registry outages no longer erase LAN discovery results.
