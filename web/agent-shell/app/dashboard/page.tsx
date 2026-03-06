@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { summarizeDashboardState } from '@/lib/dashboard-events-model';
 import {
   Activity,
+  BellRing,
   Server,
   AlertTriangle,
   CheckCircle,
@@ -28,6 +30,10 @@ type HealthStatus = {
   subsystems: Record<string, string>;
 };
 
+type RuntimeEventSummary = {
+  event_type: string;
+};
+
 function statusVariant(status: string) {
   switch (status) {
     case 'running':
@@ -46,13 +52,15 @@ function statusVariant(status: string) {
 export default function DashboardPage() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [events, setEvents] = useState<RuntimeEventSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentsRes, healthRes] = await Promise.all([
+      const [agentsRes, healthRes, eventsRes] = await Promise.all([
         fetch('/api/agents'),
         fetch('/api/health'),
+        fetch('/api/events?limit=1&wait_timeout_secs=0'),
       ]);
       if (agentsRes.ok) {
         const data = await agentsRes.json();
@@ -60,6 +68,10 @@ export default function DashboardPage() {
       }
       if (healthRes.ok) {
         setHealth(await healthRes.json());
+      }
+      if (eventsRes.ok) {
+        const data = await eventsRes.json();
+        setEvents(data.events ?? []);
       }
       setError(null);
     } catch {
@@ -73,7 +85,10 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [fetchData]);
 
-  const runningCount = agents.filter((a) => a.status === 'running').length;
+  const summary = summarizeDashboardState({
+    agents,
+    events: events.map((event) => ({ type: event.event_type })),
+  });
   const totalTokens = agents.reduce(
     (s, a) => s + a.total_input_tokens + a.total_output_tokens,
     0,
@@ -101,12 +116,12 @@ export default function DashboardPage() {
           className="agent-count-card"
           icon={<Server className="size-4 text-blue-400" />}
           label="注册 Agents"
-          value={agents.length}
+          value={summary.agentCount}
         />
         <MetricCard
           icon={<Activity className="size-4 text-green-400" />}
           label="运行中"
-          value={runningCount}
+          value={summary.runningCount}
         />
         <MetricCard
           icon={<Cpu className="size-4 text-purple-400" />}
@@ -114,11 +129,23 @@ export default function DashboardPage() {
           value={totalTokens.toLocaleString()}
         />
         <MetricCard
-          icon={<CheckCircle className="size-4 text-cyan-400" />}
-          label="Daemon"
-          value={health?.status ?? '—'}
+          icon={<BellRing className="size-4 text-cyan-400" />}
+          label="最近事件"
+          value={summary.latestEventType}
         />
       </div>
+
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant={statusVariant(health?.status ?? 'unknown')}>
+            Daemon: {health?.status ?? '—'}
+          </Badge>
+          <Badge variant={summary.degradedCount > 0 ? 'outline' : 'secondary'}>
+            Degraded agents: {summary.degradedCount}
+          </Badge>
+          <Badge variant="secondary">Latest event: {summary.latestEventType}</Badge>
+        </div>
+      </section>
 
       {/* Health subsystems */}
       {health?.subsystems && (

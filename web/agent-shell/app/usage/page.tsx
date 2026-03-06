@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { buildUsageBars } from '@/lib/dashboard-events-model';
 import {
   AlertTriangle,
   BarChart3,
@@ -57,6 +58,7 @@ export default function UsagePage() {
   }, [fetchUsage]);
 
   const maxTokens = Math.max(1, ...agents.map((a) => a.total_tokens));
+  const usageBars = buildUsageBars(agents.map((agent) => agent.total_tokens));
 
   return (
     <div className="space-y-6">
@@ -100,9 +102,23 @@ export default function UsagePage() {
 
       {/* Per-agent breakdown */}
       <section className="token-chart rounded-xl border border-border bg-card p-4">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Agent 用量明细
-        </h2>
+        <div className="mb-3 flex items-end justify-between gap-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Agent 用量明细
+          </h2>
+          {usageBars.length > 0 && (
+            <div className="flex h-12 items-end gap-1" aria-label="token usage bars">
+              {usageBars.map((bar, index) => (
+                <div
+                  key={`${bar.value}-${index}`}
+                  className="w-2 rounded-t bg-blue-500/80"
+                  style={{ height: `${Math.max(bar.heightPercent, 8)}%` }}
+                  title={`${bar.value.toLocaleString()} tokens`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
         {agents.length === 0 ? (
           <p className="py-8 text-center text-muted-foreground">
             暂无用量数据 — 通过 Chat 或 CLI 使用 Agent 后将显示

@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { evaluateThirdPartyOnboarding } from '@/lib/dashboard-events-model';
 import {
   Select,
   SelectContent,
@@ -139,6 +140,11 @@ export default function SettingsPage() {
   }
 
   const healthyCount = servers.filter((s) => s.health === 'healthy').length;
+  const onboardingSummary = evaluateThirdPartyOnboarding({
+    currentServers: servers,
+    onboardingError:
+      feedback && /失败|failed|error|invalid|无法/i.test(feedback) ? feedback : null,
+  });
 
   return (
     <div className="space-y-6">
@@ -167,6 +173,29 @@ export default function SettingsPage() {
           <p className="mt-1 text-2xl font-bold">{servers.length}</p>
         </div>
       </div>
+
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant={statusVariant(onboardingSummary.onboardingStatus === 'failed' ? 'unreachable' : onboardingSummary.builtinToolsIntact ? 'healthy' : 'degraded')}>
+            onboarding: {onboardingSummary.onboardingStatus}
+          </Badge>
+          <Badge variant={onboardingSummary.builtinToolsIntact ? 'secondary' : 'destructive'}>
+            builtin tools intact: {onboardingSummary.builtinToolsIntact ? 'yes' : 'no'}
+          </Badge>
+          <Badge variant="outline">
+            healthy servers: {onboardingSummary.healthyServerCount}/{onboardingSummary.serverCount}
+          </Badge>
+        </div>
+        {onboardingSummary.exposedTools.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1">
+            {onboardingSummary.exposedTools.slice(0, 8).map((tool, index) => (
+              <Badge key={`${tool ?? 'unknown'}-${index}`} variant="outline" className="text-xs">
+                {tool ?? 'unknown'}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Onboard form */}
       <section className="rounded-xl border border-border bg-card p-4">

@@ -30,6 +30,7 @@ export function buildUsageBars(tokensByWindow = []) {
 
 export function evaluateThirdPartyOnboarding({
   currentTools = [],
+  currentServers = [],
   onboardingError = null,
 } = {}) {
   const normalizedTools = currentTools
@@ -39,14 +40,43 @@ export function evaluateThirdPartyOnboarding({
     }))
     .filter((tool) => typeof tool.policy_tool === 'string');
 
-  const builtinTools = normalizedTools.filter(
-    (tool) => tool.server === 'mcp-fs' || tool.server === 'mcp-search'
+  const normalizedServerTools = currentServers.flatMap((server) => {
+    if (!server || typeof server !== 'object') {
+      return [];
+    }
+
+    const serverId = typeof server.server === 'string' ? server.server : 'unknown';
+    const capabilities = Array.isArray(server.capabilities) ? server.capabilities : [];
+    return capabilities
+      .filter((capability) => typeof capability === 'string' && capability.trim().length > 0)
+      .map((capability) => ({
+        server: serverId,
+        policy_tool: normalizeToolName(capability),
+      }))
+      .filter((tool) => typeof tool.policy_tool === 'string');
+  });
+
+  const allTools = [...normalizedTools, ...normalizedServerTools];
+
+  const builtinTools = allTools.filter(
+    (tool) =>
+      tool.server === 'mcp-fs' ||
+      tool.server === 'mcp-search' ||
+      tool.server === 'mcp-shell' ||
+      tool.server === 'mcp-git'
   );
+  const healthyServers = currentServers.filter((server) => server?.health === 'healthy').length;
 
   return {
-    onboardingStatus: onboardingError ? 'failed' : 'onboarded',
+    onboardingStatus: onboardingError
+      ? 'failed'
+      : currentServers.length > 0 || allTools.length > 0
+        ? 'onboarded'
+        : 'idle',
     onboardingError,
     builtinToolsIntact: builtinTools.length > 0,
-    exposedTools: normalizedTools.map((tool) => tool.policy_tool),
+    exposedTools: allTools.map((tool) => tool.policy_tool),
+    healthyServerCount: healthyServers,
+    serverCount: currentServers.length,
   };
 }
