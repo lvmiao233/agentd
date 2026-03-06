@@ -1,0 +1,142 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - generic [ref=e36]:
+            - heading "Events & Audit" [level=1] [ref=e37]
+            - paragraph [ref=e38]: 来自 daemon SubscribeEvents 的实时运行时事件流
+          - generic [ref=e39]:
+            - button "暂停" [ref=e40]:
+              - img
+              - text: 暂停
+            - button "刷新" [ref=e41]:
+              - img
+              - text: 刷新
+        - generic [ref=e42]:
+          - generic [ref=e43]:
+            - paragraph [ref=e44]: 事件总数
+            - paragraph [ref=e45]: "9"
+          - generic [ref=e46]:
+            - paragraph [ref=e47]: 策略拒绝
+            - paragraph [ref=e48]: "0"
+          - generic [ref=e49]:
+            - paragraph [ref=e50]: 连接状态
+            - paragraph [ref=e51]: 实时连接
+        - generic [ref=e52]:
+          - heading "事件流" [level=2] [ref=e53]
+          - list [ref=e56]:
+            - listitem [ref=e57]:
+              - img [ref=e58]
+              - generic [ref=e60]:
+                - generic [ref=e61]:
+                  - generic [ref=e62]: agent.started
+                  - generic [ref=e63]: info
+                - generic [ref=e64]:
+                  - generic [ref=e65]: "Agent: 74c69e0e…"
+                  - generic [ref=e66]: 2026-03-06T16:55:24.655501581+00:00
+            - listitem [ref=e67]:
+              - img [ref=e68]
+              - generic [ref=e70]:
+                - generic [ref=e71]:
+                  - generic [ref=e72]: agent.exited
+                  - generic [ref=e73]: info
+                - generic [ref=e74]:
+                  - generic [ref=e75]: "Agent: 74c69e0e…"
+                  - generic [ref=e76]: 2026-03-06T16:55:26.660098760+00:00
+            - listitem [ref=e77]:
+              - img [ref=e78]
+              - generic [ref=e80]:
+                - generic [ref=e81]:
+                  - generic [ref=e82]: agent.stopped
+                  - generic [ref=e83]: info
+                - generic [ref=e84]:
+                  - generic [ref=e85]: "Agent: 74c69e0e…"
+                  - generic [ref=e86]: 2026-03-06T16:55:26.660134888+00:00
+            - listitem [ref=e87]:
+              - img [ref=e88]
+              - generic [ref=e90]:
+                - generic [ref=e91]:
+                  - generic [ref=e92]: agent.started
+                  - generic [ref=e93]: info
+                - generic [ref=e94]:
+                  - generic [ref=e95]: "Agent: 5dd99e11…"
+                  - generic [ref=e96]: 2026-03-06T16:58:41.859479999+00:00
+            - listitem [ref=e97]:
+              - img [ref=e98]
+              - generic [ref=e100]:
+                - generic [ref=e101]:
+                  - generic [ref=e102]: agent.exited
+                  - generic [ref=e103]: info
+                - generic [ref=e104]:
+                  - generic [ref=e105]: "Agent: 5dd99e11…"
+                  - generic [ref=e106]: 2026-03-06T16:58:43.863821643+00:00
+            - listitem [ref=e107]:
+              - img [ref=e108]
+              - generic [ref=e110]:
+                - generic [ref=e111]:
+                  - generic [ref=e112]: agent.stopped
+                  - generic [ref=e113]: info
+                - generic [ref=e114]:
+                  - generic [ref=e115]: "Agent: 5dd99e11…"
+                  - generic [ref=e116]: 2026-03-06T16:58:43.863879903+00:00
+            - listitem [ref=e117]:
+              - img [ref=e118]
+              - generic [ref=e120]:
+                - generic [ref=e121]:
+                  - generic [ref=e122]: agent.started
+                  - generic [ref=e123]: info
+                - generic [ref=e124]:
+                  - generic [ref=e125]: "Agent: 190f3963…"
+                  - generic [ref=e126]: 2026-03-06T16:59:52.847895651+00:00
+            - listitem [ref=e127]:
+              - img [ref=e128]
+              - generic [ref=e130]:
+                - generic [ref=e131]:
+                  - generic [ref=e132]: agent.exited
+                  - generic [ref=e133]: info
+                - generic [ref=e134]:
+                  - generic [ref=e135]: "Agent: 190f3963…"
+                  - generic [ref=e136]: 2026-03-06T16:59:54.852453460+00:00
+            - listitem [ref=e137]:
+              - img [ref=e138]
+              - generic [ref=e140]:
+                - generic [ref=e141]:
+                  - generic [ref=e142]: agent.stopped
+                  - generic [ref=e143]: info
+                - generic [ref=e144]:
+                  - generic [ref=e145]: "Agent: 190f3963…"
+                  - generic [ref=e146]: 2026-03-06T16:59:54.852492995+00:00
+  - alert [ref=e55]
