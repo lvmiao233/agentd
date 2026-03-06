@@ -1890,6 +1890,31 @@ fn firecracker_echo_script_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/firecracker/vsock-agent-echo.py")
 }
 
+#[cfg(all(test, feature = "firecracker-integration"))]
+fn build_real_firecracker_executor_for_integration(
+    root: &Path,
+) -> Option<firecracker::FirecrackerExecutor> {
+    let kernel_path = std::env::var_os("AGENTD_TEST_FIRECRACKER_KERNEL")?;
+    let rootfs_path = std::env::var_os("AGENTD_TEST_FIRECRACKER_ROOTFS")?;
+    let firecracker_binary = std::env::var_os("AGENTD_TEST_FIRECRACKER_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/home/vipa/agentd/data/firecracker/firecracker"));
+
+    firecracker::FirecrackerExecutor::builder()
+        .firecracker_binary(firecracker_binary)
+        .kernel_path(PathBuf::from(kernel_path))
+        .rootfs_path(PathBuf::from(rootfs_path))
+        .default_vcpu_count(1)
+        .default_mem_size_mib(256)
+        .default_network_policy(firecracker::NetworkIsolationPolicy::AllowAll)
+        .default_jailer(None)
+        .vsock_root_dir(root.join("vsock"))
+        .api_socket_root_dir(root.join("api"))
+        .launch_mode(firecracker::FirecrackerLaunchMode::RealFirecracker)
+        .build()
+        .ok()
+}
+
 #[cfg(test)]
 fn build_firecracker_executor_for_test(root: &Path) -> firecracker::FirecrackerExecutor {
     let kernel = root.join("vmlinux.bin");
@@ -2770,6 +2795,112 @@ async fn untrusted_agent_uses_firecracker_runtime() {
     let stop_response = handle_rpc_request(
         JsonRpcRequest::new(
             json!(21003),
+            "StopManagedAgent",
+            json!({"agent_id": agent_id}),
+        ),
+        store,
+        state,
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        stop_response.error.is_none(),
+        "stop should succeed: {stop_response:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(cgroup_root);
+    let _ = std::fs::remove_dir_all(firecracker_root);
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(all(test, feature = "firecracker-integration"))]
+#[tokio::test]
+async fn untrusted_agent_uses_real_firecracker_runtime_when_assets_available() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task21-real-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let cgroup_root =
+        std::env::temp_dir().join(format!("agentd-task21-real-cgroup-{}", uuid::Uuid::new_v4()));
+    let firecracker_root = temp_firecracker_runtime_dir();
+
+    let Some(executor) = build_real_firecracker_executor_for_integration(&firecracker_root) else {
+        return;
+    };
+
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
+        "disabled",
+        LifecycleManager::new(CgroupManager::new(&cgroup_root, "agentd")),
+        PathBuf::from(default_agent_card_root()),
+        Arc::new(Mutex::new(McpHost::new())),
+        Some(Arc::new(executor)),
+    );
+
+    let create_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21101),
+            "CreateAgent",
+            json!({
+                "name": "task21-untrusted-real-runtime",
+                "model": "claude-4-sonnet",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        create_response.error.is_none(),
+        "create should succeed: {create_response:?}"
+    );
+    let agent_id = create_response
+        .result
+        .expect("create result should exist")
+        .get("agent")
+        .expect("agent field should exist")
+        .get("id")
+        .expect("id field should exist")
+        .as_str()
+        .expect("agent id should be string")
+        .to_string();
+
+    let start_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21102),
+            "StartManagedAgent",
+            json!({
+                "agent_id": agent_id,
+                "command": "/usr/bin/python3",
+                "args": ["-c", "import time; time.sleep(1)"],
+                "restart_max_attempts": 0,
+                "restart_backoff_secs": 0,
+                "trust_level": "untrusted",
+                "network_policy": "allow",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    assert!(
+        start_response.error.is_none(),
+        "start should succeed with real firecracker assets: {start_response:?}"
+    );
+    assert_eq!(
+        start_response
+            .result
+            .expect("start result should exist")
+            .get("runtime")
+            .expect("runtime field should exist"),
+        "firecracker"
+    );
+
+    let stop_response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(21103),
             "StopManagedAgent",
             json!({"agent_id": agent_id}),
         ),
