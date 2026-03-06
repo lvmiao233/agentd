@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import json
+import re
 import socket
 import sys
 import time
@@ -59,6 +60,7 @@ class RetryExhaustedError(Exception):
 @dataclass(slots=True)
 class DiscoveredTool:
     openai_name: str
+    policy_name: str
     server: str
     tool: str
     description: str
@@ -75,6 +77,7 @@ class AgentSession:
         self.max_context_tokens = max_context_tokens
         self.discovered_tools: list[DiscoveredTool] = []
         self.discovered_signature = ""
+        self.provider_tool_name_map: dict[str, str] = {}
 
     def _append_message(self, role: str, content: str) -> dict[str, Any]:
         message = {
@@ -657,6 +660,16 @@ def _build_tool_schema(tool_name: str) -> list[dict[str, Any]]:
     ]
 
 
+def _provider_safe_tool_name(policy_tool_name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", policy_tool_name)
+    sanitized = sanitized.strip("_")
+    if not sanitized:
+        return "tool"
+    if len(sanitized) > 64:
+        sanitized = sanitized[:64]
+    return sanitized
+
+
 def _normalize_parameters_schema(raw_schema: Any) -> dict[str, Any]:
     if not isinstance(raw_schema, dict):
         return {
@@ -686,9 +699,11 @@ def _convert_discovered_tool(tool_entry: dict[str, Any]) -> DiscoveredTool | Non
     if not isinstance(tool, str) or not tool:
         return None
 
-    openai_name = tool_entry.get("policy_tool")
-    if not isinstance(openai_name, str) or not openai_name:
-        openai_name = f"mcp.{server}.{tool}"
+    policy_name = tool_entry.get("policy_tool")
+    if not isinstance(policy_name, str) or not policy_name:
+        policy_name = f"mcp.{server}.{tool}"
+
+    openai_name = policy_name
 
     description = tool_entry.get("description")
     if not isinstance(description, str) or not description:
@@ -702,6 +717,7 @@ def _convert_discovered_tool(tool_entry: dict[str, Any]) -> DiscoveredTool | Non
 
     return DiscoveredTool(
         openai_name=openai_name,
+        policy_name=policy_name,
         server=server,
         tool=tool,
         description=description,
@@ -739,6 +755,7 @@ def discover_openai_tools(
     session: AgentSession,
 ) -> list[dict[str, Any]]:
     fallback_tools = _build_tool_schema(fallback_tool_name)
+    session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
     try:
         result = call_rpc(
             socket_path,
@@ -754,6 +771,7 @@ def discover_openai_tools(
     if not isinstance(tools_value, list) or not tools_value:
         session.discovered_tools = []
         session.discovered_signature = ""
+        session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
         return fallback_tools
 
     raw_tools = [item for item in tools_value if isinstance(item, dict)]
@@ -761,6 +779,7 @@ def discover_openai_tools(
     if signature != session.discovered_signature:
         converted: list[DiscoveredTool] = []
         unique_counter: dict[str, int] = {}
+        provider_tool_name_map: dict[str, str] = {}
         for raw_tool in raw_tools:
             tool = _convert_discovered_tool(raw_tool)
             if tool is None:
@@ -771,12 +790,18 @@ def discover_openai_tools(
             if duplicate_count > 0:
                 tool.openai_name = f"{tool.openai_name}__{duplicate_count + 1}"
 
+            provider_tool_name_map[tool.openai_name] = tool.policy_name
             converted.append(tool)
 
         session.discovered_tools = converted
         session.discovered_signature = signature
+        if provider_tool_name_map:
+            session.provider_tool_name_map = provider_tool_name_map
+        else:
+            session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
 
     if not session.discovered_tools:
+        session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
         return fallback_tools
 
     return [
@@ -949,6 +974,47 @@ def _resolve_discovered_tool(
     return None
 
 
+def _resolve_policy_tool_name(session: AgentSession, provider_name: str) -> str:
+    return session.provider_tool_name_map.get(provider_name, provider_name)
+
+
+def _prepare_provider_tools(
+    request_tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    provider_tools: list[dict[str, Any]] = []
+    provider_to_policy: dict[str, str] = {}
+    name_counts: dict[str, int] = {}
+
+    for tool in request_tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        policy_name = function.get("name")
+        if not isinstance(policy_name, str) or not policy_name:
+            continue
+
+        provider_name = _provider_safe_tool_name(policy_name)
+        duplicate_count = name_counts.get(provider_name, 0)
+        name_counts[provider_name] = duplicate_count + 1
+        if duplicate_count > 0:
+            provider_name = f"{provider_name}__{duplicate_count + 1}"
+
+        transformed_function = dict(function)
+        transformed_function["name"] = provider_name
+        transformed_tool = dict(tool)
+        transformed_tool["function"] = transformed_function
+
+        provider_tools.append(transformed_tool)
+        provider_to_policy[provider_name] = policy_name
+
+    if not provider_tools:
+        return request_tools, {}
+
+    return provider_tools, provider_to_policy
+
+
 def _tool_output_to_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -978,15 +1044,27 @@ def _invoke_real_chat_once(
         )
         request_tools = _build_tool_schema(fallback_tool)
 
+    provider_tools, provider_to_policy = _prepare_provider_tools(request_tools)
+
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
     raw_response = client.chat.completions.with_raw_response.create(
         model=model,
         messages=messages,
-        tools=request_tools,
+        tools=provider_tools,
     )
     completion = raw_response.parse()
     response_text = _extract_message_text(completion)
     tool_calls = _extract_tool_calls(completion)
+    if provider_to_policy and isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            provider_name = tool_call.get("name")
+            if not isinstance(provider_name, str):
+                continue
+            mapped = provider_to_policy.get(provider_name)
+            if isinstance(mapped, str) and mapped:
+                tool_call["name"] = mapped
     if not response_text and not tool_calls:
         raise RuntimeError("provider returned empty assistant content")
 
@@ -1217,6 +1295,8 @@ def _run_chat_turn(
             ):
                 continue
 
+            policy_tool_name = _resolve_policy_tool_name(session, tool_name)
+
             parsed_prompt = ""
             parsed_arguments: Any = {}
             if isinstance(arguments_text, str) and arguments_text:
@@ -1235,7 +1315,7 @@ def _run_chat_turn(
                 args.socket_path,
                 "AuthorizeTool",
                 {
-                    "tool": tool_name,
+                    "tool": policy_tool_name,
                     "agent_id": args.agent_id,
                 },
             )
@@ -1260,13 +1340,13 @@ def _run_chat_turn(
                 tool_output = _tool_output_to_text(invoke_result)
                 tool_output_record: Any = invoke_result
             else:
-                tool_output = run_builtin_tool(tool_name, parsed_prompt)
+                tool_output = run_builtin_tool(policy_tool_name, parsed_prompt)
                 tool_output_record = tool_output
 
             tool_call_records.append(
                 {
                     "id": call_id,
-                    "name": tool_name,
+                    "name": policy_tool_name,
                     "arguments": arguments_text
                     if isinstance(arguments_text, str)
                     else "{}",
