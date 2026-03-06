@@ -9677,9 +9677,17 @@ fn resolve_one_api_management_api_key(config: &OneApiConfig) -> Result<Option<St
     Ok(token.filter(|value| !value.trim().is_empty()))
 }
 
-fn derive_one_api_chat_url(config: &OneApiConfig) -> Result<String, AgentError> {
+fn derive_one_api_base_url(config: &OneApiConfig) -> Result<String, AgentError> {
     let mut url = reqwest::Url::parse(&config.health_url)
         .map_err(|err| AgentError::Config(format!("invalid one_api health_url: {err}")))?;
+    url.set_path("/v1");
+    url.set_query(None);
+    Ok(url.to_string())
+}
+
+fn derive_one_api_chat_url(config: &OneApiConfig) -> Result<String, AgentError> {
+    let mut url = reqwest::Url::parse(&derive_one_api_base_url(config)?)
+        .map_err(|err| AgentError::Config(format!("invalid derived one_api base_url: {err}")))?;
     url.set_path("/v1/chat/completions");
     url.set_query(None);
     Ok(url.to_string())
@@ -11259,6 +11267,48 @@ async fn handle_rpc_request(
                 }
             };
 
+            let mut managed_env = params.env.clone();
+            if profile.model.provider == "one-api" {
+                let base_url = match derive_one_api_base_url(&one_api_config) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            format!("resolve one-api base url failed: {err}"),
+                        );
+                    }
+                };
+
+                let access_token = match resolve_run_agent_access_token(&store, &profile).await {
+                    Ok(Some(token)) => token,
+                    Ok(None) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            format!(
+                                "start managed agent requires one-api token mapping for agent {} ({})",
+                                profile.id, profile.name
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32017,
+                            format!("resolve one-api token mapping failed: {err}"),
+                        );
+                    }
+                };
+
+                managed_env
+                    .entry("ONE_API_BASE_URL".to_string())
+                    .or_insert(base_url);
+                managed_env
+                    .entry("ONE_API_TOKEN".to_string())
+                    .or_insert(access_token);
+            }
+
             let limits = CgroupResourceLimits {
                 cpu_weight: params.cpu_weight.unwrap_or(100),
                 memory_high: params.memory_high.unwrap_or_else(|| "256M".to_string()),
@@ -11268,7 +11318,7 @@ async fn handle_rpc_request(
                 agent_id,
                 command: params.command,
                 args: params.args,
-                env: params.env,
+                env: managed_env,
                 restart_max_attempts: params.restart_max_attempts.unwrap_or(3),
                 restart_backoff_secs: params.restart_backoff_secs.unwrap_or(1),
                 limits,

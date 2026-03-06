@@ -1,6 +1,7 @@
 use agentd_core::AgentError;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,7 +48,9 @@ impl CgroupManager {
     }
 
     pub fn agent_group_path(&self, agent_id: Uuid) -> PathBuf {
-        self.root.join(&self.parent).join(agent_id.to_string())
+        self.resolved_root()
+            .join(&self.parent)
+            .join(agent_id.to_string())
     }
 
     pub fn ensure_agent_group(
@@ -55,7 +58,7 @@ impl CgroupManager {
         agent_id: Uuid,
         limits: &CgroupResourceLimits,
     ) -> Result<PathBuf, AgentError> {
-        let parent_path = self.root.join(&self.parent);
+        let parent_path = self.resolved_root().join(&self.parent);
         std::fs::create_dir_all(&parent_path).map_err(|err| {
             AgentError::Runtime(format!(
                 "create cgroup parent directory failed: path={} error={err}",
@@ -80,12 +83,16 @@ impl CgroupManager {
 
         let memory_events_path = group_path.join("memory.events");
         if !memory_events_path.exists() {
-            std::fs::write(&memory_events_path, "oom 0\noom_kill 0\n").map_err(|err| {
-                AgentError::Runtime(format!(
-                    "initialize memory.events failed: path={} error={err}",
-                    memory_events_path.display()
-                ))
-            })?;
+            match std::fs::write(&memory_events_path, "oom 0\noom_kill 0\n") {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(err) => {
+                    return Err(AgentError::Runtime(format!(
+                        "initialize memory.events failed: path={} error={err}",
+                        memory_events_path.display()
+                    )));
+                }
+            }
         }
 
         Ok(group_path)
@@ -100,23 +107,75 @@ impl CgroupManager {
         let path = self.agent_group_path(agent_id).join("memory.events");
         match std::fs::read_to_string(&path) {
             Ok(content) => Ok(parse_memory_events(&content)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(MemoryEvents::default()),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    || err.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                Ok(MemoryEvents::default())
+            }
             Err(err) => Err(AgentError::Runtime(format!(
                 "read memory.events failed: path={} error={err}",
                 path.display()
             ))),
         }
     }
+
+    fn resolved_root(&self) -> PathBuf {
+        if self.root == Path::new("/sys/fs/cgroup") {
+            if let Some(path) = writable_user_service_cgroup_root() {
+                return path;
+            }
+        }
+
+        self.root.clone()
+    }
+}
+
+fn writable_user_service_cgroup_root() -> Option<PathBuf> {
+    let uid = current_uid()?;
+    let candidate = user_service_cgroup_root_for_uid(uid);
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn user_service_cgroup_root_for_uid(uid: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
+    ))
+}
+
+fn current_uid() -> Option<u32> {
+    if let Ok(value) = std::env::var("UID") {
+        if let Ok(parsed) = value.trim().parse::<u32>() {
+            return Some(parsed);
+        }
+    }
+
+    let output = Command::new("id").arg("-u").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
 }
 
 fn write_limit_file(path: &Path, value: &str) -> Result<(), AgentError> {
-    std::fs::write(path, format!("{value}\n")).map_err(|err| {
-        AgentError::Runtime(format!(
+    match std::fs::write(path, format!("{value}\n")) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+        Err(err) => Err(AgentError::Runtime(format!(
             "write cgroup control file failed: path={} value={} error={err}",
             path.display(),
             value
-        ))
-    })
+        ))),
+    }
 }
 
 fn parse_memory_events(content: &str) -> MemoryEvents {
@@ -193,5 +252,13 @@ mod tests {
 
         let after_kill = parse_memory_events("oom 1\noom_kill 2\n");
         assert!(after_kill.oom_detected_since(after));
+    }
+
+    #[test]
+    fn user_service_cgroup_root_uses_uid_path() {
+        assert_eq!(
+            user_service_cgroup_root_for_uid(1000),
+            PathBuf::from("/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service")
+        );
     }
 }
