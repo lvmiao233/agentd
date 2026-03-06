@@ -746,6 +746,22 @@ fn print_builtin_lite_result(result: &Value, as_json: bool) -> Result<(), DynErr
     Ok(())
 }
 
+fn format_a2a_task_summary(task: &A2ATask) -> String {
+    let mut summary = format!("task_id={} state={:?}", task.id, task.state);
+    if let Some(output) = task.output.as_ref() {
+        if let Some(result) = output.get("result").and_then(Value::as_str) {
+            summary.push_str(&format!(" result={result}"));
+        }
+        if let Some(executor) = output.get("executor").and_then(Value::as_str) {
+            summary.push_str(&format!(" executor={executor}"));
+        }
+    }
+    if let Some(error) = task.error.as_deref() {
+        summary.push_str(&format!(" error={error}"));
+    }
+    summary
+}
+
 struct BuiltinLiteRequest<'a> {
     name: &'a str,
     model: &'a str,
@@ -891,7 +907,7 @@ async fn run_cli(
                             }))?
                         );
                     } else {
-                        println!("task_id={} state={:?}", status.id, status.state);
+                        println!("{}", format_a2a_task_summary(&status));
                     }
                 }
                 A2aCommands::Status {
@@ -903,7 +919,7 @@ async fn run_cli(
                     if json {
                         println!("{}", serde_json::to_string_pretty(&task)?);
                     } else {
-                        println!("task_id={} state={:?}", task.id, task.state);
+                        println!("{}", format_a2a_task_summary(&task));
                     }
                 }
             }
