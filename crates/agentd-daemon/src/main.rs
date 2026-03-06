@@ -359,7 +359,7 @@ fn default_mcp_servers_dir() -> String {
 }
 
 fn default_firecracker_binary() -> String {
-    "/usr/bin/firecracker".to_string()
+    "data/firecracker/firecracker".to_string()
 }
 
 fn default_firecracker_kernel_path() -> String {
