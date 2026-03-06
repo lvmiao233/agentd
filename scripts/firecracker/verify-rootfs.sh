@@ -185,6 +185,9 @@ fi
 if ! grep -q "guest-vsock-agent.py" "$INIT_ROOTFS"; then
     fail "guest init missing vsock bootstrap target"
 fi
+if ! grep -q "agent.launch" "$GUEST_VSOCK_AGENT_ROOTFS"; then
+    fail "guest vsock agent missing agent.launch handler"
+fi
 
 PYTHON_VERSION="$("$PYTHON_ROOTFS" --version 2>&1 || true)"
 if [[ -z "$PYTHON_VERSION" ]]; then
@@ -235,6 +238,7 @@ fi
     echo "agent_lite=available"
     echo "import_check=passed"
     echo "help_check=passed"
+    echo "guest_launch_rpc=available"
     if [[ -n "$ROOTFS_IMAGE" ]]; then
         echo "rootfs_image=${ROOTFS_IMAGE#$REPO_ROOT/}"
         echo "ext4_check=passed"

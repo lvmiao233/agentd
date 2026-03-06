@@ -19,9 +19,11 @@ const DEFAULT_VSOCK_TIMEOUT_SECS: u64 = 5;
 
 const API_POLL_INTERVAL_MS: u64 = 25;
 const READY_PROBE_PAYLOAD: &str = r#"{"rpc":"daemon.ready"}"#;
+const GUEST_LAUNCH_RPC: &str = "agent.launch";
 const AGENTD_GUEST_VSOCK_PORT: u32 = 5252;
 const DEFAULT_FIRECRACKER_BINARY: &str = "/usr/bin/firecracker";
-const DEFAULT_FIRECRACKER_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
+const DEFAULT_FIRECRACKER_BOOT_ARGS: &str =
+    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -145,7 +147,7 @@ impl Default for FirecrackerExecutorBuilder {
             rootfs_path: None,
             default_vcpu_count: 1,
             default_mem_size_mib: 512,
-            default_network: Some(FirecrackerNetworkConfig::default()),
+            default_network: None,
             default_network_policy: NetworkIsolationPolicy::AllowAll,
             default_jailer: Some(JailerConfig::default()),
             vsock_root_dir: std::env::temp_dir().join("agentd-firecracker-vsock"),
@@ -602,6 +604,15 @@ impl FirecrackerExecutor {
             return Err(err);
         }
 
+        if let Err(err) =
+            request_guest_agent_launch(&vm_config.vsock_path, &spec, spec.launch_timeout).await
+        {
+            let _ = terminate_child(&mut child).await;
+            let _ = cleanup_socket_file(&vm_config.vsock_path, "firecracker vsock");
+            let _ = cleanup_socket_file(&api_socket, "firecracker api");
+            return Err(err);
+        }
+
         Ok(FirecrackerVmHandle {
             agent_id: spec.agent_id,
             config: vm_config,
@@ -855,19 +866,132 @@ async fn wait_for_guest_readiness_on_vsock(
     }
 }
 
+async fn request_guest_agent_launch(
+    vsock_path: &Path,
+    spec: &FirecrackerAgentLaunchSpec,
+    timeout_duration: Duration,
+) -> Result<(), AgentError> {
+    let stream = timeout(timeout_duration, UnixStream::connect(vsock_path))
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "firecracker guest launch timeout connecting to vsock: path={} timeout_ms={}",
+                vsock_path.display(),
+                timeout_duration.as_millis(),
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "connect firecracker vsock failed for guest launch: path={} error={err}",
+                vsock_path.display()
+            ))
+        })?;
+
+    let stream = connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, timeout_duration)
+        .await
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "connect firecracker guest port failed for launch request: path={} port={} error={err}",
+                vsock_path.display(),
+                AGENTD_GUEST_VSOCK_PORT
+            ))
+        })?;
+
+    let (read_half, write_half) = stream.into_split();
+    let mut read_half = BufReader::new(read_half);
+    let mut write_half = write_half;
+
+    let launch_payload = json!({
+        "rpc": GUEST_LAUNCH_RPC,
+        "command": spec.command,
+        "args": spec.args,
+        "env": spec.env,
+    });
+    let encoded = serde_json::to_string(&launch_payload).map_err(|err| {
+        AgentError::Protocol(format!(
+            "encode firecracker guest launch payload failed: {err}"
+        ))
+    })?;
+
+    write_half.write_all(encoded.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write firecracker guest launch payload failed: {err}"
+        ))
+    })?;
+    write_half.write_all(b"\n").await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write firecracker guest launch payload newline failed: {err}"
+        ))
+    })?;
+    write_half.flush().await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "flush firecracker guest launch payload failed: {err}"
+        ))
+    })?;
+
+    let mut response_line = String::new();
+    let read = timeout(timeout_duration, read_half.read_line(&mut response_line))
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "firecracker guest launch response timed out after {}ms",
+                timeout_duration.as_millis()
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read firecracker guest launch response failed: {err}"
+            ))
+        })?;
+
+    if read == 0 {
+        return Err(AgentError::Runtime(
+            "firecracker guest launch response connection closed".to_string(),
+        ));
+    }
+
+    let response = serde_json::from_str::<serde_json::Value>(response_line.trim_end()).map_err(
+        |err| {
+            AgentError::Protocol(format!(
+                "decode firecracker guest launch response failed: {err}"
+            ))
+        },
+    )?;
+
+    let status = response
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if status != "ok" {
+        let message = response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .or_else(|| response.get("message").and_then(|value| value.as_str()))
+            .unwrap_or("unknown guest launch error");
+        return Err(AgentError::Runtime(format!(
+            "firecracker guest launch request failed: command={} error={} response={}",
+            spec.command, message, response
+        )));
+    }
+
+    Ok(())
+}
+
 async fn wait_for_vm_running(
     api_socket: &Path,
     timeout_duration: Duration,
 ) -> Result<(), AgentError> {
     let deadline = Instant::now() + timeout_duration;
     loop {
-        if let Ok(body) = firecracker_get_json(api_socket, "/vm").await {
-            let state = body
-                .get("state")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            if state.eq_ignore_ascii_case("running") {
-                return Ok(());
+        for endpoint in ["/", "/vm"] {
+            if let Ok(body) = firecracker_get_json(api_socket, endpoint).await {
+                let state = body
+                    .get("state")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if state.eq_ignore_ascii_case("running") {
+                    return Ok(());
+                }
             }
         }
 
@@ -1440,10 +1564,58 @@ mod integration_tests {
             .build()
             .expect("build integration firecracker executor");
 
-        let launch = executor
+        let vm = executor
             .launch_agent(FirecrackerAgentLaunchSpec {
                 agent_id: Uuid::new_v4(),
-                command: "agent-lite".to_string(),
+                command: "/usr/bin/python3".to_string(),
+                args: vec!["-c".to_string(), "import time; time.sleep(2)".to_string()],
+                env: HashMap::new(),
+                vcpu_count: Some(1),
+                mem_size_mib: Some(256),
+                network: None,
+                network_policy: Some(NetworkIsolationPolicy::AllowAll),
+                jailer: None,
+                launch_timeout: Duration::from_secs(20),
+            })
+            .await
+            .expect("real firecracker launch should succeed when guest command is valid");
+
+        vm.shutdown()
+            .await
+            .expect("real firecracker vm shutdown should succeed");
+
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
+    async fn real_firecracker_launch_fails_when_guest_command_is_missing() {
+        let Some(kernel_path) = std::env::var_os("AGENTD_TEST_FIRECRACKER_KERNEL") else {
+            return;
+        };
+        let Some(rootfs_path) = std::env::var_os("AGENTD_TEST_FIRECRACKER_ROOTFS") else {
+            return;
+        };
+
+        let firecracker_binary = std::env::var_os("AGENTD_TEST_FIRECRACKER_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_FIRECRACKER_BINARY));
+
+        let runtime_root =
+            std::env::temp_dir().join(format!("agentd-fc-it-missing-cmd-{}", Uuid::new_v4()));
+        let executor = FirecrackerExecutor::builder()
+            .firecracker_binary(firecracker_binary)
+            .kernel_path(PathBuf::from(kernel_path))
+            .rootfs_path(PathBuf::from(rootfs_path))
+            .vsock_root_dir(runtime_root.join("vsock"))
+            .api_socket_root_dir(runtime_root.join("api"))
+            .launch_mode(FirecrackerLaunchMode::RealFirecracker)
+            .build()
+            .expect("build integration firecracker executor");
+
+        let err = executor
+            .launch_agent(FirecrackerAgentLaunchSpec {
+                agent_id: Uuid::new_v4(),
+                command: "/missing/binary/in/guest".to_string(),
                 args: vec![],
                 env: HashMap::new(),
                 vcpu_count: Some(1),
@@ -1451,12 +1623,20 @@ mod integration_tests {
                 network: None,
                 network_policy: Some(NetworkIsolationPolicy::AllowAll),
                 jailer: None,
-                launch_timeout: Duration::from_secs(5),
+                launch_timeout: Duration::from_secs(20),
             })
-            .await;
+            .await
+            .expect_err("real firecracker launch should fail when guest command is missing");
 
-        if let Ok(vm) = launch {
-            let _ = vm.shutdown().await;
+        match err {
+            AgentError::Runtime(message) => {
+                assert!(
+                    message.contains("firecracker guest launch request failed")
+                        || message.contains("spawn-failed"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected runtime error, got: {other}"),
         }
 
         let _ = std::fs::remove_dir_all(runtime_root);

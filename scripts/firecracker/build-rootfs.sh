@@ -349,8 +349,10 @@ cat >"$ROOTFS_DIR/opt/agent-lite/bin/guest-vsock-agent.py" <<'EOF'
 from __future__ import annotations
 
 import json
+import os
 import signal
 import socket
+import subprocess
 from pathlib import Path
 
 GUEST_VSOCK_PORT = 5252
@@ -366,7 +368,114 @@ def log(message: str) -> None:
         pass
 
 
-def build_response(payload_line: str) -> dict[str, object]:
+def _terminate_child(process: subprocess.Popen[str] | None) -> None:
+    if process is None:
+        return
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def _parse_string_list(value: object, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must contain only strings")
+    return list(value)
+
+
+def _parse_env(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("env must be an object of string:string")
+    parsed: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise ValueError("env must be an object of string:string")
+        parsed[key] = item
+    return parsed
+
+
+def _launch_agent(payload: dict[str, object], state: dict[str, object]) -> dict[str, object]:
+    existing = state.get("agent_process")
+    if isinstance(existing, subprocess.Popen) and existing.poll() is None:
+        return {
+            "status": "error",
+            "rpc": "agent.launch",
+            "error": "already-running",
+            "pid": existing.pid,
+        }
+
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return {
+            "status": "error",
+            "rpc": "agent.launch",
+            "error": "invalid-command",
+        }
+
+    try:
+        args = _parse_string_list(payload.get("args", []), "args")
+        env_overrides = _parse_env(payload.get("env", {}))
+    except ValueError as exc:
+        return {
+            "status": "error",
+            "rpc": "agent.launch",
+            "error": f"invalid-request:{exc}",
+        }
+
+    env = os.environ.copy()
+    env.update(env_overrides)
+
+    try:
+        process = subprocess.Popen([command, *args], env=env)
+    except OSError as exc:
+        return {
+            "status": "error",
+            "rpc": "agent.launch",
+            "error": f"spawn-failed:{exc}",
+        }
+
+    state["agent_process"] = process
+    log(f"launched guest command: command={command} pid={process.pid}")
+    return {
+        "status": "ok",
+        "rpc": "agent.launch",
+        "pid": process.pid,
+    }
+
+
+def _agent_status(state: dict[str, object]) -> dict[str, object]:
+    process = state.get("agent_process")
+    if not isinstance(process, subprocess.Popen):
+        return {
+            "status": "ok",
+            "rpc": "agent.status",
+            "state": "not-started",
+        }
+
+    exit_code = process.poll()
+    if exit_code is None:
+        return {
+            "status": "ok",
+            "rpc": "agent.status",
+            "state": "running",
+            "pid": process.pid,
+        }
+    return {
+        "status": "ok",
+        "rpc": "agent.status",
+        "state": "exited",
+        "pid": process.pid,
+        "exit_code": exit_code,
+    }
+
+
+def build_response(payload_line: str, state: dict[str, object]) -> dict[str, object]:
     try:
         payload = json.loads(payload_line)
     except json.JSONDecodeError as exc:
@@ -383,6 +492,12 @@ def build_response(payload_line: str) -> dict[str, object]:
             "mode": "guest-init",
         }
 
+    if payload.get("rpc") == "agent.launch":
+        return _launch_agent(payload, state)
+
+    if payload.get("rpc") == "agent.status":
+        return _agent_status(state)
+
     return {
         "status": "ok",
         "transport": "firecracker-vsock",
@@ -391,7 +506,16 @@ def build_response(payload_line: str) -> dict[str, object]:
 
 
 def main() -> int:
-    signal.signal(signal.SIGTERM, lambda *_args: (_ for _ in ()).throw(SystemExit(0)))
+    state: dict[str, object] = {"agent_process": None}
+
+    def handle_termination(_signum: int, _frame: object | None) -> None:
+        process = state.get("agent_process")
+        if isinstance(process, subprocess.Popen):
+            _terminate_child(process)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, handle_termination)
+    signal.signal(signal.SIGINT, handle_termination)
     server = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((socket.VMADDR_CID_ANY, GUEST_VSOCK_PORT))
@@ -408,9 +532,13 @@ def main() -> int:
                     payload_line = line.strip()
                     if not payload_line:
                         continue
-                    response = build_response(payload_line)
+                    response = build_response(payload_line, state)
                     writer.write(json.dumps(response, ensure_ascii=False) + "\n")
                     writer.flush()
+
+    process = state.get("agent_process")
+    if isinstance(process, subprocess.Popen):
+        _terminate_child(process)
 
 
 if __name__ == "__main__":

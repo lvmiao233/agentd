@@ -10616,7 +10616,7 @@ async fn handle_rpc_request(
                         network: None,
                         network_policy: Some(network_policy),
                         jailer: Some(firecracker::JailerConfig::default()),
-                        launch_timeout: Duration::from_secs(3),
+                        launch_timeout: Duration::from_secs(20),
                     })
                 }
             };
