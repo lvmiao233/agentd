@@ -1414,9 +1414,15 @@ def run_chat(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="agentd-agent-lite")
+    parser.add_argument(
+        "--mode",
+        choices=("chat", "onboard-mcp"),
+        default="chat",
+        help="Execution mode: normal chat loop or third-party MCP onboarding",
+    )
     parser.add_argument("--socket-path", default="/tmp/agentd.sock")
     parser.add_argument("--agent-id", required=True)
-    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--prompt", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--tool", default="builtin.lite.echo")
     parser.add_argument(
@@ -1459,10 +1465,98 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save session JSONL after completing the turn",
     )
+    parser.add_argument(
+        "--onboard-name",
+        default=None,
+        help="Third-party MCP server name when --mode=onboard-mcp",
+    )
+    parser.add_argument(
+        "--onboard-command",
+        default=None,
+        help="Third-party MCP launch command when --mode=onboard-mcp",
+    )
+    parser.add_argument(
+        "--onboard-arg",
+        action="append",
+        default=None,
+        help="Repeatable MCP launch argument when --mode=onboard-mcp",
+    )
+    parser.add_argument(
+        "--onboard-transport",
+        default="stdio",
+        help="MCP transport for onboarding mode",
+    )
+    parser.add_argument(
+        "--onboard-trust-level",
+        default="community",
+        help="Trust level for onboarding mode",
+    )
     return parser.parse_args()
 
 
 def run_once(args: argparse.Namespace) -> int:
+    mode = str(getattr(args, "mode", "chat"))
+    if mode == "onboard-mcp":
+        onboard_name = getattr(args, "onboard_name", None)
+        onboard_command = getattr(args, "onboard_command", None)
+        if not isinstance(onboard_name, str) or not onboard_name.strip():
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "onboard_mcp",
+                        "error": "invalid_onboard_request",
+                        "message": "--onboard-name is required when --mode=onboard-mcp",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+        if not isinstance(onboard_command, str) or not onboard_command.strip():
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "stage": "onboard_mcp",
+                        "error": "invalid_onboard_request",
+                        "message": "--onboard-command is required when --mode=onboard-mcp",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+
+        result = onboard_third_party_mcp_server(
+            socket_path=args.socket_path,
+            agent_id=args.agent_id,
+            name=onboard_name.strip(),
+            command=onboard_command.strip(),
+            args=[
+                item
+                for item in (getattr(args, "onboard_arg", None) or [])
+                if isinstance(item, str) and item.strip()
+            ],
+            transport=str(getattr(args, "onboard_transport", "stdio")),
+            trust_level=str(getattr(args, "onboard_trust_level", "community")),
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("status") == "onboarded" else 1
+
+    prompt = getattr(args, "prompt", None)
+    if not isinstance(prompt, str) or not prompt.strip():
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": "input",
+                    "error": "missing_prompt",
+                    "message": "--prompt is required when --mode=chat",
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
     max_iterations = max(1, int(getattr(args, "max_iterations", 5)))
     max_retries = max(0, int(getattr(args, "max_retries", 1)))
 

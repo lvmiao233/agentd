@@ -1,5 +1,6 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+import argparse
 
 _CLI_PATH = Path(__file__).resolve().parents[1] / "src" / "agentd_agent_lite" / "cli.py"
 _CLI_SPEC = spec_from_file_location("agentd_agent_lite.cli", _CLI_PATH)
@@ -127,3 +128,82 @@ def test_third_party_mcp_handshake_failure_isolated(monkeypatch) -> None:
     names = [item["function"]["name"] for item in schemas]
     assert "mcp.fs.read_file" in names
     assert "mcp.figma.export_frame" not in names
+
+
+def test_run_once_supports_real_onboard_mode(monkeypatch, capsys) -> None:
+    def fake_onboard(**kwargs: object) -> dict[str, object]:
+        assert kwargs["socket_path"] == "/tmp/agentd.sock"
+        assert kwargs["agent_id"] == "agent-for-task28"
+        assert kwargs["name"] == "mcp-figma"
+        assert kwargs["command"] == "npx"
+        assert kwargs["args"] == ["-y", "@modelcontextprotocol/server-figma"]
+        assert kwargs["transport"] == "stdio"
+        assert kwargs["trust_level"] == "community"
+        return {
+            "status": "onboarded",
+            "builtin_tools_intact": True,
+            "tools": [],
+            "contract_matrix": {},
+        }
+
+    monkeypatch.setattr(_CLI_MODULE, "onboard_third_party_mcp_server", fake_onboard)
+
+    exit_code = _CLI_MODULE.run_once(
+        argparse.Namespace(
+            mode="onboard-mcp",
+            socket_path="/tmp/agentd.sock",
+            agent_id="agent-for-task28",
+            prompt=None,
+            model=None,
+            tool="builtin.lite.echo",
+            base_url=None,
+            api_key=None,
+            timeout=None,
+            dry_run=False,
+            max_iterations=5,
+            max_retries=1,
+            max_context_tokens=0,
+            session_load=None,
+            session_save=None,
+            onboard_name="mcp-figma",
+            onboard_command="npx",
+            onboard_arg=["-y", "@modelcontextprotocol/server-figma"],
+            onboard_transport="stdio",
+            onboard_trust_level="community",
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert '"status": "onboarded"' in captured.out
+
+
+def test_run_once_requires_prompt_in_chat_mode(capsys) -> None:
+    exit_code = _CLI_MODULE.run_once(
+        argparse.Namespace(
+            mode="chat",
+            socket_path="/tmp/agentd.sock",
+            agent_id="agent-for-task28",
+            prompt=None,
+            model=None,
+            tool="builtin.lite.echo",
+            base_url=None,
+            api_key=None,
+            timeout=None,
+            dry_run=False,
+            max_iterations=5,
+            max_retries=1,
+            max_context_tokens=0,
+            session_load=None,
+            session_save=None,
+            onboard_name=None,
+            onboard_command=None,
+            onboard_arg=None,
+            onboard_transport="stdio",
+            onboard_trust_level="community",
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert '"error": "missing_prompt"' in captured.out
