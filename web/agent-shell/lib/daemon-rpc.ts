@@ -73,6 +73,59 @@ export type AgentProfile = {
   updated_at: string;
 };
 
+type RawAgentProfile = {
+  agent_id?: string;
+  id?: string;
+  name?: string;
+  model?:
+    | string
+    | {
+        model_name?: string;
+        provider?: string;
+      };
+  provider?: string;
+  status?: string;
+  permissions?: {
+    policy?: string;
+    allowed_tools?: string[];
+    denied_tools?: string[];
+  };
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cost_usd?: number;
+  session_count?: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+function normalizeAgentProfile(raw: RawAgentProfile): AgentProfile {
+  const model =
+    typeof raw.model === 'string'
+      ? raw.model
+      : raw.model?.model_name ?? 'unknown';
+  const provider =
+    typeof raw.model === 'string'
+      ? raw.provider
+      : raw.model?.provider ?? raw.provider;
+
+  return {
+    agent_id: raw.agent_id ?? raw.id ?? 'unknown-agent',
+    name: raw.name ?? 'unknown-agent',
+    model,
+    provider,
+    status: raw.status ?? 'unknown',
+    permission_policy: raw.permissions?.policy?.toLowerCase(),
+    allowed_tools: raw.permissions?.allowed_tools ?? [],
+    denied_tools: raw.permissions?.denied_tools ?? [],
+    total_input_tokens: raw.total_input_tokens ?? 0,
+    total_output_tokens: raw.total_output_tokens ?? 0,
+    total_cost_usd: raw.total_cost_usd ?? 0,
+    session_count: raw.session_count ?? 0,
+    created_at: raw.created_at ?? '',
+    updated_at: raw.updated_at ?? '',
+  };
+}
+
 export type CreateAgentParams = {
   name: string;
   model: string;
@@ -86,19 +139,21 @@ export type CreateAgentParams = {
 };
 
 export async function createAgent(params: CreateAgentParams): Promise<AgentProfile> {
-  return rpcCall<AgentProfile>('CreateAgent', params);
+  const result = await rpcCall<{ agent?: RawAgentProfile }>('CreateAgent', params);
+  return normalizeAgentProfile(result.agent ?? {});
 }
 
 export async function listAgents(): Promise<AgentProfile[]> {
-  const result = await rpcCall<{ agents: AgentProfile[] }>('ListAgents');
-  return result.agents;
+  const result = await rpcCall<{ agents: RawAgentProfile[] }>('ListAgents');
+  return (result.agents ?? []).map(normalizeAgentProfile);
 }
 
 export async function getAgent(agentId: string, auditLimit?: number): Promise<AgentProfile> {
-  return rpcCall<AgentProfile>('GetAgent', {
+  const result = await rpcCall<RawAgentProfile>('GetAgent', {
     agent_id: agentId,
     ...(auditLimit !== undefined && { audit_limit: auditLimit }),
   });
+  return normalizeAgentProfile(result);
 }
 
 export async function deleteAgent(agentId: string): Promise<{ deleted: boolean }> {
@@ -120,11 +175,51 @@ export type UsageRecord = {
   }>;
 };
 
+type RawUsageRecord = {
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  records?: Array<{
+    model_name: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    timestamp: string;
+  }>;
+  model_cost_breakdown?: Array<{
+    model_name: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    total_tokens?: number;
+  }>;
+};
+
+function normalizeUsageRecord(raw: RawUsageRecord): UsageRecord {
+  return {
+    total_input_tokens: raw.total_input_tokens ?? raw.input_tokens ?? 0,
+    total_output_tokens: raw.total_output_tokens ?? raw.output_tokens ?? 0,
+    total_cost_usd: raw.total_cost_usd ?? 0,
+    records:
+      raw.records ??
+      (raw.model_cost_breakdown ?? []).map((entry) => ({
+        model_name: entry.model_name,
+        input_tokens: entry.input_tokens,
+        output_tokens: entry.output_tokens,
+        cost_usd: entry.cost_usd,
+        timestamp: '',
+      })),
+  };
+}
+
 export async function getUsage(agentId: string, window?: string): Promise<UsageRecord> {
-  return rpcCall<UsageRecord>('GetUsage', {
+  const result = await rpcCall<RawUsageRecord>('GetUsage', {
     agent_id: agentId,
     ...(window && { window }),
   });
+  return normalizeUsageRecord(result);
 }
 
 export async function recordUsage(params: {

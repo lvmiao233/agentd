@@ -12,15 +12,20 @@ export async function GET(req: Request) {
     }
 
     const agents = await listAgents();
-    const usage = (agents ?? []).map((a) => ({
-      agent_id: a.agent_id,
-      name: a.name,
-      model: a.model,
-      input_tokens: a.total_input_tokens,
-      output_tokens: a.total_output_tokens,
-      total_tokens: a.total_input_tokens + a.total_output_tokens,
-      cost_usd: a.total_cost_usd,
-    }));
+    const usage = await Promise.all(
+      (agents ?? []).map(async (a) => {
+        const totals = await getUsage(a.agent_id);
+        return {
+          agent_id: a.agent_id,
+          name: a.name,
+          model: a.model,
+          input_tokens: totals.total_input_tokens,
+          output_tokens: totals.total_output_tokens,
+          total_tokens: totals.total_input_tokens + totals.total_output_tokens,
+          cost_usd: totals.total_cost_usd,
+        };
+      }),
+    );
 
     const totals = usage.reduce(
       (acc, u) => ({
