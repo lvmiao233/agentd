@@ -1,8 +1,22 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
-     Running unittests src/main.rs (target/debug/deps/agentd-d847e84589d951a1)
+task=20
+status=passed
+step=vsock-roundtrip
+roundtrip_test=cargo test -p agentd-daemon firecracker_vsock_roundtrip -- --exact
+handshake_protocol=CONNECT 5252 + OK <host_port>
+--- test log ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/main.rs (target/debug/deps/agentd-f0df9f67224d37bc)
 
 running 1 test
 test firecracker_vsock_roundtrip ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.03s
 
+
+--- handshake replay ---
+{
+  "connect": "CONNECT 5252\n",
+  "ack": "OK 10007\n",
+  "payload": "{\"rpc\":\"daemon.ready\"}\n",
+  "reply": "{\"status\":\"ok\"}\n"
+}
