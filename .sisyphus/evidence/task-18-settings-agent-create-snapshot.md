@@ -1,0 +1,78 @@
+- generic:
+  - generic:
+    - navigation:
+      - list:
+        - listitem:
+          - link:
+            - /url: /chat
+            - img
+            - text: Chat
+        - listitem:
+          - link:
+            - /url: /dashboard
+            - img
+            - text: Dashboard
+        - listitem:
+          - link:
+            - /url: /tools
+            - img
+            - text: Tools
+        - listitem:
+          - link:
+            - /url: /events
+            - img
+            - text: Events
+        - listitem:
+          - link:
+            - /url: /usage
+            - img
+            - text: Usage
+        - listitem:
+          - link:
+            - /url: /settings
+            - img
+            - text: Settings
+    - main:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - heading [level=1]: Agent Chat
+              - paragraph: 选择一个 agent 后再发起实时对话
+            - generic:
+              - combobox [expanded]:
+                - generic: real-codex-chat · gpt-5.3-codex · ready
+                - img
+          - log:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - generic:
+                    - heading [level=3]: Agent Chat
+                    - paragraph: 与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控
+          - generic:
+            - group:
+              - generic:
+                - textbox:
+                  - /placeholder: Ask the agent…
+              - group:
+                - button [disabled]:
+                  - img
+  - alert
+  - listbox [ref=e58]:
+    - option "my-coding-agent · gpt-4.1-mini · ready" [ref=e59]:
+      - generic [ref=e61]: my-coding-agent · gpt-4.1-mini · ready
+    - option "real-mcp-check · gpt-4.1-mini · ready" [ref=e62]:
+      - generic [ref=e64]: real-mcp-check · gpt-4.1-mini · ready
+    - option "real-codex-chat · gpt-5.3-codex · ready" [active] [selected] [ref=e65]:
+      - generic [ref=e67]:
+        - img
+      - generic [ref=e68]: real-codex-chat · gpt-5.3-codex · ready
+    - option "web-approval-agent · gpt-4.1-mini · ready" [ref=e69]:
+      - generic [ref=e71]: web-approval-agent · gpt-4.1-mini · ready
+    - option "events-live-agent · gpt-4.1-mini · ready" [ref=e72]:
+      - generic [ref=e74]: events-live-agent · gpt-4.1-mini · ready
+    - option "web-created-agent · gpt-5.3-codex · ready" [ref=e75]:
+      - generic [ref=e77]: web-created-agent · gpt-5.3-codex · ready
