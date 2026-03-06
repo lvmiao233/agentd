@@ -24,6 +24,11 @@ members = [
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
+norecursedirs = [
+    "images/agent-rootfs/out",
+    "target",
+    "node_modules",
+]
 pythonpath = [
     "python/agentd-agent-lite/src",
     "python/agentd-mcp-fs/src",
