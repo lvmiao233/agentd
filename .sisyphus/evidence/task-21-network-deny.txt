@@ -1,6 +1,13 @@
-command: cargo test -p agentd-daemon jailer_policy_blocks_forbidden_network -- --exact
-result: PASS
-assertions:
-  - Firecracker launch is rejected when network_policy=deny_all and tap network is requested
-  - error type is AgentError::Permission
-  - error contains "jailer network policy denied outbound access"
+task=21
+status=passed
+step=network-deny
+network_test=cargo test -p agentd-daemon jailer_policy_blocks_forbidden_network -- --exact
+--- test log ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/main.rs (target/debug/deps/agentd-f0df9f67224d37bc)
+
+running 1 test
+test jailer_policy_blocks_forbidden_network ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
