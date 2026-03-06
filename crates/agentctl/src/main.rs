@@ -1,4 +1,4 @@
-use agentd_protocol::{A2ATask, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse};
+use agentd_protocol::{A2ATask, A2ATaskState, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -287,6 +287,30 @@ impl AgentctlA2AClient {
         let task = serde_json::from_value::<A2ATask>(body["task"].clone())
             .map_err(|err| format!("invalid get task response: {err}"))?;
         Ok(task)
+    }
+
+    async fn wait_for_terminal_task(
+        &self,
+        target: &str,
+        task_id: &str,
+        timeout: Duration,
+    ) -> Result<A2ATask, DynError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let task = self.get_task(target, task_id).await?;
+            if matches!(
+                task.state,
+                A2ATaskState::Completed | A2ATaskState::Failed | A2ATaskState::Canceled
+            ) {
+                return Ok(task);
+            }
+
+            if started.elapsed() >= timeout {
+                return Ok(task);
+            }
+
+            sleep(Duration::from_millis(250)).await;
+        }
     }
 
     async fn stream_task(
@@ -854,7 +878,9 @@ async fn run_cli(
                         .await?;
 
                     let stream = client.stream_task(&target, task.id).await.ok();
-                    let status = client.get_task(&target, &task.id.to_string()).await?;
+                    let status = client
+                        .wait_for_terminal_task(&target, &task.id.to_string(), Duration::from_secs(10))
+                        .await?;
                     if json {
                         println!(
                             "{}",
