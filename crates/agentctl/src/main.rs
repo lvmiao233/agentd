@@ -27,6 +27,30 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Migrate {
+        #[arg(long)]
+        source_agent_id: String,
+        #[arg(long)]
+        target_base_url: String,
+        #[arg(long)]
+        target_agent_id: Option<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long = "key-file")]
+        key_files: Vec<String>,
+        #[arg(long = "message")]
+        messages: Vec<String>,
+        #[arg(long)]
+        head_id: Option<String>,
+        #[arg(long)]
+        tool_cache_json: Option<String>,
+        #[arg(long = "working-file")]
+        working_files: Vec<String>,
+        #[arg(long)]
+        include_snapshot: bool,
+        #[arg(long)]
+        json: bool,
+    },
     Usage {
         agent_id: String,
         #[arg(long)]
@@ -354,6 +378,60 @@ fn print_event(event: &Value, as_json: bool) -> Result<(), DynError> {
     Ok(())
 }
 
+fn build_migration_messages(
+    specs: &[String],
+    explicit_head_id: Option<&str>,
+) -> Result<(Vec<Value>, Option<String>), DynError> {
+    let mut messages = Vec::with_capacity(specs.len());
+    let mut previous_id: Option<String> = None;
+
+    for (index, spec) in specs.iter().enumerate() {
+        let (role, content) = spec
+            .split_once(':')
+            .ok_or_else(|| format!("invalid --message value `{spec}` (expected role:content)"))?;
+        let role = role.trim();
+        let content = content.trim();
+        if role.is_empty() || content.is_empty() {
+            return Err(format!("invalid --message value `{spec}` (role/content must be non-empty)").into());
+        }
+
+        let message_id = format!("msg-{}", index + 1);
+        messages.push(json!({
+            "id": message_id,
+            "parent_id": previous_id,
+            "role": role,
+            "content": content,
+        }));
+        previous_id = Some(format!("msg-{}", index + 1));
+    }
+
+    let head_id = explicit_head_id
+        .map(ToString::to_string)
+        .or(previous_id);
+    Ok((messages, head_id))
+}
+
+fn parse_tool_cache_json(raw: Option<&str>) -> Result<Value, DynError> {
+    match raw {
+        Some(raw) => Ok(serde_json::from_str(raw)?),
+        None => Ok(json!({})),
+    }
+}
+
+fn parse_working_files(entries: &[String]) -> Result<std::collections::BTreeMap<String, String>, DynError> {
+    let mut files = std::collections::BTreeMap::new();
+    for entry in entries {
+        let (path, content) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid --working-file `{entry}` (expected path=content)"))?;
+        if path.trim().is_empty() {
+            return Err(format!("invalid --working-file `{entry}` (path must be non-empty)").into());
+        }
+        files.insert(path.trim().to_string(), content.to_string());
+    }
+    Ok(files)
+}
+
 async fn follow_events(
     socket_path: &str,
     limit: Option<usize>,
@@ -512,6 +590,41 @@ async fn run_cli(
         Commands::Health { json } => {
             info!(socket_path = %cli.socket_path, "Calling GetHealth over UDS JSON-RPC");
             let response = call_rpc(&cli.socket_path, "GetHealth", json!({})).await?;
+            print_response(response, json)?;
+        }
+        Commands::Migrate {
+            source_agent_id,
+            target_base_url,
+            target_agent_id,
+            session_id,
+            key_files,
+            messages,
+            head_id,
+            tool_cache_json,
+            working_files,
+            include_snapshot,
+            json,
+        } => {
+            let (messages, head_id) = build_migration_messages(&messages, head_id.as_deref())?;
+            let tool_results_cache = parse_tool_cache_json(tool_cache_json.as_deref())?;
+            let working_directory = parse_working_files(&working_files)?;
+            let response = call_rpc(
+                &cli.socket_path,
+                "MigrateContext",
+                json!({
+                    "source_agent_id": source_agent_id,
+                    "target_base_url": target_base_url,
+                    "target_agent_id": target_agent_id,
+                    "session_id": session_id,
+                    "key_files": key_files,
+                    "messages": messages,
+                    "head_id": head_id,
+                    "tool_results_cache": tool_results_cache,
+                    "working_directory": working_directory,
+                    "include_snapshot": include_snapshot,
+                }),
+            )
+            .await?;
             print_response(response, json)?;
         }
         Commands::Usage {
@@ -870,6 +983,89 @@ fn slash_commands_core_set_available() {
 #[test]
 fn approval_queue_roundtrip() {
     assert!(tui::approval_queue_roundtrip_probe());
+}
+
+#[cfg(test)]
+#[test]
+fn build_migration_messages_chains_parent_ids() {
+    let (messages, head_id) = build_migration_messages(
+        &["user:first prompt".to_string(), "assistant:second reply".to_string()],
+        None,
+    )
+    .expect("message specs should parse");
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["id"], json!("msg-1"));
+    assert_eq!(messages[0]["parent_id"], Value::Null);
+    assert_eq!(messages[1]["parent_id"], json!("msg-1"));
+    assert_eq!(head_id, Some("msg-2".to_string()));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn migrate_command_sends_rpc_request() {
+    let socket_path = std::env::temp_dir().join(format!(
+        "agentctl-migrate-test-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind test unix socket");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept rpc connection");
+        let mut buf = Vec::new();
+        stream
+            .read_to_end(&mut buf)
+            .await
+            .expect("read rpc request");
+        let request: JsonRpcRequest = serde_json::from_slice(&buf).expect("decode rpc request");
+        assert_eq!(request.method, "MigrateContext");
+        assert_eq!(request.params["source_agent_id"], json!("agent-1"));
+        assert_eq!(request.params["target_base_url"], json!("http://127.0.0.1:18085"));
+        assert_eq!(request.params["messages"][0]["role"], json!("user"));
+        assert_eq!(request.params["messages"][1]["parent_id"], json!("msg-1"));
+        assert_eq!(request.params["working_directory"]["README.md"], json!("hello"));
+        assert_eq!(request.params["include_snapshot"], json!(true));
+
+        let response = JsonRpcResponse::success(
+            json!(1),
+            json!({"migration_level": "l1", "target_state": "completed"}),
+        );
+        let encoded = serde_json::to_vec(&response).expect("encode rpc response");
+        stream
+            .write_all(&encoded)
+            .await
+            .expect("write rpc response");
+    });
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "--socket-path",
+        socket_path.to_str().expect("socket path should be utf8"),
+        "migrate",
+        "--source-agent-id",
+        "agent-1",
+        "--target-base-url",
+        "http://127.0.0.1:18085",
+        "--message",
+        "user:first prompt",
+        "--message",
+        "assistant:second reply",
+        "--key-file",
+        "README.md",
+        "--working-file",
+        "README.md=hello",
+        "--tool-cache-json",
+        "{\"last_tool\":\"search\"}",
+        "--include-snapshot",
+        "--json",
+    ])
+    .expect("migrate args should parse");
+
+    run_cli(cli, |_socket_path| Ok(()))
+        .await
+        .expect("migrate command should succeed");
+    server.await.expect("rpc server should finish");
+    let _ = std::fs::remove_file(socket_path);
 }
 
 #[cfg(test)]
