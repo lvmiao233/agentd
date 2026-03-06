@@ -118,7 +118,12 @@ enum AgentCommands {
         #[arg(long)]
         json: bool,
     },
-    Shell,
+    Shell {
+        #[arg(long)]
+        agent_id: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+    },
     Inspect {
         #[arg(long)]
         agent_id: String,
@@ -668,7 +673,7 @@ struct BuiltinLiteRequest<'a> {
 
 async fn run_cli(
     cli: Cli,
-    mut shell_runner: impl FnMut(&str) -> Result<(), DynError>,
+    mut shell_runner: impl FnMut(&str, Option<&str>, Option<&str>) -> Result<(), DynError>,
 ) -> Result<(), DynError> {
     match cli.command {
         Commands::Health { json } => {
@@ -820,9 +825,14 @@ async fn run_cli(
                 let response = call_rpc(&cli.socket_path, "ListAgents", json!({})).await?;
                 print_response(response, json)?;
             }
-            AgentCommands::Shell => {
-                info!("Launching interactive agent shell TUI");
-                shell_runner(&cli.socket_path)?;
+            AgentCommands::Shell { agent_id, model } => {
+                info!(
+                    socket_path = %cli.socket_path,
+                    agent_id = ?agent_id,
+                    model = ?model,
+                    "Launching interactive agent shell TUI"
+                );
+                shell_runner(&cli.socket_path, agent_id.as_deref(), model.as_deref())?;
             }
             AgentCommands::Create {
                 name,
@@ -1035,21 +1045,75 @@ async fn main() -> Result<(), DynError> {
 #[cfg(test)]
 #[tokio::test]
 async fn shell_command_routes_to_tui() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     let cli = Cli::try_parse_from(["agentctl", "agent", "shell"]).expect("cli args should parse");
-    let shell_called = Arc::new(AtomicBool::new(false));
-    let shell_called_for_closure = Arc::clone(&shell_called);
+    let shell_args = Arc::new(Mutex::new(None::<(String, Option<String>, Option<String>)>));
+    let shell_args_for_closure = Arc::clone(&shell_args);
 
-    let result = run_cli(cli, move |_socket_path| {
-        shell_called_for_closure.store(true, Ordering::SeqCst);
+    let result = run_cli(cli, move |socket_path, agent_id, model| {
+        let mut guard = shell_args_for_closure
+            .lock()
+            .expect("shell args mutex should not be poisoned");
+        *guard = Some((
+            socket_path.to_string(),
+            agent_id.map(ToString::to_string),
+            model.map(ToString::to_string),
+        ));
         Ok(())
     })
     .await;
 
     assert!(result.is_ok());
-    assert!(shell_called.load(Ordering::SeqCst));
+    let guard = shell_args
+        .lock()
+        .expect("shell args mutex should not be poisoned");
+    let captured = guard.clone().expect("shell runner should be called");
+    assert_eq!(captured.0, "/tmp/agentd.sock");
+    assert_eq!(captured.1, None);
+    assert_eq!(captured.2, None);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn shell_command_passes_initial_context_to_tui() {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "agent",
+        "shell",
+        "--agent-id",
+        "agent-123",
+        "--model",
+        "gpt-5.3-codex",
+    ])
+    .expect("cli args should parse");
+    let shell_args = Arc::new(Mutex::new(None::<(String, Option<String>, Option<String>)>));
+    let shell_args_for_closure = Arc::clone(&shell_args);
+
+    let result = run_cli(cli, move |socket_path, agent_id, model| {
+        let mut guard = shell_args_for_closure
+            .lock()
+            .expect("shell args mutex should not be poisoned");
+        *guard = Some((
+            socket_path.to_string(),
+            agent_id.map(ToString::to_string),
+            model.map(ToString::to_string),
+        ));
+        Ok(())
+    })
+    .await;
+
+    assert!(result.is_ok());
+    let guard = shell_args
+        .lock()
+        .expect("shell args mutex should not be poisoned");
+    let captured = guard.clone().expect("shell runner should be called");
+    assert_eq!(captured.1.as_deref(), Some("agent-123"));
+    assert_eq!(captured.2.as_deref(), Some("gpt-5.3-codex"));
 }
 
 #[cfg(test)]
@@ -1068,7 +1132,7 @@ fn tui_app_handles_quit_key() {
 fn slash_commands_core_set_available() {
     let commands = tui::AgentShellApp::supported_slash_commands();
     for required in [
-        "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
+        "/agent", "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
     ] {
         assert!(commands.contains(&required));
     }
@@ -1192,7 +1256,7 @@ async fn migrate_command_sends_rpc_request() {
     ])
     .expect("migrate args should parse");
 
-    run_cli(cli, |_socket_path| Ok(()))
+    run_cli(cli, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("migrate command should succeed");
     server.await.expect("rpc server should finish");
@@ -1285,7 +1349,7 @@ async fn migrate_command_can_resolve_target_from_discovery() {
     ])
     .expect("migrate discovery args should parse");
 
-    run_cli(cli, |_socket_path| Ok(()))
+    run_cli(cli, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("migrate discovery command should succeed");
     discovery_server
@@ -1418,7 +1482,7 @@ async fn a2a_cli_discover_send_status_flow() {
 
     let discover = Cli::try_parse_from(["agentctl", "a2a", "discover", "--url", &base, "--json"])
         .expect("discover args should parse");
-    run_cli(discover, |_socket_path| Ok(()))
+    run_cli(discover, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("discover should succeed");
 
@@ -1426,7 +1490,7 @@ async fn a2a_cli_discover_send_status_flow() {
         "agentctl", "a2a", "send", "--target", &base, "--input", "ping", "--json",
     ])
     .expect("send args should parse");
-    run_cli(send, |_socket_path| Ok(()))
+    run_cli(send, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("send should succeed");
 
@@ -1441,7 +1505,7 @@ async fn a2a_cli_discover_send_status_flow() {
         "--json",
     ])
     .expect("status args should parse");
-    run_cli(status, |_socket_path| Ok(()))
+    run_cli(status, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("status should succeed");
 
@@ -1460,7 +1524,7 @@ async fn a2a_discover_handles_unreachable_remote() {
         "--json",
     ])
     .expect("cli args should parse");
-    let result = run_cli(cli, |_socket_path| Ok(())).await;
+    let result = run_cli(cli, |_socket_path, _agent_id, _model| Ok(())).await;
     assert!(
         result.is_err(),
         "discover should fail for unreachable remote"
@@ -1543,7 +1607,7 @@ async fn discover_lists_lan_and_registry_sources() {
         "--json",
     ])
     .expect("discover args should parse");
-    run_cli(cli, |_socket_path| Ok(()))
+    run_cli(cli, |_socket_path, _agent_id, _model| Ok(()))
         .await
         .expect("discover command should succeed");
 

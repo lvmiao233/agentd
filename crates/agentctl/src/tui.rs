@@ -123,25 +123,29 @@ pub struct AgentShellApp {
 impl AgentShellApp {
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_socket_path("/tmp/agentd.sock")
+        Self::with_initial_context("/tmp/agentd.sock", None, None)
     }
 
-    pub fn with_socket_path(socket_path: impl Into<String>) -> Self {
+    pub fn with_initial_context(
+        socket_path: impl Into<String>,
+        agent_id: Option<String>,
+        model: Option<String>,
+    ) -> Self {
         Self {
             socket_path: socket_path.into(),
             input_buffer: String::new(),
             messages: Vec::new(),
             status_bar: StatusBar {
                 mode: "idle".to_string(),
-                hint: "enter=submit | /usage /events /tools /compact /model /approve /deny /session /delegations | q/esc/ctrl-c=quit".to_string(),
+                hint: "enter=submit | /agent /usage /events /tools /compact /model /approve /deny /session /delegations | q/esc/ctrl-c=quit".to_string(),
             },
             event_panel: EventPanel::default(),
             approval_queue: Vec::new(),
             multi_agent_status: Vec::new(),
             tool_calls: Vec::new(),
             saved_sessions: BTreeMap::new(),
-            active_model: "claude-4-sonnet".to_string(),
-            active_agent_id: None,
+            active_model: model.unwrap_or_else(|| "claude-4-sonnet".to_string()),
+            active_agent_id: agent_id,
             stream_seq: 0,
             stream_active: false,
             stream_target_index: None,
@@ -153,6 +157,7 @@ impl AgentShellApp {
     #[cfg(test)]
     pub fn supported_slash_commands() -> &'static [&'static str] {
         &[
+            "/agent",
             "/usage",
             "/events",
             "/tools",
@@ -482,6 +487,18 @@ impl AgentShellApp {
         };
 
         let outcome = match head {
+            "/agent" => {
+                let agent_id = match parts.next() {
+                    Some(agent_id) if !agent_id.trim().is_empty() => agent_id.trim(),
+                    _ => return self.push_slash_error("usage: /agent <id>"),
+                };
+                self.active_agent_id = Some(agent_id.to_string());
+                self.event_panel
+                    .entries
+                    .push(format!("active agent -> {agent_id}"));
+                self.push_system_message(format!("agent -> {agent_id}"));
+                Ok(())
+            }
             "/usage" => {
                 let explicit_agent = parts.next();
                 let agent_id = self.current_or_default_agent_id(explicit_agent);
@@ -630,6 +647,17 @@ impl AgentShellApp {
             let mut rpc =
                 |method: &str, params: Value| call_rpc_over_uds(&socket_path, method, params);
             self.execute_slash_command_with_rpc(&input, &mut rpc);
+            self.input_buffer.clear();
+            return;
+        }
+
+        if self.active_agent_id.is_none() {
+            self.push_system_message(
+                "select an agent first with /agent <id> or restart with --agent-id <id>",
+            );
+            self.event_panel
+                .entries
+                .push("chat blocked: missing active agent".to_string());
             self.input_buffer.clear();
             return;
         }
@@ -1085,7 +1113,11 @@ fn run_event_loop(
     }
 }
 
-pub fn run(socket_path: &str) -> Result<(), DynError> {
+pub fn run(
+    socket_path: &str,
+    agent_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), DynError> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -1097,7 +1129,11 @@ pub fn run(socket_path: &str) -> Result<(), DynError> {
     let (chunk_tx, chunk_rx) = mpsc::channel::<StreamChunk>();
     let _worker_handle = spawn_chat_worker(socket_path.to_string(), command_rx, chunk_tx);
 
-    let mut app = AgentShellApp::with_socket_path(socket_path);
+    let mut app = AgentShellApp::with_initial_context(
+        socket_path,
+        agent_id.map(ToString::to_string),
+        model.map(ToString::to_string),
+    );
     app.set_command_sender(command_tx);
     let event_loop_result = run_event_loop(&mut terminal, &mut app, &chunk_rx);
 
@@ -1124,13 +1160,50 @@ fn tui_app_handles_quit_key() {
 fn slash_commands_core_set_available() {
     let commands = AgentShellApp::supported_slash_commands();
     for required in [
-        "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
+        "/agent", "/usage", "/events", "/tools", "/compact", "/model", "/approve", "/deny", "/session",
     ] {
         assert!(
             commands.contains(&required),
             "missing slash command: {required}"
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn submit_input_requires_active_agent() {
+    let mut app = AgentShellApp::new();
+    app.input_buffer = "hello world".to_string();
+
+    app.submit_input();
+
+    assert!(!app.stream_active);
+    assert!(app
+        .messages
+        .iter()
+        .any(|message| message.content.contains("select an agent first")));
+    assert!(app
+        .event_panel
+        .entries
+        .iter()
+        .any(|entry| entry.contains("missing active agent")));
+}
+
+#[cfg(test)]
+#[test]
+fn agent_command_sets_active_agent() {
+    let mut app = AgentShellApp::new();
+    let mut rpc = |_method: &str, _params: Value| -> Result<Value, String> {
+        Ok(json!(null))
+    };
+
+    app.execute_slash_command_with_rpc("/agent agent-123", &mut rpc);
+
+    assert_eq!(app.active_agent_id.as_deref(), Some("agent-123"));
+    assert!(app
+        .messages
+        .iter()
+        .any(|message| message.content.contains("agent -> agent-123")));
 }
 
 #[cfg(test)]
