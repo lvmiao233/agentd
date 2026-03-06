@@ -1,0 +1,34 @@
+Task 11 semantic search hardening evidence
+=========================================
+
+Date: 2026-03-06
+Scope: python/agentd-mcp-search semantic_search
+
+Test gate
+---------
+Command:
+  uv run pytest python/agentd-mcp-search/tests/test_tools.py -q
+
+Observed:
+  .....                                                                    [100%]
+  5 passed in 0.45s
+
+Functional replay gate
+----------------------
+Command:
+  uv run python -c "import json; from agentd_mcp_search.server import semantic_search; happy=json.loads(semantic_search('agent session chat', root='python', max_results=5)); failure=json.loads(semantic_search('', root='python', max_results=5)); print(json.dumps({'happy_first': happy['data']['matches'][0], 'failure': failure}, ensure_ascii=False, indent=2))"
+
+Happy-path result:
+  first match file      = python/agentd-agent-lite/src/agentd_agent_lite/cli.py
+  first match symbol    = AgentSession
+  first match kind      = class
+  first match signature = class AgentSession:
+
+Failure-path result:
+  ok      = false
+  code    = INVALID_ARGUMENT
+  message = query must not be empty
+
+Conclusion:
+  semantic_search no longer returns placeholder=true with empty matches.
+  It now returns ranked symbol matches from real repository code and prefers source files over tests.
