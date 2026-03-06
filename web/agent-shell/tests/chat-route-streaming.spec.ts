@@ -283,4 +283,40 @@ export async function run() {
     'stop',
     'transport exception fallback should finish as stop'
   );
+
+  const emptyStreamResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-7',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查空流' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async () =>
+        new Response(createReadableStream(['data: {"result":{"status":"completed"}}\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+    }
+  );
+
+  const emptyStreamEvents = await readResponseEvents(emptyStreamResponse);
+  const emptyStreamPayloads = emptyStreamEvents.filter((event) => event !== '[DONE]');
+  assert.equal(
+    emptyStreamPayloads.find((event) => event.type === 'text-delta')?.delta,
+    'RunAgent returned an empty streaming response.',
+    'terminal stream with no visible chunks should degrade into empty-stream fallback text'
+  );
+  assert.equal(
+    emptyStreamPayloads.at(-1).finishReason,
+    'stop',
+    'empty stream fallback should finish as stop'
+  );
 }
