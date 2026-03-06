@@ -20,6 +20,7 @@ const DEFAULT_VSOCK_TIMEOUT_SECS: u64 = 5;
 const API_POLL_INTERVAL_MS: u64 = 25;
 const READY_PROBE_PAYLOAD: &str = r#"{"rpc":"daemon.ready"}"#;
 const GUEST_LAUNCH_RPC: &str = "agent.launch";
+const GUEST_STATUS_RPC: &str = "agent.status";
 const AGENTD_GUEST_VSOCK_PORT: u32 = 5252;
 const DEFAULT_FIRECRACKER_BINARY: &str = "/usr/bin/firecracker";
 const DEFAULT_FIRECRACKER_BOOT_ARGS: &str =
@@ -633,6 +634,20 @@ pub struct FirecrackerVmHandle {
     transport: VmTransport,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestAgentState {
+    NotStarted,
+    Running,
+    Exited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuestAgentStatus {
+    pub state: GuestAgentState,
+    pub pid: Option<u32>,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Debug)]
 enum VmTransport {
     Mock {
@@ -656,6 +671,36 @@ impl FirecrackerVmHandle {
 
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
+    }
+
+    pub async fn guest_status(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<GuestAgentStatus, AgentError> {
+        match &mut self.transport {
+            VmTransport::Mock { .. } => {
+                let status = self.child.try_wait().map_err(|err| {
+                    AgentError::Runtime(format!(
+                        "query firecracker mock process status failed: {err}"
+                    ))
+                })?;
+                match status {
+                    Some(exit_status) => Ok(GuestAgentStatus {
+                        state: GuestAgentState::Exited,
+                        pid: self.child.id(),
+                        exit_code: exit_status.code(),
+                    }),
+                    None => Ok(GuestAgentStatus {
+                        state: GuestAgentState::Running,
+                        pid: self.child.id(),
+                        exit_code: None,
+                    }),
+                }
+            }
+            VmTransport::Firecracker => {
+                request_guest_agent_status(&self.config.vsock_path, timeout_duration).await
+            }
+        }
     }
 
     #[cfg(test)]
@@ -975,6 +1020,133 @@ async fn request_guest_agent_launch(
     }
 
     Ok(())
+}
+
+async fn request_guest_agent_status(
+    vsock_path: &Path,
+    timeout_duration: Duration,
+) -> Result<GuestAgentStatus, AgentError> {
+    let stream = timeout(timeout_duration, UnixStream::connect(vsock_path))
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "firecracker guest status timeout connecting to vsock: path={} timeout_ms={}",
+                vsock_path.display(),
+                timeout_duration.as_millis(),
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "connect firecracker vsock failed for guest status: path={} error={err}",
+                vsock_path.display()
+            ))
+        })?;
+
+    let stream = connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, timeout_duration)
+        .await
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "connect firecracker guest port failed for status request: path={} port={} error={err}",
+                vsock_path.display(),
+                AGENTD_GUEST_VSOCK_PORT
+            ))
+        })?;
+
+    let (read_half, write_half) = stream.into_split();
+    let mut read_half = BufReader::new(read_half);
+    let mut write_half = write_half;
+
+    let status_payload = json!({ "rpc": GUEST_STATUS_RPC });
+    let encoded = serde_json::to_string(&status_payload).map_err(|err| {
+        AgentError::Protocol(format!(
+            "encode firecracker guest status payload failed: {err}"
+        ))
+    })?;
+
+    write_half.write_all(encoded.as_bytes()).await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write firecracker guest status payload failed: {err}"
+        ))
+    })?;
+    write_half.write_all(b"\n").await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "write firecracker guest status payload newline failed: {err}"
+        ))
+    })?;
+    write_half.flush().await.map_err(|err| {
+        AgentError::Runtime(format!(
+            "flush firecracker guest status payload failed: {err}"
+        ))
+    })?;
+
+    let mut response_line = String::new();
+    let read = timeout(timeout_duration, read_half.read_line(&mut response_line))
+        .await
+        .map_err(|_| {
+            AgentError::Runtime(format!(
+                "firecracker guest status response timed out after {}ms",
+                timeout_duration.as_millis()
+            ))
+        })?
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "read firecracker guest status response failed: {err}"
+            ))
+        })?;
+
+    if read == 0 {
+        return Err(AgentError::Runtime(
+            "firecracker guest status response connection closed".to_string(),
+        ));
+    }
+
+    let response = serde_json::from_str::<serde_json::Value>(response_line.trim_end()).map_err(
+        |err| {
+            AgentError::Protocol(format!(
+                "decode firecracker guest status response failed: {err}"
+            ))
+        },
+    )?;
+
+    let response_status = response
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if response_status != "ok" {
+        let message = response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .or_else(|| response.get("message").and_then(|value| value.as_str()))
+            .unwrap_or("unknown guest status error");
+        return Err(AgentError::Runtime(format!(
+            "firecracker guest status request failed: error={} response={}",
+            message, response
+        )));
+    }
+
+    let state = match response
+        .get("state")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+    {
+        "running" => GuestAgentState::Running,
+        "exited" => GuestAgentState::Exited,
+        _ => GuestAgentState::NotStarted,
+    };
+    let pid = response
+        .get("pid")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok());
+    let exit_code = response
+        .get("exit_code")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok());
+
+    Ok(GuestAgentStatus {
+        state,
+        pid,
+        exit_code,
+    })
 }
 
 async fn wait_for_vm_running(

@@ -1,7 +1,7 @@
 use crate::cgroup::{CgroupManager, CgroupResourceLimits};
 use crate::firecracker::{
-    FirecrackerAgentLaunchSpec, FirecrackerExecutor, FirecrackerNetworkConfig, JailerConfig,
-    NetworkIsolationPolicy,
+    FirecrackerAgentLaunchSpec, FirecrackerExecutor, FirecrackerNetworkConfig, GuestAgentState,
+    JailerConfig, NetworkIsolationPolicy,
 };
 use agentd_core::AgentError;
 use chrono::Utc;
@@ -535,7 +535,7 @@ impl LifecycleManager {
             })
             .await;
 
-        let vm = match launch {
+        let mut vm = match launch {
             Ok(vm) => vm,
             Err(err) => {
                 {
@@ -584,6 +584,42 @@ impl LifecycleManager {
                     }
                 }
                 _ = sleep(Duration::from_millis(150)) => {
+                    if let Ok(guest_status) = vm.guest_status(Duration::from_millis(300)).await {
+                        if matches!(guest_status.state, GuestAgentState::Exited) {
+                            let exit_code = guest_status.exit_code;
+                            let event_type = if exit_code == Some(0) {
+                                "agent.exited"
+                            } else {
+                                "agent.failed"
+                            };
+                            let severity = if exit_code == Some(0) { "info" } else { "error" };
+                            let next_state = if exit_code == Some(0) {
+                                ManagedAgentState::Stopped
+                            } else {
+                                ManagedAgentState::Failed
+                            };
+
+                            {
+                                let mut state = snapshot.write().await;
+                                state.state = next_state;
+                                state.pid = None;
+                            }
+
+                            self.push_event(new_event(
+                                spec.agent_id,
+                                event_type,
+                                severity,
+                                serde_json::json!({
+                                    "runtime": "firecracker",
+                                    "pid": guest_status.pid,
+                                    "exit_code": exit_code,
+                                }),
+                            ))
+                            .await;
+                            return;
+                        }
+                    }
+
                     if let Some(pid) = vm.pid() {
                         if !std::path::PathBuf::from(format!("/proc/{pid}")).exists() {
                                 {
