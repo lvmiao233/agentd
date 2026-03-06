@@ -1,0 +1,64 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - heading "Agent Chat" [level=1] [ref=e38]
+            - paragraph [ref=e39]: 选择一个 agent 后再发起实时对话
+          - combobox "Active agent selector" [active] [ref=e41]:
+            - generic: web-approval-agent · gpt-4.1-mini · ready
+            - img
+        - generic [ref=e72]:
+          - generic [ref=e73]: Pending approvals
+          - generic [ref=e75]:
+            - generic [ref=e76]: mcp.fs.read_file
+            - generic [ref=e77]: "reason: policy.ask: tool=mcp.fs.read_file matched_rule=* source_layer=agent_profile input_snapshot=agent.id=7e3209fb-88bb-4b8a-b149-24192ade8084 trust_level=ask tool=mcp.fs.read_file resource=<none> request_meta_keys=[trace_id]"
+            - generic [ref=e78]: "requested: 2026-03-06T13:25:04.932752946Z"
+            - generic [ref=e79]:
+              - button "Approve" [ref=e80]
+              - button "Deny" [ref=e81]
+        - log:
+          - generic [ref=e45]:
+            - img [ref=e47]
+            - generic [ref=e49]:
+              - heading "Agent Chat" [level=3] [ref=e50]
+              - paragraph [ref=e51]: 与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控
+        - group [ref=e53]:
+          - textbox "Ask the agent…" [ref=e55]
+          - group [ref=e56]:
+            - button "Submit" [disabled]:
+              - img
+  - alert [ref=e57]
