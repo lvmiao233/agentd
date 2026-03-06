@@ -1049,7 +1049,7 @@ mod tests {
             args: vec![
                 "-c".to_string(),
                 format!(
-                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; fi; done; sleep 0.1"
+                    "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{name}\",\"version\":\"0.1.0\"}}}}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{capability}\",\"description\":\"test tool\",\"inputSchema\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}}}'; break; fi; done; sleep 0.1"
                 ),
             ],
             transport: McpTransport::Stdio,
