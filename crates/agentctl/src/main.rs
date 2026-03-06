@@ -28,6 +28,7 @@ struct Cli {
     command: Commands,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Commands {
     Health {
@@ -405,7 +406,10 @@ fn build_migration_messages(
         let role = role.trim();
         let content = content.trim();
         if role.is_empty() || content.is_empty() {
-            return Err(format!("invalid --message value `{spec}` (role/content must be non-empty)").into());
+            return Err(format!(
+                "invalid --message value `{spec}` (role/content must be non-empty)"
+            )
+            .into());
         }
 
         let message_id = format!("msg-{}", index + 1);
@@ -418,9 +422,7 @@ fn build_migration_messages(
         previous_id = Some(format!("msg-{}", index + 1));
     }
 
-    let head_id = explicit_head_id
-        .map(ToString::to_string)
-        .or(previous_id);
+    let head_id = explicit_head_id.map(ToString::to_string).or(previous_id);
     Ok((messages, head_id))
 }
 
@@ -431,14 +433,18 @@ fn parse_tool_cache_json(raw: Option<&str>) -> Result<Value, DynError> {
     }
 }
 
-fn parse_working_files(entries: &[String]) -> Result<std::collections::BTreeMap<String, String>, DynError> {
+fn parse_working_files(
+    entries: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, DynError> {
     let mut files = std::collections::BTreeMap::new();
     for entry in entries {
         let (path, content) = entry
             .split_once('=')
             .ok_or_else(|| format!("invalid --working-file `{entry}` (expected path=content)"))?;
         if path.trim().is_empty() {
-            return Err(format!("invalid --working-file `{entry}` (path must be non-empty)").into());
+            return Err(
+                format!("invalid --working-file `{entry}` (path must be non-empty)").into(),
+            );
         }
         files.insert(path.trim().to_string(), content.to_string());
     }
@@ -459,8 +465,11 @@ fn select_migration_target_endpoint(
         }
     }
 
-    let selected = if let Some(agent_id) = target_agent_id.filter(|value| !value.trim().is_empty()) {
-        records.into_iter().find(|record| record.agent_id == agent_id)
+    let selected = if let Some(agent_id) = target_agent_id.filter(|value| !value.trim().is_empty())
+    {
+        records
+            .into_iter()
+            .find(|record| record.agent_id == agent_id)
     } else if let Some(name) = target_name.filter(|value| !value.trim().is_empty()) {
         records.into_iter().find(|record| record.name == name)
     } else if records.len() == 1 {
@@ -1075,7 +1084,10 @@ fn approval_queue_roundtrip() {
 #[test]
 fn build_migration_messages_chains_parent_ids() {
     let (messages, head_id) = build_migration_messages(
-        &["user:first prompt".to_string(), "assistant:second reply".to_string()],
+        &[
+            "user:first prompt".to_string(),
+            "assistant:second reply".to_string(),
+        ],
         None,
     )
     .expect("message specs should parse");
@@ -1133,10 +1145,16 @@ async fn migrate_command_sends_rpc_request() {
         let request: JsonRpcRequest = serde_json::from_slice(&buf).expect("decode rpc request");
         assert_eq!(request.method, "MigrateContext");
         assert_eq!(request.params["source_agent_id"], json!("agent-1"));
-        assert_eq!(request.params["target_base_url"], json!("http://127.0.0.1:18085"));
+        assert_eq!(
+            request.params["target_base_url"],
+            json!("http://127.0.0.1:18085")
+        );
         assert_eq!(request.params["messages"][0]["role"], json!("user"));
         assert_eq!(request.params["messages"][1]["parent_id"], json!("msg-1"));
-        assert_eq!(request.params["working_directory"]["README.md"], json!("hello"));
+        assert_eq!(
+            request.params["working_directory"]["README.md"],
+            json!("hello")
+        );
         assert_eq!(request.params["include_snapshot"], json!(true));
 
         let response = JsonRpcResponse::success(
@@ -1237,7 +1255,10 @@ async fn migrate_command_can_resolve_target_from_discovery() {
             .expect("read rpc request");
         let request: JsonRpcRequest = serde_json::from_slice(&buf).expect("decode rpc request");
         assert_eq!(request.method, "MigrateContext");
-        assert_eq!(request.params["target_base_url"], json!("http://127.0.0.1:18087"));
+        assert_eq!(
+            request.params["target_base_url"],
+            json!("http://127.0.0.1:18087")
+        );
 
         let response = JsonRpcResponse::success(json!(1), json!({"migration_level": "l1"}));
         let encoded = serde_json::to_vec(&response).expect("encode rpc response");

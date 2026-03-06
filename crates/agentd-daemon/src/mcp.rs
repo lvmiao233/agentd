@@ -285,17 +285,14 @@ impl McpHost {
             .iter()
             .filter(|(_, handle)| handle.health == McpServerHealth::Healthy)
             .flat_map(|(server_id, handle)| {
-                handle
-                    .tools
-                    .iter()
-                    .map(move |tool| McpAvailableTool {
-                        server_id: server_id.clone(),
-                        tool_name: tool.name.clone(),
-                        description: tool.description.clone(),
-                        input_schema: tool.input_schema.clone(),
-                        trust_level: handle.trust_level,
-                        health: handle.health,
-                    })
+                handle.tools.iter().map(move |tool| McpAvailableTool {
+                    server_id: server_id.clone(),
+                    tool_name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    input_schema: tool.input_schema.clone(),
+                    trust_level: handle.trust_level,
+                    health: handle.health,
+                })
             })
             .collect()
     }
@@ -629,7 +626,13 @@ impl McpHost {
                 config.name
             ))
         })?;
-        write_json_line(stdin, &tools_list_request, &config.name, "tools/list request").await?;
+        write_json_line(
+            stdin,
+            &tools_list_request,
+            &config.name,
+            "tools/list request",
+        )
+        .await?;
 
         let mut tools_list_response_line = String::new();
         let bytes = timeout(
@@ -637,12 +640,7 @@ impl McpHost {
             stdout.read_line(&mut tools_list_response_line),
         )
         .await
-        .map_err(|_| {
-            AgentError::Runtime(format!(
-                "tools/list timed out for {}",
-                config.name
-            ))
-        })?
+        .map_err(|_| AgentError::Runtime(format!("tools/list timed out for {}", config.name)))?
         .map_err(|err| {
             AgentError::Runtime(format!(
                 "read tools/list response from {} failed: {err}",
@@ -656,8 +654,8 @@ impl McpHost {
             )));
         }
 
-        let tools_list_response_json: Value =
-            serde_json::from_str(tools_list_response_line.trim()).map_err(|err| {
+        let tools_list_response_json: Value = serde_json::from_str(tools_list_response_line.trim())
+            .map_err(|err| {
                 AgentError::Runtime(format!(
                     "parse tools/list response for {} failed: {err}",
                     config.name
@@ -706,9 +704,7 @@ async fn write_json_line(
     operation: &str,
 ) -> Result<(), AgentError> {
     stdin.write_all(payload.as_bytes()).await.map_err(|err| {
-        AgentError::Runtime(format!(
-            "write {operation} to {server_name} failed: {err}"
-        ))
+        AgentError::Runtime(format!("write {operation} to {server_name} failed: {err}"))
     })?;
     stdin.write_all(b"\n").await.map_err(|err| {
         AgentError::Runtime(format!(
@@ -716,9 +712,7 @@ async fn write_json_line(
         ))
     })?;
     stdin.flush().await.map_err(|err| {
-        AgentError::Runtime(format!(
-            "flush {operation} to {server_name} failed: {err}"
-        ))
+        AgentError::Runtime(format!("flush {operation} to {server_name} failed: {err}"))
     })?;
     Ok(())
 }
@@ -742,7 +736,10 @@ async fn terminate_child_process(
     }
 }
 
-fn validate_initialize_response(response_json: &Value, config: &McpServerConfig) -> Result<(), AgentError> {
+fn validate_initialize_response(
+    response_json: &Value,
+    config: &McpServerConfig,
+) -> Result<(), AgentError> {
     if let Some(error) = response_json.get("error") {
         return Err(AgentError::Runtime(format!(
             "initialize returned error for {}: {error}",
@@ -750,7 +747,10 @@ fn validate_initialize_response(response_json: &Value, config: &McpServerConfig)
         )));
     }
 
-    let response_id = response_json.get("id").and_then(Value::as_u64).unwrap_or_default();
+    let response_id = response_json
+        .get("id")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
     if response_id != 1 {
         return Err(AgentError::Runtime(format!(
             "initialize response id mismatch for {} (expected=1, got={response_id})",
@@ -758,14 +758,12 @@ fn validate_initialize_response(response_json: &Value, config: &McpServerConfig)
         )));
     }
 
-    response_json
-        .get("result")
-        .ok_or_else(|| {
-            AgentError::Runtime(format!(
-                "initialize response missing result for {}",
-                config.name
-            ))
-        })?;
+    response_json.get("result").ok_or_else(|| {
+        AgentError::Runtime(format!(
+            "initialize response missing result for {}",
+            config.name
+        ))
+    })?;
 
     Ok(())
 }
@@ -781,7 +779,10 @@ fn parse_tools_list_response(
         )));
     }
 
-    let response_id = response_json.get("id").and_then(Value::as_u64).unwrap_or_default();
+    let response_id = response_json
+        .get("id")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
     if response_id != 2 {
         return Err(AgentError::Runtime(format!(
             "tools/list response id mismatch for {} (expected=2, got={response_id})",

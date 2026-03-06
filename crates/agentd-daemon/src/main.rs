@@ -469,6 +469,7 @@ impl RuntimeState {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn with_lifecycle_and_agent_card_root_and_mcp(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
@@ -9873,11 +9874,10 @@ async fn handle_rpc_request(
 
             let mut tools = Vec::new();
             for available_tool in available_tools {
-                let policy_tool_name =
-                    match canonical_mcp_server_tool_name(
-                        &available_tool.server_id,
-                        &available_tool.tool_name,
-                    ) {
+                let policy_tool_name = match canonical_mcp_server_tool_name(
+                    &available_tool.server_id,
+                    &available_tool.tool_name,
+                ) {
                     Ok(name) => name,
                     Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
                 };
@@ -9986,9 +9986,10 @@ async fn handle_rpc_request(
                 );
             };
 
-            let policy_tool_name =
-                match canonical_mcp_server_tool_name(&resolved_tool.server_id, &resolved_tool.tool_name)
-                {
+            let policy_tool_name = match canonical_mcp_server_tool_name(
+                &resolved_tool.server_id,
+                &resolved_tool.tool_name,
+            ) {
                 Ok(name) => name,
                 Err(err) => return JsonRpcResponse::error(request.id, -32602, err.to_string()),
             };

@@ -165,51 +165,61 @@ impl Default for FirecrackerExecutorBuilder {
 }
 
 impl FirecrackerExecutorBuilder {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn firecracker_binary(mut self, path: impl Into<PathBuf>) -> Self {
         self.firecracker_binary = path.into();
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn kernel_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.kernel_path = Some(path.into());
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn rootfs_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.rootfs_path = Some(path.into());
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn default_vcpu_count(mut self, vcpu_count: u8) -> Self {
         self.default_vcpu_count = vcpu_count;
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn default_mem_size_mib(mut self, mem_size_mib: u32) -> Self {
         self.default_mem_size_mib = mem_size_mib;
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn vsock_root_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.vsock_root_dir = path.into();
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn api_socket_root_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.api_socket_root_dir = path.into();
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn launch_mode(mut self, mode: FirecrackerLaunchMode) -> Self {
         self.launch_mode = mode;
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn default_network_policy(mut self, policy: NetworkIsolationPolicy) -> Self {
         self.default_network_policy = policy;
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn default_jailer(mut self, jailer: Option<JailerConfig>) -> Self {
         self.default_jailer = jailer;
         self
@@ -604,6 +614,7 @@ impl FirecrackerExecutor {
 
 #[derive(Debug)]
 pub struct FirecrackerVmHandle {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub agent_id: Uuid,
     config: FirecrackerVmConfig,
     child: Child,
@@ -614,6 +625,7 @@ pub struct FirecrackerVmHandle {
 #[derive(Debug)]
 enum VmTransport {
     Mock {
+        #[cfg_attr(not(test), allow(dead_code))]
         read_half: BufReader<OwnedReadHalf>,
         write_half: OwnedWriteHalf,
     },
@@ -644,20 +656,23 @@ impl FirecrackerVmHandle {
             } => roundtrip_json_over_stream(read_half, write_half, request).await,
             VmTransport::Firecracker => {
                 let timeout_duration = Duration::from_secs(DEFAULT_VSOCK_TIMEOUT_SECS);
-                let stream = timeout(timeout_duration, UnixStream::connect(&self.config.vsock_path))
-                    .await
-                    .map_err(|_| {
-                        AgentError::Runtime(format!(
-                            "firecracker vsock connect timeout after {}s",
-                            DEFAULT_VSOCK_TIMEOUT_SECS
-                        ))
-                    })?
-                    .map_err(|err| {
-                        AgentError::Runtime(format!(
-                            "connect firecracker vsock failed: path={} error={err}",
-                            self.config.vsock_path.display()
-                        ))
-                    })?;
+                let stream = timeout(
+                    timeout_duration,
+                    UnixStream::connect(&self.config.vsock_path),
+                )
+                .await
+                .map_err(|_| {
+                    AgentError::Runtime(format!(
+                        "firecracker vsock connect timeout after {}s",
+                        DEFAULT_VSOCK_TIMEOUT_SECS
+                    ))
+                })?
+                .map_err(|err| {
+                    AgentError::Runtime(format!(
+                        "connect firecracker vsock failed: path={} error={err}",
+                        self.config.vsock_path.display()
+                    ))
+                })?;
                 let stream =
                     connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, timeout_duration)
                         .await?;
@@ -741,10 +756,8 @@ fn cleanup_socket_file(path: &Path, label: &str) -> Result<(), AgentError> {
 async fn wait_for_unix_socket(path: &Path, timeout_duration: Duration) -> Result<(), AgentError> {
     let deadline = Instant::now() + timeout_duration;
     loop {
-        if path.exists() {
-            if UnixStream::connect(path).await.is_ok() {
-                return Ok(());
-            }
+        if path.exists() && UnixStream::connect(path).await.is_ok() {
+            return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(AgentError::Runtime(format!(
@@ -937,7 +950,9 @@ async fn connect_to_guest_vsock_port(
     stream
         .write_all(connect_command.as_bytes())
         .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker vsock connect failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Runtime(format!("write firecracker vsock connect failed: {err}"))
+        })?;
     stream.flush().await.map_err(|err| {
         AgentError::Runtime(format!("flush firecracker vsock connect failed: {err}"))
     })?;
@@ -978,7 +993,9 @@ async fn connect_to_guest_vsock_port(
     })?;
 
     let ack_text = String::from_utf8(ack).map_err(|err| {
-        AgentError::Protocol(format!("decode firecracker vsock connect ack failed: {err}"))
+        AgentError::Protocol(format!(
+            "decode firecracker vsock connect ack failed: {err}"
+        ))
     })?;
     if !ack_text.starts_with("OK ") || !ack_text.ends_with('\n') {
         return Err(AgentError::Runtime(format!(
@@ -996,12 +1013,15 @@ async fn roundtrip_json_over_stream(
     write_half: &mut OwnedWriteHalf,
     request: &Value,
 ) -> Result<Value, AgentError> {
-    let encoded = serde_json::to_string(request)
-        .map_err(|err| AgentError::Protocol(format!("encode firecracker vsock request failed: {err}")))?;
+    let encoded = serde_json::to_string(request).map_err(|err| {
+        AgentError::Protocol(format!("encode firecracker vsock request failed: {err}"))
+    })?;
     write_half
         .write_all(encoded.as_bytes())
         .await
-        .map_err(|err| AgentError::Runtime(format!("write firecracker vsock request failed: {err}")))?;
+        .map_err(|err| {
+            AgentError::Runtime(format!("write firecracker vsock request failed: {err}"))
+        })?;
     write_half.write_all(b"\n").await.map_err(|err| {
         AgentError::Runtime(format!("write firecracker vsock newline failed: {err}"))
     })?;
@@ -1021,9 +1041,7 @@ async fn roundtrip_json_over_stream(
             DEFAULT_VSOCK_TIMEOUT_SECS
         ))
     })?
-    .map_err(|err| {
-        AgentError::Runtime(format!("read firecracker vsock response failed: {err}"))
-    })?;
+    .map_err(|err| AgentError::Runtime(format!("read firecracker vsock response failed: {err}")))?;
 
     if read == 0 {
         return Err(AgentError::Runtime(
@@ -1031,8 +1049,9 @@ async fn roundtrip_json_over_stream(
         ));
     }
 
-    serde_json::from_str::<Value>(line.trim_end())
-        .map_err(|err| AgentError::Protocol(format!("decode firecracker vsock response failed: {err}")))
+    serde_json::from_str::<Value>(line.trim_end()).map_err(|err| {
+        AgentError::Protocol(format!("decode firecracker vsock response failed: {err}"))
+    })
 }
 
 async fn firecracker_put_json(
@@ -1114,8 +1133,9 @@ async fn firecracker_get_json(
         )));
     }
 
-    let body = String::from_utf8(response.body)
-        .map_err(|err| AgentError::Protocol(format!("decode firecracker api body failed: {err}")))?;
+    let body = String::from_utf8(response.body).map_err(|err| {
+        AgentError::Protocol(format!("decode firecracker api body failed: {err}"))
+    })?;
     serde_json::from_str::<serde_json::Value>(body.trim()).map_err(|err| {
         AgentError::Protocol(format!(
             "decode firecracker api json failed: path={path} error={err}"
@@ -1285,7 +1305,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_to_guest_vsock_port_requires_ok_ack() {
-        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-connect-{}", Uuid::new_v4()));
+        let runtime_root =
+            std::env::temp_dir().join(format!("agentd-fc-connect-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&runtime_root).expect("create runtime root");
         let socket_path = runtime_root.join("guest-connect.sock");
         prepare_socket_file(&socket_path, "test guest connect socket")
@@ -1325,7 +1346,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_to_guest_vsock_port_rejects_bad_ack() {
-        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-connect-bad-{}", Uuid::new_v4()));
+        let runtime_root =
+            std::env::temp_dir().join(format!("agentd-fc-connect-bad-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&runtime_root).expect("create runtime root");
         let socket_path = runtime_root.join("guest-connect-bad.sock");
         prepare_socket_file(&socket_path, "test guest connect socket")
@@ -1344,10 +1366,13 @@ mod tests {
         let stream = UnixStream::connect(&socket_path)
             .await
             .expect("connect to vsock uds");
-        let err =
-            connect_to_guest_vsock_port(stream, AGENTD_GUEST_VSOCK_PORT, Duration::from_millis(500))
-                .await
-                .expect_err("bad ack should fail");
+        let err = connect_to_guest_vsock_port(
+            stream,
+            AGENTD_GUEST_VSOCK_PORT,
+            Duration::from_millis(500),
+        )
+        .await
+        .expect_err("bad ack should fail");
         match err {
             AgentError::Runtime(message) => {
                 assert!(
