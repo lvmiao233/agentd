@@ -20,3 +20,16 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; fin
   "payload": "{\"rpc\":\"daemon.ready\"}\n",
   "reply": "{\"status\":\"ok\"}\n"
 }
+
+--- real firecracker integration ---
+binary=/tmp/firecracker-assets/release-v1.14.2-x86_64/firecracker-v1.14.2-x86_64
+kernel=/tmp/firecracker-kernel/vmlinux-6.1.155
+rootfs=/home/vipa/agentd/data/firecracker/rootfs.ext4
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/main.rs (target/debug/deps/agentd-9784e1a69a61f5e1)
+
+running 1 test
+test firecracker::integration_tests::real_firecracker_launch_path_is_available_with_env_assets ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.04s
+
