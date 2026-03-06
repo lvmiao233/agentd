@@ -411,6 +411,9 @@ impl AgentShellApp {
         {
             return;
         }
+        if payload.get("child_index").and_then(Value::as_u64).is_none() {
+            return;
+        }
 
         let task_id = payload
             .get("task_id")
@@ -465,6 +468,20 @@ impl AgentShellApp {
             "delegation task={} child={} agent={} {}",
             task_id, child_index, agent_id, summary
         ));
+    }
+
+    fn refresh_multi_agent_status<F>(&mut self, limit: usize, rpc: &mut F) -> Result<(), String>
+    where
+        F: FnMut(&str, Value) -> Result<Value, String>,
+    {
+        let value = rpc("ListA2AEvents", json!({ "limit": limit }))?;
+        if let Some(events) = value.get("events").and_then(Value::as_array) {
+            self.multi_agent_status.clear();
+            for event in events {
+                self.apply_multi_agent_event(event);
+            }
+        }
+        Ok(())
     }
 
     fn save_session(&mut self, name: &str) {
@@ -558,16 +575,11 @@ impl AgentShellApp {
                     .unwrap_or(10);
                 match self.current_or_default_agent_id(None) {
                     Ok(agent_id) => match rpc(
-                        "ListAuditEvents",
-                        json!({ "agent_id": agent_id, "limit": limit }),
+                            "ListAuditEvents",
+                            json!({ "agent_id": agent_id, "limit": limit }),
                     ) {
-                        Ok(audit_events) => match rpc("ListLifecycleEvents", json!({ "limit": limit })) {
-                            Ok(lifecycle_events) => {
-                                if let Some(events) = lifecycle_events.get("events").and_then(Value::as_array) {
-                                    for event in events {
-                                        self.apply_multi_agent_event(event);
-                                    }
-                                }
+                        Ok(audit_events) => match self.refresh_multi_agent_status(limit, rpc) {
+                            Ok(()) => {
                                 self.push_system_message(format!(
                                     "events: {}",
                                     serde_json::to_string(&audit_events)
@@ -576,7 +588,7 @@ impl AgentShellApp {
                                 Ok(())
                             }
                             Err(err) => Err(err),
-                        },
+                        }
                         Err(err) => Err(err),
                     },
                     Err(err) => Err(err),
@@ -666,12 +678,17 @@ impl AgentShellApp {
                 }
             }
             "/delegations" => {
-                self.push_system_message(format!(
-                    "delegations: {}",
-                    serde_json::to_string(&self.multi_agent_status)
-                        .unwrap_or_else(|_| "<invalid delegations payload>".to_string())
-                ));
-                Ok(())
+                match self.refresh_multi_agent_status(20, rpc) {
+                    Ok(()) => {
+                        self.push_system_message(format!(
+                            "delegations: {}",
+                            serde_json::to_string(&self.multi_agent_status)
+                                .unwrap_or_else(|_| "<invalid delegations payload>".to_string())
+                        ));
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
             }
             _ => Err(format!("unknown slash command: {head}")),
         };

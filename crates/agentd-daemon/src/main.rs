@@ -626,6 +626,19 @@ impl RuntimeState {
             .unwrap_or_default()
     }
 
+    async fn list_a2a_events(&self, limit: Option<usize>) -> Vec<A2ATaskEvent> {
+        let history = self.a2a_event_history.read().await;
+        let mut events = history
+            .values()
+            .flat_map(|items| items.iter().cloned())
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+        if let Some(limit) = limit {
+            events.truncate(limit);
+        }
+        events
+    }
+
     async fn create_a2a_task(&self, request: CreateA2ATaskRequest) -> A2ATask {
         let now = Utc::now();
         let task = A2ATask {
@@ -8449,6 +8462,12 @@ struct ResolveApprovalParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct ListA2AEventsParams {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct StartManagedAgentParams {
     agent_id: String,
     command: String,
@@ -11960,6 +11979,17 @@ async fn handle_rpc_request(
             let params = serde_json::from_value::<ListLifecycleEventsParams>(request.params)
                 .unwrap_or(ListLifecycleEventsParams { limit: None });
             let events = state.lifecycle().list_events(params.limit).await;
+            JsonRpcResponse::success(
+                request.id,
+                json!({
+                    "events": events,
+                }),
+            )
+        }
+        "ListA2AEvents" | "management.ListA2AEvents" => {
+            let params = serde_json::from_value::<ListA2AEventsParams>(request.params)
+                .unwrap_or(ListA2AEventsParams { limit: None });
+            let events = state.list_a2a_events(params.limit).await;
             JsonRpcResponse::success(
                 request.id,
                 json!({
