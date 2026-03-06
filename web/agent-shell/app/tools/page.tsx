@@ -54,6 +54,7 @@ export default function ToolsPage() {
   const [agentId, setAgentId] = useState('');
   const [tools, setTools] = useState<AvailableTool[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [probeTool, setProbeTool] = useState('');
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   const [probeSubmitting, setProbeSubmitting] = useState(false);
@@ -81,6 +82,8 @@ export default function ToolsPage() {
       setError(null);
     } catch {
       setError('无法从 daemon 获取可用工具列表');
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -150,7 +153,9 @@ export default function ToolsPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Agent 选择
         </h2>
-        {agents.length === 0 ? (
+        {!loaded ? (
+          <p className="text-sm text-muted-foreground">正在加载 Agent 与工具状态…</p>
+        ) : agents.length === 0 ? (
           <p className="text-sm text-muted-foreground">暂无 Agent，请先创建 Agent。</p>
         ) : (
           <Select
@@ -266,7 +271,9 @@ export default function ToolsPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           工具列表
         </h2>
-        {tools.length === 0 ? (
+        {!loaded ? (
+          <p className="py-8 text-center text-muted-foreground">正在加载工具列表…</p>
+        ) : tools.length === 0 ? (
           <p className="py-8 text-center text-muted-foreground">
             当前 Agent 暂无可用工具（可能被策略过滤或 MCP 未就绪）
           </p>
