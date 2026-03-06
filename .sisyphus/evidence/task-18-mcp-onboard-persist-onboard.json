@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"config_path":"/tmp/agentd-mcp-persist-McCVl7/mcp-configs/mcp-persist-demo.toml","persisted":true,"server":{"capabilities":["persist.echo"],"health":"healthy","server":"mcp-persist-demo","trust_level":"community"},"status":"onboarded"}}

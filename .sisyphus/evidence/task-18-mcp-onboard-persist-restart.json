@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"result":{"servers":[{"capabilities":["persist.echo"],"health":"healthy","server":"mcp-persist-demo","trust_level":"community"}]}}

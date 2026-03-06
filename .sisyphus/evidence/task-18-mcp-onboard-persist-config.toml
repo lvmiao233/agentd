@@ -1,0 +1,6 @@
+[server]
+name = "mcp-persist-demo"
+command = "/bin/sh"
+args = ["-c", "while IFS= read -r _line; do if printf '%s' \"$_line\" | grep -q '\"method\":\"initialize\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"mcp-persist-demo\",\"version\":\"0.1.0\"}}}'; elif printf '%s' \"$_line\" | grep -q '\"method\":\"tools/list\"'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"persist.echo\",\"description\":\"persisted tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}'; fi; done; sleep 30"]
+transport = "stdio"
+trust_level = "community"
