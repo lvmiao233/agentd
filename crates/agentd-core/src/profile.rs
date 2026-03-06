@@ -22,6 +22,8 @@ pub struct AgentProfile {
 pub enum AgentLifecycleState {
     Creating,
     Ready,
+    Running,
+    Stopped,
     Failed,
 }
 

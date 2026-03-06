@@ -735,6 +735,8 @@ fn lifecycle_state_to_str(state: &AgentLifecycleState) -> &'static str {
     match state {
         AgentLifecycleState::Creating => "creating",
         AgentLifecycleState::Ready => "ready",
+        AgentLifecycleState::Running => "running",
+        AgentLifecycleState::Stopped => "stopped",
         AgentLifecycleState::Failed => "failed",
     }
 }
@@ -743,6 +745,8 @@ fn parse_lifecycle_state(value: &str) -> Result<AgentLifecycleState, AgentError>
     match value {
         "creating" => Ok(AgentLifecycleState::Creating),
         "ready" => Ok(AgentLifecycleState::Ready),
+        "running" => Ok(AgentLifecycleState::Running),
+        "stopped" => Ok(AgentLifecycleState::Stopped),
         "failed" => Ok(AgentLifecycleState::Failed),
         other => Err(AgentError::Storage(format!(
             "invalid lifecycle state: {other}"

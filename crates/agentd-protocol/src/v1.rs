@@ -60,8 +60,8 @@ impl A2ATaskState {
     pub fn to_agent_lifecycle_state(self) -> AgentLifecycleState {
         match self {
             Self::Submitted => AgentLifecycleState::Creating,
-            Self::Working | Self::InputRequired => AgentLifecycleState::Ready,
-            Self::Completed => AgentLifecycleState::Ready,
+            Self::Working | Self::InputRequired => AgentLifecycleState::Running,
+            Self::Completed => AgentLifecycleState::Stopped,
             Self::Failed | Self::Canceled => AgentLifecycleState::Failed,
         }
     }
