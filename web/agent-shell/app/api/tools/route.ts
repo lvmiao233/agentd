@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { listAgents, listAvailableTools } from '@/lib/daemon-rpc';
+import {
+  authorizeTool,
+  DaemonRpcError,
+  listAgents,
+  listAvailableTools,
+} from '@/lib/daemon-rpc';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -30,6 +35,42 @@ export async function GET(req: Request) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'daemon unreachable' },
+      { status: 502 },
+    );
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json()) as {
+      agent_id?: string;
+      tool?: string;
+    };
+    if (!body.agent_id?.trim() || !body.tool?.trim()) {
+      return NextResponse.json(
+        { error: 'agent_id and tool are required' },
+        { status: 400 },
+      );
+    }
+
+    const result = await authorizeTool({
+      agent_id: body.agent_id.trim(),
+      tool: body.tool.trim(),
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    if (
+      err instanceof DaemonRpcError &&
+      err.code === -32016 &&
+      err.message.startsWith('policy.deny:')
+    ) {
+      return NextResponse.json({
+        decision: 'deny',
+        reason: err.message,
+      });
+    }
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'tool authorization failed' },
       { status: 502 },
     );
   }

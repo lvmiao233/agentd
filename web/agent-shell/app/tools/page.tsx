@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -9,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertTriangle, ShieldCheck, Wrench } from 'lucide-react';
+import { AlertTriangle, Loader2, ShieldCheck, Wrench } from 'lucide-react';
 
 type AgentOption = {
   agent_id: string;
@@ -24,6 +26,14 @@ type AvailableTool = {
   trust_level: string;
   health: string;
   decision: string;
+  reason?: string;
+  trace_id?: string;
+};
+
+type ProbeResult = {
+  decision: 'allow' | 'ask' | 'deny';
+  matched_rule?: string;
+  source_layer?: string;
   reason?: string;
   trace_id?: string;
 };
@@ -44,6 +54,9 @@ export default function ToolsPage() {
   const [agentId, setAgentId] = useState('');
   const [tools, setTools] = useState<AvailableTool[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [probeTool, setProbeTool] = useState('');
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [probeSubmitting, setProbeSubmitting] = useState(false);
 
   const fetchTools = useCallback(async (selectedAgentId?: string) => {
     try {
@@ -78,6 +91,44 @@ export default function ToolsPage() {
     }, 8000);
     return () => clearInterval(timer);
   }, [agentId, fetchTools]);
+
+  const suggestedProbeTools = useMemo(
+    () => Array.from(new Set(tools.map((tool) => tool.policy_tool))).slice(0, 8),
+    [tools],
+  );
+
+  async function handleProbe(e: FormEvent) {
+    e.preventDefault();
+    if (!agentId || !probeTool.trim()) {
+      setProbeResult(null);
+      setError('请选择 Agent 并输入 policy tool 名称');
+      return;
+    }
+
+    setProbeSubmitting(true);
+    setProbeResult(null);
+    try {
+      const response = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agentId,
+          tool: probeTool.trim(),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? 'tool authorization failed');
+      }
+      setProbeResult(payload as ProbeResult);
+      setError(null);
+    } catch (err) {
+      setProbeResult(null);
+      setError(err instanceof Error ? err.message : '工具策略探测失败');
+    } finally {
+      setProbeSubmitting(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -118,6 +169,72 @@ export default function ToolsPage() {
             </SelectContent>
           </Select>
         )}
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          工具策略探测
+        </h2>
+        <form onSubmit={handleProbe} className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Input
+              value={probeTool}
+              onChange={(e) => setProbeTool(e.target.value)}
+              placeholder="mcp.shell.execute"
+            />
+            <Button type="submit" disabled={probeSubmitting || !agentId}>
+              {probeSubmitting ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
+              探测策略
+            </Button>
+          </div>
+          {suggestedProbeTools.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {suggestedProbeTools.map((tool) => (
+                <button
+                  key={tool}
+                  type="button"
+                  className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+                  onClick={() => setProbeTool(tool)}
+                >
+                  {tool}
+                </button>
+              ))}
+            </div>
+          )}
+          {probeResult && (
+            <div className="rounded-lg border border-border bg-background p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant={
+                    probeResult.decision === 'allow'
+                      ? 'default'
+                      : probeResult.decision === 'ask'
+                        ? 'outline'
+                        : 'destructive'
+                  }
+                >
+                  {probeResult.decision}
+                </Badge>
+                {probeResult.matched_rule && (
+                  <Badge variant="secondary">rule: {probeResult.matched_rule}</Badge>
+                )}
+                {probeResult.source_layer && (
+                  <Badge variant="outline">layer: {probeResult.source_layer}</Badge>
+                )}
+              </div>
+              {probeResult.reason && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  reason: {probeResult.reason}
+                </p>
+              )}
+              {probeResult.trace_id && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  trace: {probeResult.trace_id}
+                </p>
+              )}
+            </div>
+          )}
+        </form>
       </section>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
