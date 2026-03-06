@@ -358,6 +358,58 @@ fn default_mcp_servers_dir() -> String {
     "configs/mcp-servers".to_string()
 }
 
+fn sanitize_mcp_config_stem(server_name: &str) -> String {
+    let mut sanitized = String::with_capacity(server_name.len());
+    for ch in server_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            sanitized.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('-');
+        }
+    }
+    let trimmed = sanitized.trim_matches('-').trim_matches('_');
+    if trimmed.is_empty() {
+        "mcp-server".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn persist_onboarded_mcp_server(
+    configs_dir: &Path,
+    config: &mcp::McpServerConfig,
+) -> Result<PathBuf, AgentError> {
+    std::fs::create_dir_all(configs_dir).map_err(|err| {
+        AgentError::Runtime(format!(
+            "create mcp config directory failed {}: {err}",
+            configs_dir.display()
+        ))
+    })?;
+
+    let file_name = format!("{}.toml", sanitize_mcp_config_stem(&config.name));
+    let path = configs_dir.join(file_name);
+    let args = config
+        .args
+        .iter()
+        .map(|arg| format!("{:?}", arg))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let transport = match config.transport {
+        mcp::McpTransport::Stdio => "stdio",
+    };
+    let trust_level = format!("{:?}", config.trust_level).to_ascii_lowercase();
+    let content = format!(
+        "[server]\nname = {:?}\ncommand = {:?}\nargs = [{}]\ntransport = {:?}\ntrust_level = {:?}\n",
+        config.name, config.command, args, transport, trust_level
+    );
+    std::fs::write(&path, content).map_err(|err| {
+        AgentError::Runtime(format!("write mcp config failed {}: {err}", path.display()))
+    })?;
+    Ok(path)
+}
+
 fn default_firecracker_binary() -> String {
     "data/firecracker/firecracker".to_string()
 }
@@ -428,6 +480,7 @@ struct RuntimeState {
     create_agent_lock: Arc<Mutex<()>>,
     lifecycle_manager: LifecycleManager,
     agent_card_root: Arc<PathBuf>,
+    mcp_servers_dir: Arc<PathBuf>,
     mcp_host: Arc<Mutex<McpHost>>,
     firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
     a2a_tasks: Arc<RwLock<HashMap<uuid::Uuid, A2ATask>>>,
@@ -492,12 +545,31 @@ impl RuntimeState {
         mcp_host: Arc<Mutex<McpHost>>,
         firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
     ) -> Self {
+        Self::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
+            initial_status,
+            lifecycle_manager,
+            agent_card_root,
+            mcp_host,
+            firecracker_executor,
+            PathBuf::from(default_mcp_servers_dir()),
+        )
+    }
+
+    fn with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
+        initial_status: &str,
+        lifecycle_manager: LifecycleManager,
+        agent_card_root: PathBuf,
+        mcp_host: Arc<Mutex<McpHost>>,
+        firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
+        mcp_servers_dir: PathBuf,
+    ) -> Self {
         let (a2a_stream_tx, _) = broadcast::channel(1024);
         Self {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
             lifecycle_manager,
             agent_card_root: Arc::new(agent_card_root),
+            mcp_servers_dir: Arc::new(mcp_servers_dir),
             mcp_host,
             firecracker_executor,
             a2a_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -523,6 +595,10 @@ impl RuntimeState {
 
     fn mcp_host(&self) -> Arc<Mutex<McpHost>> {
         self.mcp_host.clone()
+    }
+
+    fn mcp_servers_dir(&self) -> Arc<PathBuf> {
+        self.mcp_servers_dir.clone()
     }
 
     fn firecracker_executor(&self) -> Option<Arc<firecracker::FirecrackerExecutor>> {
@@ -2143,16 +2219,20 @@ async fn onboard_mcp_server_registers_server_for_settings_management() {
         uuid::Uuid::new_v4()
     ));
     let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let mcp_configs_dir = temp_mcp_configs_dir();
+    std::fs::create_dir_all(&mcp_configs_dir).expect("create temp mcp config dir");
 
     let mut host = mcp::McpHost::new();
     host.start_declared_servers(&[mcp_valid_stdio_server("mcp-fs", "fs.read_file")])
         .await
         .expect("mcp host should start builtin server");
-    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
+        None,
+        mcp_configs_dir.clone(),
     );
 
     let onboard_response = handle_rpc_request(
@@ -2179,14 +2259,37 @@ async fn onboard_mcp_server_registers_server_for_settings_management() {
         onboard_response.error.is_none(),
         "onboard should succeed: {onboard_response:?}"
     );
-    let onboarded = onboard_response
+    let onboard_result = onboard_response
         .result
-        .expect("onboard result should exist")
+        .as_ref()
+        .expect("onboard result should exist");
+    let onboarded = onboard_result
         .get("server")
         .expect("server field should exist")
         .clone();
     assert_eq!(onboarded["server"], json!("mcp-figma"));
     assert_eq!(onboarded["trust_level"], json!("community"));
+    assert_eq!(
+        onboard_result
+            .get("persisted")
+            .and_then(Value::as_bool),
+        Some(true),
+        "onboard response should report persisted config"
+    );
+
+    let persisted_path = mcp_configs_dir.join("mcp-figma.toml");
+    assert!(persisted_path.exists(), "persisted config should exist");
+    let persisted_configs =
+        load_mcp_server_configs(&mcp_configs_dir).expect("persisted configs should reload");
+    assert!(
+        persisted_configs.iter().any(|config| {
+            config.name == "mcp-figma"
+                && config.command == "/bin/sh"
+                && config.transport == mcp::McpTransport::Stdio
+                && config.trust_level == mcp::McpTrustLevel::Community
+        }),
+        "reloaded config should contain persisted onboarded server"
+    );
 
     let list_response = handle_rpc_request(
         JsonRpcRequest::new(json!(28802), "ListMcpServers", json!({})),
@@ -2227,6 +2330,7 @@ async fn onboard_mcp_server_registers_server_for_settings_management() {
         .stop_all()
         .await
         .expect("mcp host stop should succeed");
+    let _ = std::fs::remove_dir_all(mcp_configs_dir);
     cleanup_sqlite_files(&db_path);
 }
 
@@ -10598,32 +10702,50 @@ async fn handle_rpc_request(
                 }
             };
 
+            let config_to_persist = mcp::McpServerConfig {
+                name: name.to_string(),
+                command: command.to_string(),
+                args: params.args.clone(),
+                transport,
+                trust_level,
+            };
+
             let onboarded = {
                 let mcp_host = state.mcp_host();
                 let mut host = mcp_host.lock().await;
-                host.onboard_server(mcp::McpServerConfig {
-                    name: name.to_string(),
-                    command: command.to_string(),
-                    args: params.args,
-                    transport,
-                    trust_level,
-                })
-                .await
+                host.onboard_server(config_to_persist.clone()).await
             };
 
             match onboarded {
-                Ok(entry) => JsonRpcResponse::success(
-                    request.id,
-                    json!({
-                        "status": "onboarded",
-                        "server": {
-                            "server": entry.server_id,
-                            "capabilities": entry.capabilities,
-                            "trust_level": format!("{:?}", entry.trust_level).to_ascii_lowercase(),
-                            "health": format!("{:?}", entry.health).to_ascii_lowercase(),
+                Ok(entry) => {
+                    let persisted_path = match persist_onboarded_mcp_server(
+                        state.mcp_servers_dir().as_ref(),
+                        &config_to_persist,
+                    ) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32027,
+                                format!("persist onboarded mcp server failed: {err}"),
+                            )
                         }
-                    }),
-                ),
+                    };
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "status": "onboarded",
+                            "persisted": true,
+                            "config_path": persisted_path,
+                            "server": {
+                                "server": entry.server_id,
+                                "capabilities": entry.capabilities,
+                                "trust_level": format!("{:?}", entry.trust_level).to_ascii_lowercase(),
+                                "health": format!("{:?}", entry.health).to_ascii_lowercase(),
+                            }
+                        }),
+                    )
+                }
                 Err(AgentError::InvalidInput(message)) => {
                     JsonRpcResponse::error(request.id, -32602, message)
                 }
@@ -12327,7 +12449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let firecracker_executor = build_firecracker_executor_from_config(&config.daemon)?;
-    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
+    let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
         if config.one_api.enabled {
             "starting"
         } else {
@@ -12337,6 +12459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(config.daemon.agent_card_root.clone()),
         mcp_host.clone(),
         firecracker_executor,
+        PathBuf::from(config.daemon.mcp_servers_dir.clone()),
     );
     let hydrated_profiles = hydrate_loaded_profiles(
         &store,
