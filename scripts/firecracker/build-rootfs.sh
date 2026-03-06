@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOTFS_ROOT="$REPO_ROOT/images/agent-rootfs"
 EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
+RUNTIME_ROOT_DEFAULT="$REPO_ROOT/data/firecracker"
 
 VERSION_FILE="$ROOTFS_ROOT/VERSION"
 DEFAULT_VERSION="0.1.0"
@@ -21,6 +22,7 @@ MANIFEST_PATH_DEFAULT="$ROOTFS_ROOT/rootfs-manifest.json"
 TAG="$TAG_DEFAULT"
 OUTPUT_ROOT="$OUTPUT_ROOT_DEFAULT"
 MANIFEST_PATH="$MANIFEST_PATH_DEFAULT"
+RUNTIME_ROOT="$RUNTIME_ROOT_DEFAULT"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-}"
 SUCCESS_EVIDENCE="$EVIDENCE_DIR/task-19-rootfs-build.txt"
 ERROR_EVIDENCE="$EVIDENCE_DIR/task-19-rootfs-missing-runtime.txt"
@@ -52,6 +54,7 @@ Options:
   --tag <value>              Rootfs image tag (default: images/agent-rootfs/VERSION)
   --output-root <path>       Output directory root (default: images/agent-rootfs/out)
   --manifest <path>          Manifest output path (default: images/agent-rootfs/rootfs-manifest.json)
+  --runtime-root <path>      Runtime artifact directory (default: data/firecracker)
   --source-date-epoch <sec>  Deterministic build timestamp
   --success-evidence <path>  Success evidence file path
   --error-evidence <path>    Failure evidence file path
@@ -132,6 +135,19 @@ copy_python_runtime_deps() {
     fi
 }
 
+calculate_rootfs_image_size_bytes() {
+    local rootfs_dir="$1"
+    local rootfs_bytes
+    rootfs_bytes="$(du -sb "$rootfs_dir" | cut -f1)"
+    local minimum_bytes=$((128 * 1024 * 1024))
+    local padding_bytes=$((64 * 1024 * 1024))
+    local total_bytes=$((rootfs_bytes + padding_bytes))
+    if (( total_bytes < minimum_bytes )); then
+        total_bytes=$minimum_bytes
+    fi
+    printf '%s\n' "$total_bytes"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag)
@@ -147,6 +163,11 @@ while [[ $# -gt 0 ]]; do
         --manifest)
             MANIFEST_PATH="${2:-}"
             [[ -n "$MANIFEST_PATH" ]] || fail "--manifest requires value"
+            shift 2
+            ;;
+        --runtime-root)
+            RUNTIME_ROOT="${2:-}"
+            [[ -n "$RUNTIME_ROOT" ]] || fail "--runtime-root requires value"
             shift 2
             ;;
         --source-date-epoch)
@@ -175,7 +196,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-for cmd in python3 ldd tar gzip sha256sum; do
+for cmd in python3 ldd tar gzip sha256sum mkfs.ext4 truncate; do
     require_cmd "$cmd"
 done
 
@@ -226,6 +247,10 @@ ROOTFS_DIR="$ARTIFACT_DIR/rootfs"
 TARBALL="$ARTIFACT_DIR/rootfs.tar"
 TARBALL_GZ="$ARTIFACT_DIR/rootfs.tar.gz"
 CHECKSUM_FILE="$ARTIFACT_DIR/rootfs.tar.gz.sha256"
+ROOTFS_EXT4="$ARTIFACT_DIR/rootfs.ext4"
+ROOTFS_EXT4_CHECKSUM_FILE="$ARTIFACT_DIR/rootfs.ext4.sha256"
+RUNTIME_ROOTFS="$RUNTIME_ROOT/rootfs.ext4"
+RUNTIME_MANIFEST="$RUNTIME_ROOT/rootfs-manifest.json"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -233,7 +258,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$ROOTFS_ROOT" "$EVIDENCE_DIR" "$ARTIFACT_DIR"
+mkdir -p "$ROOTFS_ROOT" "$EVIDENCE_DIR" "$ARTIFACT_DIR" "$RUNTIME_ROOT"
 rm -rf "$ROOTFS_DIR"
 
 log_info "Building rootfs tag=$TAG"
@@ -300,7 +325,16 @@ tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owne
 gzip -n -f "$TARBALL"
 sha256sum "$TARBALL_GZ" >"$CHECKSUM_FILE"
 
+ROOTFS_IMAGE_SIZE_BYTES="$(calculate_rootfs_image_size_bytes "$ROOTFS_DIR")"
+rm -f "$ROOTFS_EXT4"
+truncate -s "$ROOTFS_IMAGE_SIZE_BYTES" "$ROOTFS_EXT4"
+mkfs.ext4 -q -F -d "$ROOTFS_DIR" "$ROOTFS_EXT4"
+sha256sum "$ROOTFS_EXT4" >"$ROOTFS_EXT4_CHECKSUM_FILE"
+
+cp -f "$ROOTFS_EXT4" "$RUNTIME_ROOTFS"
+
 ROOTFS_SHA256="$(awk '{print $1}' "$CHECKSUM_FILE")"
+ROOTFS_EXT4_SHA256="$(awk '{print $1}' "$ROOTFS_EXT4_CHECKSUM_FILE")"
 
 cat >"$MANIFEST_PATH" <<EOF
 {
@@ -314,15 +348,25 @@ cat >"$MANIFEST_PATH" <<EOF
     "rootfs_dir": "${ROOTFS_DIR#$REPO_ROOT/}",
     "archive": "${TARBALL_GZ#$REPO_ROOT/}",
     "sha256": "$ROOTFS_SHA256",
-    "checksum_file": "${CHECKSUM_FILE#$REPO_ROOT/}"
+    "checksum_file": "${CHECKSUM_FILE#$REPO_ROOT/}",
+    "ext4_image": "${ROOTFS_EXT4#$REPO_ROOT/}",
+    "ext4_sha256": "$ROOTFS_EXT4_SHA256",
+    "ext4_checksum_file": "${ROOTFS_EXT4_CHECKSUM_FILE#$REPO_ROOT/}"
   },
   "content": {
     "python_binary": "/usr/bin/python3",
     "agent_lite_entrypoint": "/usr/local/bin/agentd-agent-lite",
     "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py"
+  },
+  "runtime": {
+    "root": "${RUNTIME_ROOT#$REPO_ROOT/}",
+    "rootfs_image": "${RUNTIME_ROOTFS#$REPO_ROOT/}",
+    "manifest": "${RUNTIME_MANIFEST#$REPO_ROOT/}"
   }
 }
 EOF
+
+cp -f "$MANIFEST_PATH" "$RUNTIME_MANIFEST"
 
 {
     echo "task=19"
@@ -332,10 +376,15 @@ EOF
     echo "rootfs_dir=${ROOTFS_DIR#$REPO_ROOT/}"
     echo "archive=${TARBALL_GZ#$REPO_ROOT/}"
     echo "sha256=$ROOTFS_SHA256"
+    echo "ext4_image=${ROOTFS_EXT4#$REPO_ROOT/}"
+    echo "ext4_sha256=$ROOTFS_EXT4_SHA256"
+    echo "runtime_rootfs=${RUNTIME_ROOTFS#$REPO_ROOT/}"
     echo "manifest=${MANIFEST_PATH#$REPO_ROOT/}"
 } >"$SUCCESS_EVIDENCE"
 
 log_info "Rootfs build complete"
 log_info "Manifest: $MANIFEST_PATH"
 log_info "Archive: $TARBALL_GZ"
+log_info "Ext4 image: $ROOTFS_EXT4"
+log_info "Runtime rootfs: $RUNTIME_ROOTFS"
 log_info "Success evidence: $SUCCESS_EVIDENCE"

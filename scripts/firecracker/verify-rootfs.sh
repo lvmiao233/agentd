@@ -9,6 +9,8 @@ EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
 
 MANIFEST_PATH="$ROOTFS_ROOT/rootfs-manifest.json"
 ROOTFS_DIR=""
+ROOTFS_IMAGE=""
+RUNTIME_ROOTFS_EXPECTED="$REPO_ROOT/data/firecracker/rootfs.ext4"
 SUCCESS_EVIDENCE="$EVIDENCE_DIR/task-19-rootfs-build.txt"
 ERROR_EVIDENCE="$EVIDENCE_DIR/task-19-rootfs-missing-runtime.txt"
 
@@ -38,6 +40,7 @@ Verify built Firecracker rootfs includes python runtime + agent-lite payload.
 Options:
   --manifest <path>          Manifest path (default: images/agent-rootfs/rootfs-manifest.json)
   --rootfs-dir <path>        Rootfs directory (default: read from manifest)
+  --rootfs-image <path>      Rootfs ext4 image path (default: read from manifest)
   --success-evidence <path>  Success evidence file path
   --error-evidence <path>    Failure evidence file path
   -h, --help                 Show this help
@@ -78,6 +81,11 @@ while [[ $# -gt 0 ]]; do
         --rootfs-dir)
             ROOTFS_DIR="${2:-}"
             [[ -n "$ROOTFS_DIR" ]] || fail "--rootfs-dir requires value"
+            shift 2
+            ;;
+        --rootfs-image)
+            ROOTFS_IMAGE="${2:-}"
+            [[ -n "$ROOTFS_IMAGE" ]] || fail "--rootfs-image requires value"
             shift 2
             ;;
         --success-evidence)
@@ -121,6 +129,24 @@ PY
     fi
 fi
 
+if [[ -z "$ROOTFS_IMAGE" ]]; then
+    ROOTFS_IMAGE_REL="$(python3 - "$MANIFEST_PATH" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("artifact", {}).get("ext4_image", ""))
+PY
+)"
+    if [[ -n "$ROOTFS_IMAGE_REL" ]]; then
+        if [[ "$ROOTFS_IMAGE_REL" == /* ]]; then
+            ROOTFS_IMAGE="$ROOTFS_IMAGE_REL"
+        else
+            ROOTFS_IMAGE="$REPO_ROOT/$ROOTFS_IMAGE_REL"
+        fi
+    fi
+fi
+
 if [[ ! -d "$ROOTFS_DIR" ]]; then
     fail "rootfs directory not found: $ROOTFS_DIR"
 fi
@@ -134,6 +160,10 @@ require_file "$PYTHON_ROOTFS" "python runtime"
 require_file "$ENTRYPOINT_ROOTFS" "agent-lite entrypoint"
 require_file "$MODULE_ROOTFS" "agent-lite module"
 require_file "$MANIFEST_ROOTFS" "rootfs internal manifest"
+
+if [[ -n "$ROOTFS_IMAGE" ]]; then
+    require_file "$ROOTFS_IMAGE" "rootfs ext4 image"
+fi
 
 if [[ ! -x "$PYTHON_ROOTFS" ]]; then
     fail "python runtime is not executable: $PYTHON_ROOTFS"
@@ -161,6 +191,26 @@ if ! PYTHONPATH="$ROOTFS_DIR/opt/agent-lite/src" "$PYTHON_ROOTFS" -m agentd_agen
     fail "agent-lite help command failed: $HELP_ERR"
 fi
 
+if [[ -n "$ROOTFS_IMAGE" ]]; then
+    if ! command -v debugfs >/dev/null 2>&1; then
+        fail "debugfs is required to inspect rootfs image"
+    fi
+
+    if ! debugfs -R 'stat /usr/bin/python3' "$ROOTFS_IMAGE" >/tmp/agentd-task19-debugfs-python.out 2>/tmp/agentd-task19-debugfs-python.err; then
+        DEBUGFS_ERR="$(tr '\n' ' ' </tmp/agentd-task19-debugfs-python.err)"
+        fail "rootfs image missing /usr/bin/python3: $DEBUGFS_ERR"
+    fi
+
+    if ! debugfs -R 'stat /usr/local/bin/agentd-agent-lite' "$ROOTFS_IMAGE" >/tmp/agentd-task19-debugfs-entrypoint.out 2>/tmp/agentd-task19-debugfs-entrypoint.err; then
+        DEBUGFS_ERR="$(tr '\n' ' ' </tmp/agentd-task19-debugfs-entrypoint.err)"
+        fail "rootfs image missing agent-lite entrypoint: $DEBUGFS_ERR"
+    fi
+
+    if [[ "$ROOTFS_IMAGE" == "$RUNTIME_ROOTFS_EXPECTED" ]]; then
+        require_file "$RUNTIME_ROOTFS_EXPECTED" "runtime rootfs image"
+    fi
+fi
+
 mkdir -p "$EVIDENCE_DIR"
 if [[ -s "$SUCCESS_EVIDENCE" ]]; then
     echo "---" >>"$SUCCESS_EVIDENCE"
@@ -175,9 +225,13 @@ fi
     echo "agent_lite=available"
     echo "import_check=passed"
     echo "help_check=passed"
+    if [[ -n "$ROOTFS_IMAGE" ]]; then
+        echo "rootfs_image=${ROOTFS_IMAGE#$REPO_ROOT/}"
+        echo "ext4_check=passed"
+    fi
 } >>"$SUCCESS_EVIDENCE"
 
-rm -f /tmp/agentd-task19-import.out /tmp/agentd-task19-import.err /tmp/agentd-task19-help.out /tmp/agentd-task19-help.err
+rm -f /tmp/agentd-task19-import.out /tmp/agentd-task19-import.err /tmp/agentd-task19-help.out /tmp/agentd-task19-help.err /tmp/agentd-task19-debugfs-python.out /tmp/agentd-task19-debugfs-python.err /tmp/agentd-task19-debugfs-entrypoint.out /tmp/agentd-task19-debugfs-entrypoint.err
 
 log_info "Rootfs verification passed"
 log_info "Success evidence: $SUCCESS_EVIDENCE"
