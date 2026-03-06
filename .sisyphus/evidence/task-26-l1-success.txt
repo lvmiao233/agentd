@@ -7,8 +7,8 @@ Setup:
   - target daemon: /tmp/agentd-migrate-target.toml on 127.0.0.1:18087
 
 Command sequence:
-  1. target/debug/agentctl --socket-path /tmp/agentd-migrate-source.sock agent create --name migrate-source-agent --model claude-4-sonnet --json
-  2. target/debug/agentctl --socket-path /tmp/agentd-migrate-source.sock migrate --source-agent-id <agent-id> --target-base-url http://127.0.0.1:18087 --message "user:remember project codename atlas" --message "assistant:atlas checklist captured" --key-file README.md --json
+  1. target/debug/agentctl --socket-path /tmp/agentd-discovery.sock agent create --name migrate-ux-source --model claude-4-sonnet --json
+  2. target/debug/agentctl --socket-path /tmp/agentd-discovery.sock migrate --source-agent-id <agent-id> --discover-url http://127.0.0.1:18084 --target-name peer-agent --message "user:remember project codename atlas" --message "assistant:atlas checklist captured" --key-file README.md --json
 
 Observed result summary:
   - migration_level      = l1
@@ -20,4 +20,4 @@ Observed result summary:
   - target_output.migration_restore.resume_prompt contains "project codename atlas"
 
 Conclusion:
-  The migration flow is now callable from agentctl and successfully completes an end-to-end L1 transfer between two live daemon instances.
+  The migration flow is now callable from agentctl and can resolve its target directly from discovery data before completing an end-to-end L1 transfer.
