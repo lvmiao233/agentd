@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Fragment } from 'react';
+import { useState, Fragment, useEffect, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import {
   Conversation,
@@ -32,10 +32,57 @@ import {
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
 import type { ToolUIPart } from 'ai';
+import { createDaemonWs } from '@/lib/daemon-rpc';
 
 export default function ChatPage() {
   const [input, setInput] = useState('');
+  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
   const { messages, sendMessage, status, regenerate } = useChat();
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let closed = false;
+    let socket: WebSocket | null = null;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const connect = () => {
+      clearReconnectTimer();
+      const ws = createDaemonWs();
+      socket = ws;
+
+      ws.onopen = () => {
+        if (!closed) {
+          setShowReconnectBanner(false);
+        }
+      };
+
+      ws.onerror = () => {
+        if (!closed) {
+          setShowReconnectBanner(true);
+        }
+      };
+
+      ws.onclose = () => {
+        if (closed) return;
+        setShowReconnectBanner(true);
+        reconnectTimerRef.current = setTimeout(connect, 1000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      closed = true;
+      clearReconnectTimer();
+      socket?.close();
+    };
+  }, []);
 
   const handleSubmit = () => {
     const text = input.trim();
@@ -47,6 +94,11 @@ export default function ChatPage() {
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col rounded-xl border border-border bg-card shadow-lg">
       <div className="flex flex-1 flex-col overflow-hidden p-4">
+        {showReconnectBanner && (
+          <div className="reconnect-banner mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+            Daemon WebSocket disconnected. Reconnecting…
+          </div>
+        )}
         <Conversation>
           <ConversationContent>
             {messages.length === 0 ? (
@@ -65,7 +117,17 @@ export default function ChatPage() {
                           <Fragment key={`${message.id}-${i}`}>
                             <Message from={message.role}>
                               <MessageContent>
-                                <MessageResponse>{part.text}</MessageResponse>
+                                <div
+                                  className={
+                                    message.role === 'assistant' &&
+                                    messageIndex === messages.length - 1 &&
+                                    status === 'streaming'
+                                      ? 'stream-token'
+                                      : undefined
+                                  }
+                                >
+                                  <MessageResponse>{part.text}</MessageResponse>
+                                </div>
                               </MessageContent>
                             </Message>
                             {message.role === 'assistant' &&

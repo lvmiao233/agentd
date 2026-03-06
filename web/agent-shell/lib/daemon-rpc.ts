@@ -1,5 +1,11 @@
-const DAEMON_URL = process.env.AGENTD_DAEMON_URL ?? 'http://127.0.0.1:7000';
-const DAEMON_WS_URL = process.env.AGENTD_DAEMON_WS_URL ?? 'ws://127.0.0.1:7000/ws';
+const DAEMON_URL =
+  process.env.NEXT_PUBLIC_AGENTD_DAEMON_URL ??
+  process.env.AGENTD_DAEMON_URL ??
+  'http://127.0.0.1:7000';
+const DAEMON_WS_URL =
+  process.env.NEXT_PUBLIC_AGENTD_DAEMON_WS_URL ??
+  process.env.AGENTD_DAEMON_WS_URL ??
+  'ws://127.0.0.1:7000/ws';
 
 let rpcIdCounter = 0;
 function nextId(): number {
