@@ -156,6 +156,16 @@ export async function getAgent(agentId: string, auditLimit?: number): Promise<Ag
   return normalizeAgentProfile(result.profile ?? {});
 }
 
+export async function getAgentWithAudit(
+  agentId: string,
+  auditLimit?: number,
+): Promise<{ profile?: RawAgentProfile; audit_events?: RuntimeEvent[] }> {
+  return rpcCall<{ profile?: RawAgentProfile; audit_events?: RuntimeEvent[] }>('GetAgent', {
+    agent_id: agentId,
+    ...(auditLimit !== undefined && { audit_limit: auditLimit }),
+  });
+}
+
 export async function deleteAgent(agentId: string): Promise<{ deleted: boolean }> {
   const result = await rpcCall<{ deleted?: boolean; success?: boolean }>('DeleteAgent', {
     agent_id: agentId,

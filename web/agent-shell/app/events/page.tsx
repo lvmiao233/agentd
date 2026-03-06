@@ -201,12 +201,16 @@ export default function EventsPage() {
     };
 
     void refreshOnce();
+    const pollTimer = setInterval(() => {
+      void refreshOnce();
+    }, 5000);
     if (!paused) {
       connect();
     }
 
     return () => {
       closed = true;
+      clearInterval(pollTimer);
       clearReconnectTimer();
       wsRef.current?.close();
       wsRef.current = null;

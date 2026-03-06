@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { subscribeEvents } from '@/lib/daemon-rpc';
+import { getAgentWithAudit, listAgents } from '@/lib/daemon-rpc';
 
 function normalizeEvent(event: Record<string, unknown>) {
   const payload =
@@ -28,25 +28,24 @@ function normalizeEvent(event: Record<string, unknown>) {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const cursor = searchParams.get('cursor') ?? undefined;
   const limit = searchParams.get('limit')
     ? Number(searchParams.get('limit'))
     : 50;
-  const waitTimeoutSecs = searchParams.get('wait_timeout_secs')
-    ? Number(searchParams.get('wait_timeout_secs'))
-    : 5;
 
   try {
-    const result = await subscribeEvents({
-      cursor,
-      limit,
-      wait_timeout_secs: waitTimeoutSecs,
-    });
+    const agents = await listAgents();
+    const auditResults = await Promise.all(
+      (agents ?? []).map(async (agent) => getAgentWithAudit(agent.agent_id, limit)),
+    );
+    const events = auditResults
+      .flatMap((result) => result.audit_events ?? [])
+      .map((event) => normalizeEvent(event as Record<string, unknown>))
+      .sort((left, right) => right.created_at.localeCompare(left.created_at))
+      .slice(0, limit);
+
     return NextResponse.json({
-      events: (result.events ?? []).map((event) =>
-        normalizeEvent(event as Record<string, unknown>),
-      ),
-      next_cursor: result.next_cursor,
+      events,
+      next_cursor: events.at(-1)?.id ?? null,
     });
   } catch (err) {
     return NextResponse.json(
