@@ -99,7 +99,7 @@ export default function UsagePage() {
       </div>
 
       {/* Per-agent breakdown */}
-      <section className="rounded-xl border border-border bg-card p-4">
+      <section className="token-chart rounded-xl border border-border bg-card p-4">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Agent 用量明细
         </h2>

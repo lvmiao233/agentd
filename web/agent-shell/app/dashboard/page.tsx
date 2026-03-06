@@ -98,6 +98,7 @@ export default function DashboardPage() {
       {/* Metrics */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <MetricCard
+          className="agent-count-card"
           icon={<Server className="size-4 text-blue-400" />}
           label="注册 Agents"
           value={agents.length}
@@ -183,16 +184,18 @@ export default function DashboardPage() {
 }
 
 function MetricCard({
+  className,
   icon,
   label,
   value,
 }: {
+  className?: string;
   icon: React.ReactNode;
   label: string;
   value: string | number;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className={className ? `${className} rounded-xl border border-border bg-card p-4` : 'rounded-xl border border-border bg-card p-4'}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {icon}
         {label}

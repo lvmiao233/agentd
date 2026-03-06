@@ -214,6 +214,7 @@ export default function ChatPage() {
           <PromptInputFooter>
             <PromptInputTools />
             <PromptInputSubmit
+              className="send-button"
               status={status === 'streaming' ? 'streaming' : 'ready'}
               disabled={!input.trim() && status !== 'streaming'}
             />
