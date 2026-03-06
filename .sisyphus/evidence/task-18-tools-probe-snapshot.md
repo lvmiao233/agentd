@@ -1,0 +1,261 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Tools" [level=1] [ref=e36]
+          - paragraph [ref=e37]: 按 Agent 查看实时可用工具（含策略过滤后结果）
+        - generic [ref=e38]:
+          - heading "Agent 选择" [level=2] [ref=e39]
+          - combobox [ref=e40]:
+            - generic: web-probe-agent · gpt-4.1-mini · 911ae8ea…
+            - img
+        - generic [ref=e41]:
+          - heading "工具策略探测" [level=2] [ref=e42]
+          - generic [ref=e43]:
+            - generic [ref=e44]:
+              - textbox "mcp.shell.execute" [ref=e45]: mcp.shell.execute_with_timeout
+              - button "探测策略" [ref=e46]
+            - generic [ref=e47]:
+              - button "mcp.fs.read_file" [ref=e48]
+              - button "mcp.fs.list_directory" [ref=e49]
+              - button "mcp.fs.search_files" [ref=e50]
+              - button "mcp.fs.patch_file" [ref=e51]
+              - button "mcp.fs.tree" [ref=e52]
+              - button "mcp.git.git_status" [ref=e53]
+              - button "mcp.git.git_diff" [ref=e54]
+              - button "mcp.git.git_log" [ref=e55]
+            - generic [ref=e56]:
+              - generic [ref=e58]: deny
+              - paragraph [ref=e59]: "reason: policy.deny: tool=mcp.shell.execute_with_timeout matched_rule=mcp.shell.execute_with_timeout source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.shell.execute_with_timeout resource=<none> request_meta_keys=[trace_id]"
+        - generic [ref=e60]:
+          - generic [ref=e61]:
+            - paragraph [ref=e62]: 可用工具数
+            - paragraph [ref=e63]: "13"
+          - generic [ref=e64]:
+            - paragraph [ref=e65]: 健康工具
+            - paragraph [ref=e66]: "13"
+          - generic [ref=e67]:
+            - paragraph [ref=e68]: 策略允许
+            - paragraph [ref=e69]: "0"
+          - generic [ref=e70]:
+            - paragraph [ref=e71]: 策略询问
+            - paragraph [ref=e72]: "13"
+        - generic [ref=e73]:
+          - heading "工具列表" [level=2] [ref=e74]
+          - list [ref=e75]:
+            - listitem [ref=e233]:
+              - generic [ref=e234]:
+                - img [ref=e235]
+                - generic [ref=e237]: read_file
+                - generic [ref=e238]: mcp-fs
+                - generic [ref=e239]: healthy
+                - generic [ref=e240]: builtin
+                - generic [ref=e241]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e242]:
+                - text: "policy:"
+                - code [ref=e243]: mcp.fs.read_file
+              - paragraph [ref=e244]: "reason: policy.ask: tool=mcp.fs.read_file matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.fs.read_file resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e245]:
+              - generic [ref=e246]:
+                - img [ref=e247]
+                - generic [ref=e249]: list_directory
+                - generic [ref=e250]: mcp-fs
+                - generic [ref=e251]: healthy
+                - generic [ref=e252]: builtin
+                - generic [ref=e253]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e254]:
+                - text: "policy:"
+                - code [ref=e255]: mcp.fs.list_directory
+              - paragraph [ref=e256]: "reason: policy.ask: tool=mcp.fs.list_directory matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.fs.list_directory resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e257]:
+              - generic [ref=e258]:
+                - img [ref=e259]
+                - generic [ref=e261]: search_files
+                - generic [ref=e262]: mcp-fs
+                - generic [ref=e263]: healthy
+                - generic [ref=e264]: builtin
+                - generic [ref=e265]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e266]:
+                - text: "policy:"
+                - code [ref=e267]: mcp.fs.search_files
+              - paragraph [ref=e268]: "reason: policy.ask: tool=mcp.fs.search_files matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.fs.search_files resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e269]:
+              - generic [ref=e270]:
+                - img [ref=e271]
+                - generic [ref=e273]: patch_file
+                - generic [ref=e274]: mcp-fs
+                - generic [ref=e275]: healthy
+                - generic [ref=e276]: builtin
+                - generic [ref=e277]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e278]:
+                - text: "policy:"
+                - code [ref=e279]: mcp.fs.patch_file
+              - paragraph [ref=e280]: "reason: policy.ask: tool=mcp.fs.patch_file matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.fs.patch_file resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e281]:
+              - generic [ref=e282]:
+                - img [ref=e283]
+                - generic [ref=e285]: tree
+                - generic [ref=e286]: mcp-fs
+                - generic [ref=e287]: healthy
+                - generic [ref=e288]: builtin
+                - generic [ref=e289]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e290]:
+                - text: "policy:"
+                - code [ref=e291]: mcp.fs.tree
+              - paragraph [ref=e292]: "reason: policy.ask: tool=mcp.fs.tree matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.fs.tree resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e293]:
+              - generic [ref=e294]:
+                - img [ref=e295]
+                - generic [ref=e297]: git_status
+                - generic [ref=e298]: mcp-git
+                - generic [ref=e299]: healthy
+                - generic [ref=e300]: builtin
+                - generic [ref=e301]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e302]:
+                - text: "policy:"
+                - code [ref=e303]: mcp.git.git_status
+              - paragraph [ref=e304]: "reason: policy.ask: tool=mcp.git.git_status matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.git.git_status resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e305]:
+              - generic [ref=e306]:
+                - img [ref=e307]
+                - generic [ref=e309]: git_diff
+                - generic [ref=e310]: mcp-git
+                - generic [ref=e311]: healthy
+                - generic [ref=e312]: builtin
+                - generic [ref=e313]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e314]:
+                - text: "policy:"
+                - code [ref=e315]: mcp.git.git_diff
+              - paragraph [ref=e316]: "reason: policy.ask: tool=mcp.git.git_diff matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.git.git_diff resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e317]:
+              - generic [ref=e318]:
+                - img [ref=e319]
+                - generic [ref=e321]: git_log
+                - generic [ref=e322]: mcp-git
+                - generic [ref=e323]: healthy
+                - generic [ref=e324]: builtin
+                - generic [ref=e325]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e326]:
+                - text: "policy:"
+                - code [ref=e327]: mcp.git.git_log
+              - paragraph [ref=e328]: "reason: policy.ask: tool=mcp.git.git_log matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.git.git_log resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e329]:
+              - generic [ref=e330]:
+                - img [ref=e331]
+                - generic [ref=e333]: git_apply_patch
+                - generic [ref=e334]: mcp-git
+                - generic [ref=e335]: healthy
+                - generic [ref=e336]: builtin
+                - generic [ref=e337]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e338]:
+                - text: "policy:"
+                - code [ref=e339]: mcp.git.git_apply_patch
+              - paragraph [ref=e340]: "reason: policy.ask: tool=mcp.git.git_apply_patch matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.git.git_apply_patch resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e341]:
+              - generic [ref=e342]:
+                - img [ref=e343]
+                - generic [ref=e345]: ripgrep
+                - generic [ref=e346]: mcp-search
+                - generic [ref=e347]: healthy
+                - generic [ref=e348]: builtin
+                - generic [ref=e349]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e350]:
+                - text: "policy:"
+                - code [ref=e351]: mcp.search.ripgrep
+              - paragraph [ref=e352]: "reason: policy.ask: tool=mcp.search.ripgrep matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.search.ripgrep resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e353]:
+              - generic [ref=e354]:
+                - img [ref=e355]
+                - generic [ref=e357]: find_definition
+                - generic [ref=e358]: mcp-search
+                - generic [ref=e359]: healthy
+                - generic [ref=e360]: builtin
+                - generic [ref=e361]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e362]:
+                - text: "policy:"
+                - code [ref=e363]: mcp.search.find_definition
+              - paragraph [ref=e364]: "reason: policy.ask: tool=mcp.search.find_definition matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.search.find_definition resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e365]:
+              - generic [ref=e366]:
+                - img [ref=e367]
+                - generic [ref=e369]: semantic_search
+                - generic [ref=e370]: mcp-search
+                - generic [ref=e371]: healthy
+                - generic [ref=e372]: builtin
+                - generic [ref=e373]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e374]:
+                - text: "policy:"
+                - code [ref=e375]: mcp.search.semantic_search
+              - paragraph [ref=e376]: "reason: policy.ask: tool=mcp.search.semantic_search matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.search.semantic_search resource=<none> request_meta_keys=[trace_id]"
+            - listitem [ref=e377]:
+              - generic [ref=e378]:
+                - img [ref=e379]
+                - generic [ref=e381]: get_output
+                - generic [ref=e382]: mcp-shell
+                - generic [ref=e383]: healthy
+                - generic [ref=e384]: builtin
+                - generic [ref=e385]:
+                  - img
+                  - text: ask
+              - paragraph [ref=e386]:
+                - text: "policy:"
+                - code [ref=e387]: mcp.shell.get_output
+              - paragraph [ref=e388]: "reason: policy.ask: tool=mcp.shell.get_output matched_rule=* source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.shell.get_output resource=<none> request_meta_keys=[trace_id]"
+  - alert [ref=e232]

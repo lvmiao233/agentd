@@ -1,0 +1,1 @@
+{"decision":"deny","reason":"policy.deny: tool=mcp.shell.execute_with_timeout matched_rule=mcp.shell.execute_with_timeout source_layer=agent_profile input_snapshot=agent.id=911ae8ea-1067-4f20-8068-49ab07387cd7 trust_level=ask tool=mcp.shell.execute_with_timeout resource=<none> request_meta_keys=[trace_id]"}
