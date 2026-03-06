@@ -135,6 +135,20 @@ copy_python_runtime_deps() {
     fi
 }
 
+copy_directory_with_parents() {
+    local src="$1"
+    local dst_root="$2"
+
+    if [[ ! -d "$src" ]]; then
+        fail "dependency directory missing: $src"
+    fi
+
+    local rel="${src#/}"
+    local dst="$dst_root/$rel"
+    mkdir -p "$(dirname "$dst")"
+    cp -a "$src" "$dst"
+}
+
 calculate_rootfs_image_size_bytes() {
     local rootfs_dir="$1"
     local rootfs_bytes
@@ -242,6 +256,15 @@ print(version)
 PY
 )"
 
+PYTHON_STDLIB_DIR="$(python3 - <<'PY'
+import sysconfig
+print(sysconfig.get_path('stdlib'))
+PY
+)"
+if [[ ! -d "$PYTHON_STDLIB_DIR" ]]; then
+    fail "python stdlib directory not found: $PYTHON_STDLIB_DIR"
+fi
+
 ARTIFACT_DIR="$OUTPUT_ROOT/$TAG"
 ROOTFS_DIR="$ARTIFACT_DIR/rootfs"
 TARBALL="$ARTIFACT_DIR/rootfs.tar"
@@ -279,22 +302,149 @@ mkdir -p \
     "$ROOTFS_DIR/usr/local/bin" \
     "$ROOTFS_DIR/usr/lib" \
     "$ROOTFS_DIR/var/log" \
-    "$ROOTFS_DIR/opt/agent-lite/src"
+    "$ROOTFS_DIR/opt/agent-lite/src" \
+    "$ROOTFS_DIR/opt/agent-lite/bin"
 
 cp -L --preserve=mode,timestamps "$PYTHON_REAL_BIN" "$ROOTFS_DIR/usr/bin/python3"
 ln -sf python3 "$ROOTFS_DIR/usr/bin/python"
 copy_python_runtime_deps "$PYTHON_REAL_BIN" "$ROOTFS_DIR"
+copy_directory_with_parents "$PYTHON_STDLIB_DIR" "$ROOTFS_DIR"
 
 cp -a "$AGENT_LITE_SRC" "$ROOTFS_DIR/opt/agent-lite/src/"
 cp -a "$REPO_ROOT/python/agentd-agent-lite/pyproject.toml" "$ROOTFS_DIR/opt/agent-lite/pyproject.toml"
 
 cat >"$ROOTFS_DIR/usr/local/bin/agentd-agent-lite" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export PYTHONPATH="/opt/agent-lite/src${PYTHONPATH:+:${PYTHONPATH}}"
-exec /usr/bin/python3 -m agentd_agent_lite.cli "$@"
+#!/usr/bin/python3
+
+from __future__ import annotations
+
+import runpy
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    script_path = Path(__file__).resolve()
+    rootfs_prefix = script_path.parents[3]
+    candidates = [Path("/opt/agent-lite/src"), rootfs_prefix / "opt/agent-lite/src"]
+    for candidate in candidates:
+        if candidate.exists():
+            sys.path.insert(0, str(candidate))
+            break
+    else:
+        raise SystemExit("agent-lite source tree not found")
+
+    runpy.run_module("agentd_agent_lite.cli", run_name="__main__")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 EOF
 chmod +x "$ROOTFS_DIR/usr/local/bin/agentd-agent-lite"
+
+cat >"$ROOTFS_DIR/opt/agent-lite/bin/guest-vsock-agent.py" <<'EOF'
+#!/usr/bin/python3
+
+from __future__ import annotations
+
+import json
+import signal
+import socket
+from pathlib import Path
+
+GUEST_VSOCK_PORT = 5252
+LOG_PATH = Path("/var/log/agentd-guest-init.log")
+
+
+def log(message: str) -> None:
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except OSError:
+        pass
+
+
+def build_response(payload_line: str) -> dict[str, object]:
+    try:
+        payload = json.loads(payload_line)
+    except json.JSONDecodeError as exc:
+        return {
+            "status": "error",
+            "transport": "firecracker-vsock",
+            "error": f"invalid-json:{exc.msg}",
+        }
+
+    if payload.get("rpc") == "daemon.ready":
+        return {
+            "status": "ok",
+            "transport": "firecracker-vsock",
+            "mode": "guest-init",
+        }
+
+    return {
+        "status": "ok",
+        "transport": "firecracker-vsock",
+        "echo": payload,
+    }
+
+
+def main() -> int:
+    signal.signal(signal.SIGTERM, lambda *_args: (_ for _ in ()).throw(SystemExit(0)))
+    server = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((socket.VMADDR_CID_ANY, GUEST_VSOCK_PORT))
+    server.listen()
+    log(f"guest vsock agent listening on {GUEST_VSOCK_PORT}")
+
+    with server:
+        while True:
+            conn, _addr = server.accept()
+            with conn:
+                reader = conn.makefile("r", encoding="utf-8")
+                writer = conn.makefile("w", encoding="utf-8")
+                for line in reader:
+                    payload_line = line.strip()
+                    if not payload_line:
+                        continue
+                    response = build_response(payload_line)
+                    writer.write(json.dumps(response, ensure_ascii=False) + "\n")
+                    writer.flush()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
+chmod +x "$ROOTFS_DIR/opt/agent-lite/bin/guest-vsock-agent.py"
+
+cat >"$ROOTFS_DIR/sbin/init" <<'EOF'
+#!/usr/bin/python3
+
+from __future__ import annotations
+
+import runpy
+from pathlib import Path
+
+
+def main() -> int:
+    init_path = Path(__file__).resolve()
+    rootfs_prefix = init_path.parents[1]
+    candidates = [
+        Path("/opt/agent-lite/bin/guest-vsock-agent.py"),
+        rootfs_prefix / "opt/agent-lite/bin/guest-vsock-agent.py",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            runpy.run_path(str(candidate), run_name="__main__")
+            return 0
+    raise SystemExit("guest vsock agent script not found")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
+chmod +x "$ROOTFS_DIR/sbin/init"
 
 cat >"$ROOTFS_DIR/etc/agentd-rootfs-release" <<EOF
 AGENTD_ROOTFS_TAG=$TAG
@@ -317,6 +467,11 @@ cat >"$ROOTFS_DIR/etc/agentd-rootfs-manifest.json" <<EOF
     "version": "$AGENT_LITE_VERSION",
     "entrypoint": "/usr/local/bin/agentd-agent-lite",
     "module_path": "/opt/agent-lite/src/agentd_agent_lite"
+  },
+  "boot": {
+    "init": "/sbin/init",
+    "guest_vsock_agent": "/opt/agent-lite/bin/guest-vsock-agent.py",
+    "guest_vsock_port": 5252
   }
 }
 EOF
@@ -356,7 +511,10 @@ cat >"$MANIFEST_PATH" <<EOF
   "content": {
     "python_binary": "/usr/bin/python3",
     "agent_lite_entrypoint": "/usr/local/bin/agentd-agent-lite",
-    "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py"
+    "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py",
+    "boot_init": "/sbin/init",
+    "guest_vsock_agent": "/opt/agent-lite/bin/guest-vsock-agent.py",
+    "guest_vsock_port": 5252
   },
   "runtime": {
     "root": "${RUNTIME_ROOT#$REPO_ROOT/}",

@@ -3,21 +3,24 @@
   "image": {
     "tag": "0.1.0",
     "base_version": "0.1.0",
-    "source_date_epoch": 1772777685
+    "source_date_epoch": 1772779061
   },
   "artifact": {
     "rootfs_dir": "images/agent-rootfs/out/0.1.0/rootfs",
     "archive": "images/agent-rootfs/out/0.1.0/rootfs.tar.gz",
-    "sha256": "21fdd6baabf5e8b075b49a58eec16f5e73b53d4029ca49375e83082ff423cb14",
+    "sha256": "99fab6ab5b6065ddae68de3f8363cdd1ca65e27de5a483f212e12de4916f27d1",
     "checksum_file": "images/agent-rootfs/out/0.1.0/rootfs.tar.gz.sha256",
     "ext4_image": "images/agent-rootfs/out/0.1.0/rootfs.ext4",
-    "ext4_sha256": "2be178318f321fe0c864c0c0bd453021497c6288b33b17a3327546bd6817da87",
+    "ext4_sha256": "ca1d76cf8872bc95268bd206b5f677bc4f9165dadc38ca8b0bf2d2a8ffb7170f",
     "ext4_checksum_file": "images/agent-rootfs/out/0.1.0/rootfs.ext4.sha256"
   },
   "content": {
     "python_binary": "/usr/bin/python3",
     "agent_lite_entrypoint": "/usr/local/bin/agentd-agent-lite",
-    "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py"
+    "agent_lite_module": "/opt/agent-lite/src/agentd_agent_lite/cli.py",
+    "boot_init": "/sbin/init",
+    "guest_vsock_agent": "/opt/agent-lite/bin/guest-vsock-agent.py",
+    "guest_vsock_port": 5252
   },
   "runtime": {
     "root": "data/firecracker",

@@ -154,11 +154,15 @@ fi
 PYTHON_ROOTFS="$ROOTFS_DIR/usr/bin/python3"
 ENTRYPOINT_ROOTFS="$ROOTFS_DIR/usr/local/bin/agentd-agent-lite"
 MODULE_ROOTFS="$ROOTFS_DIR/opt/agent-lite/src/agentd_agent_lite/cli.py"
+INIT_ROOTFS="$ROOTFS_DIR/sbin/init"
+GUEST_VSOCK_AGENT_ROOTFS="$ROOTFS_DIR/opt/agent-lite/bin/guest-vsock-agent.py"
 MANIFEST_ROOTFS="$ROOTFS_DIR/etc/agentd-rootfs-manifest.json"
 
 require_file "$PYTHON_ROOTFS" "python runtime"
 require_file "$ENTRYPOINT_ROOTFS" "agent-lite entrypoint"
 require_file "$MODULE_ROOTFS" "agent-lite module"
+require_file "$INIT_ROOTFS" "guest init"
+require_file "$GUEST_VSOCK_AGENT_ROOTFS" "guest vsock agent"
 require_file "$MANIFEST_ROOTFS" "rootfs internal manifest"
 
 if [[ -n "$ROOTFS_IMAGE" ]]; then
@@ -171,9 +175,15 @@ fi
 if [[ ! -x "$ENTRYPOINT_ROOTFS" ]]; then
     fail "agent-lite entrypoint is not executable: $ENTRYPOINT_ROOTFS"
 fi
+if [[ ! -x "$INIT_ROOTFS" ]]; then
+    fail "guest init is not executable: $INIT_ROOTFS"
+fi
 
 if ! grep -q "agentd_agent_lite.cli" "$ENTRYPOINT_ROOTFS"; then
     fail "agent-lite entrypoint missing cli target"
+fi
+if ! grep -q "guest-vsock-agent.py" "$INIT_ROOTFS"; then
+    fail "guest init missing vsock bootstrap target"
 fi
 
 PYTHON_VERSION="$("$PYTHON_ROOTFS" --version 2>&1 || true)"
@@ -186,7 +196,7 @@ if ! PYTHONPATH="$ROOTFS_DIR/opt/agent-lite/src" "$PYTHON_ROOTFS" -c "import age
     fail "agent-lite import failed: $IMPORT_ERR"
 fi
 
-if ! PYTHONPATH="$ROOTFS_DIR/opt/agent-lite/src" "$PYTHON_ROOTFS" -m agentd_agent_lite.cli --help >/tmp/agentd-task19-help.out 2>/tmp/agentd-task19-help.err; then
+if ! "$ENTRYPOINT_ROOTFS" --help >/tmp/agentd-task19-help.out 2>/tmp/agentd-task19-help.err; then
     HELP_ERR="$(tr '\n' ' ' </tmp/agentd-task19-help.err)"
     fail "agent-lite help command failed: $HELP_ERR"
 fi
