@@ -3426,6 +3426,131 @@ async fn a2a_task_with_agent_id_executes_real_run_agent() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn a2a_task_without_agent_id_uses_runnable_ready_agent() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task22-default-delegate-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve provider listener local address");
+    let provider_task = tokio::spawn(async move {
+        let (mut socket, _) = provider_listener
+            .accept()
+            .await
+            .expect("accept provider connection");
+
+        let mut request_bytes = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let read = socket
+                .read(&mut buf)
+                .await
+                .expect("read provider request bytes");
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buf[..read]);
+            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request_text = String::from_utf8(request_bytes).expect("provider request should be utf8");
+        assert!(
+            request_text.contains("authorization: Bearer sk-a2a-default"),
+            "provider request should use selected runnable agent token: {request_text}"
+        );
+        let response_body = json!({
+            "id": "chatcmpl-a2a-default",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "default delegated OK"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 4
+            }
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write provider response");
+        let _ = socket.shutdown().await;
+    });
+
+    let profile = AgentProfile::new(
+        "default-a2a-delegate-agent".to_string(),
+        ModelConfig {
+            provider: "one-api".to_string(),
+            model_name: "gpt-5.3-codex".to_string(),
+            max_tokens: None,
+            temperature: None,
+        },
+    );
+    store
+        .create_agent(profile.clone())
+        .await
+        .expect("create default delegate agent profile");
+    let _ = store
+        .update_agent_state(profile.id, AgentLifecycleState::Ready, None)
+        .await
+        .expect("mark default delegate agent ready");
+    store
+        .save_mapping(OneApiMapping {
+            agent_id: profile.id,
+            idempotency_key: format!(
+                "{}:{}:{}",
+                profile.name, profile.model.provider, profile.model.model_name
+            ),
+            one_api_token_id: "token-a2a-default".to_string(),
+            one_api_access_token: "sk-a2a-default".to_string(),
+            one_api_channel_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .expect("save default one-api mapping");
+
+    let created = state
+        .create_a2a_task(CreateA2ATaskRequest {
+            agent_id: None,
+            input: json!({"prompt": "delegate using default ready agent"}),
+        })
+        .await;
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+    drive_a2a_task_lifecycle(state.clone(), store.clone(), one_api_config, created.id).await;
+
+    let completed = state
+        .get_a2a_task(created.id)
+        .await
+        .expect("completed task should exist");
+    assert_eq!(completed.state, A2ATaskState::Completed);
+    let output = completed.output.expect("completed task should have output");
+    assert_eq!(output["executor"], json!("delegated-run-agent"));
+    assert_eq!(output["result"], json!("default delegated OK"));
+
+    provider_task.await.expect("provider task should finish");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn a2a_task_with_unknown_agent_fails_terminally() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-task22-missing-agent-test-{}.sqlite",
@@ -5982,7 +6107,28 @@ async fn drive_a2a_task_lifecycle(
         .await;
 
     let delegated_execution = if task_kind == "generic" {
-        if let (Some(agent_id), Some(summary)) = (task.agent_id, input_summary.clone()) {
+        let delegate_agent_id = match resolve_a2a_delegate_agent_id(&store, task.agent_id).await {
+            Ok(agent_id) => agent_id,
+            Err(err) => {
+                transition_a2a_task_to_failed(
+                    &state,
+                    task_id,
+                    task_kind,
+                    task.agent_id,
+                    input_summary.as_deref(),
+                    format!("delegate agent selection failed: {err}"),
+                    json!({
+                        "kind": task_kind,
+                        "phase": "delegate-selection-failed",
+                        "agent_id": task.agent_id,
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
+
+        if let (Some(agent_id), Some(summary)) = (delegate_agent_id, input_summary.clone()) {
             match execute_run_agent(
                 store.clone(),
                 &one_api_config,
@@ -10096,6 +10242,33 @@ async fn resolve_run_agent_access_token(
         .get_mapping_by_idempotency_key(&idempotency_key)
         .await?;
     Ok(mapping.map(|entry| entry.one_api_access_token))
+}
+
+async fn resolve_a2a_delegate_agent_id(
+    store: &Arc<SqliteStore>,
+    preferred_agent_id: Option<uuid::Uuid>,
+) -> Result<Option<uuid::Uuid>, AgentError> {
+    if preferred_agent_id.is_some() {
+        return Ok(preferred_agent_id);
+    }
+
+    let mut agents = store.list_agents().await?;
+    agents.reverse();
+    for agent in agents {
+        if agent.status != AgentLifecycleState::Ready {
+            continue;
+        }
+
+        if agent.model.provider != "one-api" {
+            return Ok(Some(agent.id));
+        }
+
+        if resolve_run_agent_access_token(store, &agent).await?.is_some() {
+            return Ok(Some(agent.id));
+        }
+    }
+
+    Ok(None)
 }
 
 async fn resolve_run_agent_context(
