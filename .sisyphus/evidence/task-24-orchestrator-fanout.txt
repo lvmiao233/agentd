@@ -1,26 +1,16 @@
-Task 24 live orchestrator fanout evidence
-=========================================
-
-Date: 2026-03-06
-Setup:
-  - mock provider on 127.0.0.1:18083
-  - daemon config /tmp/agentd-orchestrator.toml
-  - daemon rpc socket /tmp/agentd-orchestrator.sock
-
-Command sequence:
-  1. target/debug/agentctl --socket-path /tmp/agentd-orchestrator.sock agent create --name orch-alpha-live --model gpt-4.1-mini --json
-  2. target/debug/agentctl --socket-path /tmp/agentd-orchestrator.sock agent create --name orch-beta-live --model gpt-4.1-mini --json
-  3. send JSON-RPC OrchestrateTask over /tmp/agentd-orchestrator.sock with delegate_agent_ids=[alpha,beta]
-
-Observed result summary:
-  - task state            = completed
-  - merge_strategy        = deterministic_list
-  - child 0 prompt        = decompose requirement
-  - child 0 result        = delegated:decompose requirement
-  - child 1 prompt        = aggregate output
-  - child 1 result        = delegated:aggregate output
-  - usage_source          = provider
-  - per-child usage       = input_tokens=3, output_tokens=2
-
-Conclusion:
-  OrchestrateTask now executes real delegate-agent runs through the existing RunAgent/One-API path instead of echoing child input.
+{
+  "task": 24,
+  "status": "passed",
+  "step": "orchestrator-live-fanout",
+  "children": 2,
+  "states": [
+    "completed",
+    "completed"
+  ],
+  "results": [
+    "delegated:decompose requirement",
+    "delegated:aggregate output"
+  ],
+  "usage_source": "provider",
+  "merge_strategy": "deterministic_list"
+}

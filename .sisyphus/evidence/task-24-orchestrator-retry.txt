@@ -1,15 +1,13 @@
-Task 24 orchestrator retry evidence
-===================================
+task=24
+status=passed
+step=orchestrator-retry
+retry_test=cargo test -p agentd-daemon orchestrator_retries_failed_child_once -- --exact
+--- test log ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/main.rs (target/debug/deps/agentd-f0df9f67224d37bc)
 
-Date: 2026-03-06
-Command:
-  cargo test -p agentd-daemon orchestrator_retries_failed_child_once -- --exact
+running 1 test
+test orchestrator_retries_failed_child_once ... ok
 
-Observed:
-  running 1 test
-  test orchestrator_retries_failed_child_once ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.01s
 
-  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out
-
-Conclusion:
-  A failing child still retries exactly once and the orchestrator reports the recovered final outcome.
