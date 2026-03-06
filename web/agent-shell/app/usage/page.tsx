@@ -4,6 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { buildUsageBars } from '@/lib/dashboard-events-model';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   AlertTriangle,
   BarChart3,
   ArrowDown,
@@ -28,6 +35,10 @@ type UsageTotals = {
   cost_usd: number;
 };
 
+const WINDOW_OPTIONS = ['1h', '24h', '7d', 'all'] as const;
+
+type UsageWindow = (typeof WINDOW_OPTIONS)[number];
+
 export default function UsagePage() {
   const [agents, setAgents] = useState<AgentUsage[]>([]);
   const [totals, setTotals] = useState<UsageTotals>({
@@ -37,10 +48,16 @@ export default function UsagePage() {
     cost_usd: 0,
   });
   const [error, setError] = useState<string | null>(null);
+  const [window, setWindow] = useState<UsageWindow>('24h');
+  const [selectedModel, setSelectedModel] = useState<string>('all');
 
   const fetchUsage = useCallback(async () => {
     try {
-      const res = await fetch('/api/usage');
+      const params = new URLSearchParams();
+      if (window !== 'all') {
+        params.set('window', window);
+      }
+      const res = await fetch(`/api/usage${params.size ? `?${params}` : ''}`);
       if (!res.ok) throw new Error('fetch failed');
       const data = await res.json();
       setAgents(data.agents ?? []);
@@ -49,7 +66,7 @@ export default function UsagePage() {
     } catch {
       setError('无法从 daemon 获取用量数据');
     }
-  }, []);
+  }, [window]);
 
   useEffect(() => {
     fetchUsage();
@@ -57,8 +74,22 @@ export default function UsagePage() {
     return () => clearInterval(timer);
   }, [fetchUsage]);
 
-  const maxTokens = Math.max(1, ...agents.map((a) => a.total_tokens));
-  const usageBars = buildUsageBars(agents.map((agent) => agent.total_tokens));
+  const models = Array.from(new Set(agents.map((agent) => agent.model))).sort();
+  const filteredAgents =
+    selectedModel === 'all'
+      ? agents
+      : agents.filter((agent) => agent.model === selectedModel);
+  const filteredTotals = filteredAgents.reduce(
+    (acc, agent) => ({
+      input_tokens: acc.input_tokens + agent.input_tokens,
+      output_tokens: acc.output_tokens + agent.output_tokens,
+      total_tokens: acc.total_tokens + agent.total_tokens,
+      cost_usd: acc.cost_usd + agent.cost_usd,
+    }),
+    { input_tokens: 0, output_tokens: 0, total_tokens: 0, cost_usd: 0 },
+  );
+  const maxTokens = Math.max(1, ...filteredAgents.map((a) => a.total_tokens));
+  const usageBars = buildUsageBars(filteredAgents.map((agent) => agent.total_tokens));
 
   return (
     <div className="space-y-6">
@@ -68,6 +99,37 @@ export default function UsagePage() {
           来自 daemon 的 Agent token 用量与费用统计
         </p>
       </header>
+
+      <div className="flex flex-wrap gap-3">
+        <div className="min-w-40">
+          <Select value={window} onValueChange={(value) => setWindow(value as UsageWindow)}>
+            <SelectTrigger aria-label="Usage window selector">
+              <SelectValue placeholder="时间窗口" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1h">最近 1 小时</SelectItem>
+              <SelectItem value="24h">最近 24 小时</SelectItem>
+              <SelectItem value="7d">最近 7 天</SelectItem>
+              <SelectItem value="all">全部时间</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-48">
+          <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <SelectTrigger aria-label="Usage model selector">
+              <SelectValue placeholder="按模型筛选" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部模型</SelectItem>
+              {models.map((model) => (
+                <SelectItem key={model} value={model}>
+                  {model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       {error && (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
@@ -81,22 +143,22 @@ export default function UsagePage() {
         <MetricCard
           icon={<BarChart3 className="size-4 text-blue-400" />}
           label="总 Tokens"
-          value={totals.total_tokens.toLocaleString()}
+          value={filteredTotals.total_tokens.toLocaleString()}
         />
         <MetricCard
           icon={<ArrowDown className="size-4 text-green-400" />}
           label="输入 Tokens"
-          value={totals.input_tokens.toLocaleString()}
+          value={filteredTotals.input_tokens.toLocaleString()}
         />
         <MetricCard
           icon={<ArrowUp className="size-4 text-orange-400" />}
           label="输出 Tokens"
-          value={totals.output_tokens.toLocaleString()}
+          value={filteredTotals.output_tokens.toLocaleString()}
         />
         <MetricCard
           icon={<DollarSign className="size-4 text-yellow-400" />}
           label="预估费用 (USD)"
-          value={`$${totals.cost_usd.toFixed(4)}`}
+          value={`$${filteredTotals.cost_usd.toFixed(4)}`}
         />
       </div>
 
@@ -119,13 +181,13 @@ export default function UsagePage() {
             </div>
           )}
         </div>
-        {agents.length === 0 ? (
+        {filteredAgents.length === 0 ? (
           <p className="py-8 text-center text-muted-foreground">
-            暂无用量数据 — 通过 Chat 或 CLI 使用 Agent 后将显示
+            当前筛选条件下暂无用量数据
           </p>
         ) : (
           <ul className="space-y-3">
-            {agents.map((agent) => {
+            {filteredAgents.map((agent) => {
               const pct = Math.round(
                 (agent.total_tokens / maxTokens) * 100,
               );

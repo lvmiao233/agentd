@@ -4,17 +4,18 @@ import { getUsage, listAgents } from '@/lib/daemon-rpc';
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const agentId = searchParams.get('agent_id');
+  const window = searchParams.get('window') ?? undefined;
 
   try {
     if (agentId) {
-      const result = await getUsage(agentId);
+      const result = await getUsage(agentId, window);
       return NextResponse.json(result);
     }
 
     const agents = await listAgents();
     const usage = await Promise.all(
       (agents ?? []).map(async (a) => {
-        const totals = await getUsage(a.agent_id);
+        const totals = await getUsage(a.agent_id, window);
         return {
           agent_id: a.agent_id,
           name: a.name,
