@@ -100,6 +100,13 @@ struct SessionSnapshot {
     active_agent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ShellBootstrapContext {
+    agent_id: Option<String>,
+    model: Option<String>,
+    auto_selected: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentShellApp {
     socket_path: String,
@@ -175,6 +182,23 @@ impl AgentShellApp {
             role: "system".to_string(),
             content: content.into(),
         });
+    }
+
+    fn apply_bootstrap_context_notice(&mut self, context: &ShellBootstrapContext) {
+        if context.auto_selected {
+            if let Some(agent_id) = context.agent_id.as_deref() {
+                self.push_system_message(format!("auto-selected agent -> {agent_id}"));
+                self.event_panel
+                    .entries
+                    .push(format!("bootstrap agent -> {agent_id}"));
+            }
+        }
+        if let Some(model) = context.model.as_deref() {
+            self.active_model = model.to_string();
+            self.event_panel
+                .entries
+                .push(format!("bootstrap model -> {model}"));
+        }
     }
 
     fn push_slash_error(&mut self, message: &str) {
@@ -868,6 +892,79 @@ fn call_rpc_over_uds(socket_path: &str, method: &str, params: Value) -> Result<V
     Ok(response.result.unwrap_or(json!(null)))
 }
 
+fn extract_agent_model_name(value: &Value) -> Option<String> {
+    value
+        .get("profile")
+        .and_then(|profile| profile.get("model"))
+        .and_then(|model| model.get("model_name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("profile")
+                .and_then(|profile| profile.get("model"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn bootstrap_shell_context_with_rpc<F>(
+    agent_id: Option<&str>,
+    model: Option<&str>,
+    mut rpc: F,
+) -> Result<ShellBootstrapContext, String>
+where
+    F: FnMut(&str, Value) -> Result<Value, String>,
+{
+    let mut context = ShellBootstrapContext {
+        agent_id: agent_id.map(ToString::to_string),
+        model: model.map(ToString::to_string),
+        auto_selected: false,
+    };
+
+    if context.agent_id.is_none() {
+        let list = rpc("ListAgents", json!({}))?;
+        let agents = list
+            .get("agents")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(selected) = agents
+            .iter()
+            .find(|agent| {
+                agent.get("status").and_then(Value::as_str) == Some("ready")
+                    && agent
+                        .get("model")
+                        .and_then(|value| value.get("model_name").or(Some(value)))
+                        .and_then(Value::as_str)
+                        == Some("gpt-5.3-codex")
+            })
+            .or_else(|| {
+                agents
+                    .iter()
+                    .find(|agent| agent.get("status").and_then(Value::as_str) == Some("ready"))
+            })
+            .or_else(|| agents.first())
+        {
+            context.agent_id = selected
+                .get("agent_id")
+                .or_else(|| selected.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            context.auto_selected = context.agent_id.is_some();
+        }
+    }
+
+    if context.model.is_none() {
+        if let Some(agent_id) = context.agent_id.as_deref() {
+            let profile = rpc("GetAgent", json!({ "agent_id": agent_id }))?;
+            context.model = extract_agent_model_name(&profile);
+        }
+    }
+
+    Ok(context)
+}
+
 fn emit_chunk_from_value(value: &Value, chunk_tx: &Sender<StreamChunk>) -> StreamParseOutcome {
     let mut done = false;
     let mut payload = value;
@@ -1118,6 +1215,11 @@ pub fn run(
     agent_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<(), DynError> {
+    let bootstrap = bootstrap_shell_context_with_rpc(agent_id, model, |method, params| {
+        call_rpc_over_uds(socket_path, method, params)
+    })
+    .map_err(|err| -> DynError { err.into() })?;
+
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -1131,9 +1233,10 @@ pub fn run(
 
     let mut app = AgentShellApp::with_initial_context(
         socket_path,
-        agent_id.map(ToString::to_string),
-        model.map(ToString::to_string),
+        bootstrap.agent_id.clone(),
+        bootstrap.model.clone(),
     );
+    app.apply_bootstrap_context_notice(&bootstrap);
     app.set_command_sender(command_tx);
     let event_loop_result = run_event_loop(&mut terminal, &mut app, &chunk_rx);
 
@@ -1204,6 +1307,60 @@ fn agent_command_sets_active_agent() {
         .messages
         .iter()
         .any(|message| message.content.contains("agent -> agent-123")));
+}
+
+#[cfg(test)]
+#[test]
+fn shell_bootstrap_selects_ready_codex_agent() {
+    let context = bootstrap_shell_context_with_rpc(None, None, |method, _params| match method {
+        "ListAgents" => Ok(json!({
+            "agents": [
+                {
+                    "agent_id": "agent-a",
+                    "status": "ready",
+                    "model": {"model_name": "gpt-4.1-mini"}
+                },
+                {
+                    "agent_id": "agent-b",
+                    "status": "ready",
+                    "model": {"model_name": "gpt-5.3-codex"}
+                }
+            ]
+        })),
+        "GetAgent" => Ok(json!({
+            "profile": {
+                "id": "agent-b",
+                "model": {"model_name": "gpt-5.3-codex"}
+            }
+        })),
+        other => Err(format!("unexpected method: {other}")),
+    })
+    .expect("bootstrap should succeed");
+
+    assert_eq!(context.agent_id.as_deref(), Some("agent-b"));
+    assert_eq!(context.model.as_deref(), Some("gpt-5.3-codex"));
+    assert!(context.auto_selected);
+}
+
+#[cfg(test)]
+#[test]
+fn shell_bootstrap_uses_profile_model_for_explicit_agent() {
+    let context = bootstrap_shell_context_with_rpc(Some("agent-explicit"), None, |method, _params| {
+        match method {
+            "GetAgent" => Ok(json!({
+                "profile": {
+                    "id": "agent-explicit",
+                    "model": {"model_name": "gpt-4.1-mini"}
+                }
+            })),
+            other => Err(format!("unexpected method: {other}")),
+        }
+    })
+    .expect("bootstrap should succeed");
+
+    assert_eq!(context.agent_id.as_deref(), Some("agent-explicit"));
+    assert_eq!(context.model.as_deref(), Some("gpt-4.1-mini"));
+    assert!(!context.auto_selected);
 }
 
 #[cfg(test)]
