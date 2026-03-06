@@ -1,0 +1,24 @@
+┌Messages + Stream─────────────────────────────────────┐┌Events────────────────┐
+│system: auto-selected agent ->                        ││active agent ->       │
+│abf82a06-572e-45bc-b37b-2c331492fc0b                  ││abf82a06-572e-45bc-b37│
+│system: agent -> 73999c5c-c83f-47d1-a22a-5645953d7c93 ││b-2c331492fc0b        │
+│(model: gpt-4.1-mini)                                 ││active agent ->       │
+│system: agent -> abf82a06-572e-45bc-b37b-2c331492fc0b ││73999c5c-c83f-47d1-a22│
+│(model: gpt-5.3-codex)                                │└──────────────────────┘
+│                                                      │┌Approval Queue────────┐
+│                                                      ││No pending approvals  │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      │└──────────────────────┘
+│                                                      │┌Multi-Agent Delegation┐
+│                                                      ││No delegations        │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+└──────────────────────────────────────────────────────┘└──────────────────────┘
+┌Input─────────────────────────────────────────────────────────────────────────┐
+│>                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+mode=idle | model=gpt-5.3-codex | agent_id=abf82a06-572e-45bc-b37b-2c331492fc0b
