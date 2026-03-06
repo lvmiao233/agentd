@@ -1,0 +1,85 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Usage & Cost" [level=1] [ref=e36]
+          - paragraph [ref=e37]: 来自 daemon 的 Agent token 用量与费用统计
+        - generic [ref=e38]:
+          - combobox "Usage window selector" [ref=e40]:
+            - generic: 最近 24 小时
+            - img
+          - combobox "Usage model selector" [active] [ref=e42]:
+            - generic: gpt-5.3-codex
+            - img
+        - generic [ref=e43]:
+          - generic [ref=e44]:
+            - generic [ref=e45]:
+              - img [ref=e46]
+              - text: 总 Tokens
+            - paragraph [ref=e48]: "86"
+          - generic [ref=e49]:
+            - generic [ref=e50]:
+              - img [ref=e51]
+              - text: 输入 Tokens
+            - paragraph [ref=e53]: "30"
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - img [ref=e56]
+              - text: 输出 Tokens
+            - paragraph [ref=e58]: "56"
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - img [ref=e61]
+              - text: 预估费用 (USD)
+            - paragraph [ref=e63]: $0.0000
+        - generic [ref=e64]:
+          - generic [ref=e65]:
+            - heading "Agent 用量明细" [level=2] [ref=e66]
+            - generic "token usage bars" [ref=e69]:
+              - generic "86 tokens" [ref=e150]
+          - list [ref=e75]:
+            - listitem [ref=e102]:
+              - generic [ref=e103]:
+                - generic [ref=e104]:
+                  - generic [ref=e105]: real-codex-chat
+                  - generic [ref=e106]: gpt-5.3-codex
+                - generic [ref=e107]: 86 tokens
+              - generic [ref=e110]:
+                - generic [ref=e111]: "输入: 30"
+                - generic [ref=e112]: "输出: 56"
+                - generic [ref=e113]: $0.0000
+                - generic [ref=e114]: abf82a06…
+  - alert [ref=e68]
