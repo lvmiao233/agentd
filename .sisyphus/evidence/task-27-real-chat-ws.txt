@@ -1,0 +1,13 @@
+task=27
+status=passed
+step=real-chat-ws
+daemon_url=http://127.0.0.1:7032
+daemon_ws_url=ws://127.0.0.1:7032/ws
+one_api_url=http://127.0.0.1:3000
+agent_id=bcbfdd62-ff03-4357-8e9e-c6dec6127f4f
+model=gpt-5.3-codex
+provider=one-api
+prompt=Reply with exactly: ok
+observed_reply=ok
+one_api_token_name=agentd-real-chat-agent-2
+one_api_log_evidence=POST /v1/chat/completions 200 with prompt_tokens=11 completion_tokens>=5
