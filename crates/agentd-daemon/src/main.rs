@@ -4041,6 +4041,7 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
             agent_id: None,
             stream: Some(true),
         },
+        AuditContext::default(),
     )
     .await;
     drop(write_stream);
@@ -4225,6 +4226,7 @@ async fn run_agent_stream_marks_usage_unavailable_when_provider_omits_usage() {
             agent_id: None,
             stream: Some(true),
         },
+        AuditContext::default(),
     )
     .await;
     drop(write_stream);
@@ -4610,6 +4612,7 @@ async fn run_agent_stream_surfaces_provider_error_events() {
             agent_id: None,
             stream: Some(true),
         },
+        AuditContext::default(),
     )
     .await;
     drop(write_stream);
@@ -5776,6 +5779,7 @@ async fn health_server(
                                             store.clone(),
                                             one_api_config.clone(),
                                             params,
+                                            build_audit_context(&rpc_request.id),
                                         )
                                         .await;
                                     }
@@ -10647,11 +10651,16 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
     store: Arc<SqliteStore>,
     one_api_config: OneApiConfig,
     params: RunAgentParams,
+    audit_context: AuditContext,
 ) where
     W: AsyncWrite + Unpin,
 {
+    let requested_agent_id = params
+        .agent_id
+        .as_deref()
+        .and_then(|raw| uuid::Uuid::parse_str(raw).ok());
     let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
-    match execute_run_agent_streaming(stream, store, &one_api_config, params).await {
+    match execute_run_agent_streaming(stream, store.clone(), &one_api_config, params).await {
         Ok(execution) => {
             let usage_payload = if execution.usage_available {
                 json!({
@@ -10666,6 +10675,27 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
             } else {
                 "unavailable"
             };
+            if let Some(agent_id) = execution.agent_id.or(requested_agent_id) {
+                record_audit_event(
+                    &store,
+                    &audit_context,
+                    agent_id,
+                    EventType::ToolInvoked,
+                    EventResult::Success,
+                    EventPayload {
+                        tool_name: None,
+                        message: Some("run agent completed".to_string()),
+                        metadata: json!({
+                            "model": execution.model_name,
+                            "output": execution.output,
+                            "usage_source": usage_source,
+                            "stream": true,
+                            "usage": usage_payload,
+                        }),
+                    },
+                )
+                .await;
+            }
             let _ = write_run_agent_stream_frame(
                 stream,
                 &json!({
@@ -10680,6 +10710,24 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
             .await;
         }
         Err(err) => {
+            if let Some(agent_id) = requested_agent_id {
+                record_audit_event(
+                    &store,
+                    &audit_context,
+                    agent_id,
+                    EventType::Error,
+                    EventResult::Failure,
+                    EventPayload {
+                        tool_name: None,
+                        message: Some("run agent failed".to_string()),
+                        metadata: json!({
+                            "error": err.to_string(),
+                            "stream": true,
+                        }),
+                    },
+                )
+                .await;
+            }
             let _ = write_run_agent_stream_frame(
                 stream,
                 &json!({
@@ -11207,6 +11255,11 @@ async fn handle_rpc_request(
                 }
             };
 
+            let requested_agent_id = params
+                .agent_id
+                .as_deref()
+                .and_then(|raw| uuid::Uuid::parse_str(raw).ok());
+
             match execute_run_agent(store.clone(), &one_api_config, params.clone()).await {
                 Ok(execution) => {
                     let usage_payload = if execution.usage_available {
@@ -11222,6 +11275,28 @@ async fn handle_rpc_request(
                     } else {
                         "unavailable"
                     };
+
+                     if let Some(agent_id) = execution.agent_id.or(requested_agent_id) {
+                        record_audit_event(
+                            &store,
+                            &audit_context,
+                            agent_id,
+                            EventType::ToolInvoked,
+                            EventResult::Success,
+                            EventPayload {
+                                tool_name: None,
+                                message: Some("run agent completed".to_string()),
+                                metadata: json!({
+                                    "model": execution.model_name,
+                                    "output": execution.output,
+                                    "usage_source": usage_source,
+                                    "stream": params.stream.unwrap_or(false),
+                                    "usage": usage_payload,
+                                }),
+                            },
+                        )
+                        .await;
+                    }
 
                     JsonRpcResponse::success(
                         request.id,
@@ -11242,6 +11317,24 @@ async fn handle_rpc_request(
                     JsonRpcResponse::error(request.id, -32010, message)
                 }
                 Err(err) => {
+                    if let Some(agent_id) = requested_agent_id {
+                        record_audit_event(
+                            &store,
+                            &audit_context,
+                            agent_id,
+                            EventType::Error,
+                            EventResult::Failure,
+                            EventPayload {
+                                tool_name: None,
+                                message: Some("run agent failed".to_string()),
+                                metadata: json!({
+                                    "error": err.to_string(),
+                                    "stream": params.stream.unwrap_or(false),
+                                }),
+                            },
+                        )
+                        .await;
+                    }
                     JsonRpcResponse::error(request.id, -32030, format!("run agent failed: {err}"))
                 }
             }
@@ -12894,6 +12987,7 @@ async fn protocol_server(
                                         store.clone(),
                                         one_api_config.clone(),
                                         params,
+                                        build_audit_context(&request.id),
                                     )
                                     .await;
                                 }

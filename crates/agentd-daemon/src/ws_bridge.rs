@@ -1,5 +1,6 @@
 use super::{
-    handle_rpc_request, stream_run_agent_over_uds, OneApiConfig, RunAgentParams, RuntimeState,
+    build_audit_context, handle_rpc_request, stream_run_agent_over_uds, OneApiConfig,
+    RunAgentParams, RuntimeState,
 };
 use agentd_protocol::{
     A2AStreamParams, A2ATaskEvent, A2ATaskState, JsonRpcRequest, JsonRpcResponse,
@@ -152,14 +153,16 @@ async fn handle_run_agent_stream_over_ws(
         }
     };
 
+    let request_id = request.id.clone();
     send_rpc_response(
         ws,
-        &JsonRpcResponse::success(request.id, json!({"stream": true})),
+        &JsonRpcResponse::success(request_id.clone(), json!({"stream": true})),
     )
     .await?;
 
     let mut writer = WsTextBridgeWriter::new(ws);
-    stream_run_agent_over_uds(&mut writer, store, one_api_config, params).await;
+    let audit_context = build_audit_context(&request_id);
+    stream_run_agent_over_uds(&mut writer, store, one_api_config, params, audit_context).await;
     writer.flush_pending().await?;
     Ok(())
 }

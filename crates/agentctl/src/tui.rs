@@ -556,18 +556,31 @@ impl AgentShellApp {
                     .next()
                     .and_then(|raw| raw.parse::<usize>().ok())
                     .unwrap_or(10);
-                rpc("ListLifecycleEvents", json!({ "limit": limit })).map(|value| {
-                    if let Some(events) = value.get("events").and_then(Value::as_array) {
-                        for event in events {
-                            self.apply_multi_agent_event(event);
-                        }
-                    }
-                    self.push_system_message(format!(
-                        "events: {}",
-                        serde_json::to_string(&value)
-                            .unwrap_or_else(|_| "<invalid events payload>".to_string())
-                    ));
-                })
+                match self.current_or_default_agent_id(None) {
+                    Ok(agent_id) => match rpc(
+                        "ListAuditEvents",
+                        json!({ "agent_id": agent_id, "limit": limit }),
+                    ) {
+                        Ok(audit_events) => match rpc("ListLifecycleEvents", json!({ "limit": limit })) {
+                            Ok(lifecycle_events) => {
+                                if let Some(events) = lifecycle_events.get("events").and_then(Value::as_array) {
+                                    for event in events {
+                                        self.apply_multi_agent_event(event);
+                                    }
+                                }
+                                self.push_system_message(format!(
+                                    "events: {}",
+                                    serde_json::to_string(&audit_events)
+                                        .unwrap_or_else(|_| "<invalid events payload>".to_string())
+                                ));
+                                Ok(())
+                            }
+                            Err(err) => Err(err),
+                        },
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(err),
+                }
             }
             "/tools" => {
                 let explicit_agent = parts.next();
