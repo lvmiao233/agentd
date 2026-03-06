@@ -31,6 +31,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -1216,14 +1217,15 @@ fn aggregate_orchestrator_results(children: &[OrchestratorChildResult]) -> Value
     })
 }
 
-async fn orchestrate_task_with_delegate<F>(
+async fn orchestrate_task_with_delegate<F, Fut>(
     state: &RuntimeState,
     store: &SqliteStore,
     params: OrchestrateTaskParams,
     mut delegate: F,
 ) -> Result<OrchestratorRunResult, AgentError>
 where
-    F: FnMut(&str, &Value, usize, u8) -> Result<Value, AgentError>,
+    F: FnMut(&str, &Value, usize, u8) -> Fut,
+    Fut: Future<Output = Result<Value, AgentError>>,
 {
     let parent_agent_id = params
         .parent_agent_id
@@ -1288,7 +1290,7 @@ where
                 )
                 .await;
 
-            match delegate(&agent_id, &subtask, index, attempts) {
+            match delegate(&agent_id, &subtask, index, attempts).await {
                 Ok(output) => {
                     state
                         .publish_a2a_event(
@@ -3965,11 +3967,15 @@ async fn orchestrator_splits_and_aggregates_tasks() {
             retry_limit: Some(1),
         },
         |agent_id, child_input, child_index, _attempt| {
+            let agent_id = agent_id.to_string();
+            let work = child_input["work"].clone();
+            async move {
             Ok(json!({
                 "agent_id": agent_id,
                 "child_index": child_index,
-                "work": child_input["work"],
+                "work": work,
             }))
+            }
         },
     )
     .await
@@ -4004,7 +4010,7 @@ async fn orchestrator_retries_failed_child_once() {
     let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
     let state = RuntimeState::new("disabled");
 
-    let mut attempts_by_child: HashMap<usize, u8> = HashMap::new();
+    let attempts_by_child: Arc<Mutex<HashMap<usize, u8>>> = Arc::new(Mutex::new(HashMap::new()));
     let result = orchestrate_task_with_delegate(
         &state,
         store.as_ref(),
@@ -4015,20 +4021,30 @@ async fn orchestrator_retries_failed_child_once() {
             delegate_agent_ids: vec!["agent-a".to_string(), "agent-b".to_string()],
             retry_limit: Some(1),
         },
-        |_agent_id, child_input, child_index, _attempt| {
+        {
+            let attempts_by_child = attempts_by_child.clone();
+            move |_agent_id, child_input, child_index, _attempt| {
+                let attempts_by_child = attempts_by_child.clone();
+                let work = child_input["work"].clone();
+                async move {
+            let mut attempts_by_child = attempts_by_child.lock().await;
             let entry = attempts_by_child.entry(child_index).or_insert(0);
             *entry = entry.saturating_add(1);
+            let attempts_seen = *entry;
+            drop(attempts_by_child);
 
-            if child_input["work"] == json!("flaky") && *entry == 1 {
+            if work == json!("flaky") && attempts_seen == 1 {
                 return Err(AgentError::Runtime(
                     "temporary child execution failure".to_string(),
                 ));
             }
 
             Ok(json!({
-                "work": child_input["work"],
-                "attempts_seen": *entry,
+                "work": work,
+                "attempts_seen": attempts_seen,
             }))
+                }
+            }
         },
     )
     .await
@@ -4043,6 +4059,169 @@ async fn orchestrator_retries_failed_child_once() {
         json!(1)
     );
 
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn orchestrate_task_rpc_executes_delegate_agents() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task24-rpc-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let create_alpha = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(2401),
+            "CreateAgent",
+            json!({
+                "name": "orchestrator-alpha",
+                "model": "gpt-4.1-mini",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    let create_beta = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(2402),
+            "CreateAgent",
+            json!({
+                "name": "orchestrator-beta",
+                "model": "gpt-4.1-mini",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+
+    let alpha_id = create_alpha
+        .result
+        .as_ref()
+        .and_then(|result| result.get("agent"))
+        .and_then(|agent| agent.get("id"))
+        .and_then(Value::as_str)
+        .expect("alpha agent id should be present")
+        .to_string();
+    let beta_id = create_beta
+        .result
+        .as_ref()
+        .and_then(|result| result.get("agent"))
+        .and_then(|agent| agent.get("id"))
+        .and_then(Value::as_str)
+        .expect("beta agent id should be present")
+        .to_string();
+
+    let provider_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock provider listener");
+    let provider_addr = provider_listener
+        .local_addr()
+        .expect("resolve mock provider address");
+    let provider_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = provider_listener
+                .accept()
+                .await
+                .expect("accept provider request");
+            let mut request_bytes = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let read = socket
+                    .read(&mut buf)
+                    .await
+                    .expect("read provider request bytes");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buf[..read]);
+                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text =
+                String::from_utf8(request_bytes).expect("provider request should be utf8");
+            let payload: Value = serde_json::from_str(request_body(&request_text))
+                .expect("provider request body should be valid json");
+            let prompt = payload["messages"][0]["content"]
+                .as_str()
+                .expect("provider prompt should exist");
+            let response_body = json!({
+                "id": format!("chatcmpl-{prompt}"),
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": format!("delegated:{prompt}"),
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write provider response");
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    let mut one_api_config = OneApiConfig::default();
+    one_api_config.health_url = format!("http://{provider_addr}/health");
+
+    let response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(2403),
+            "OrchestrateTask",
+            json!({
+                "input": {"goal": "ship task 24"},
+                "subtasks": [
+                    {"work": "decompose requirement"},
+                    {"work": "aggregate output"}
+                ],
+                "delegate_agent_ids": [alpha_id, beta_id],
+                "retry_limit": 0,
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        one_api_config,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "orchestrate rpc should succeed: {response:?}");
+    let result = response.result.expect("orchestrate rpc should return result");
+    assert_eq!(result["state"], json!("completed"));
+    let children = result["children"]
+        .as_array()
+        .expect("children should be an array");
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0]["output"]["result"], json!("delegated:decompose requirement"));
+    assert_eq!(children[1]["output"]["result"], json!("delegated:aggregate output"));
+    assert_eq!(children[0]["output"]["usage_source"], json!("provider"));
+    assert_eq!(children[1]["output"]["usage_source"], json!("provider"));
+
+    provider_task
+        .await
+        .expect("provider task should complete without panic");
     cleanup_sqlite_files(&db_path);
 }
 
@@ -9879,12 +10058,49 @@ async fn handle_rpc_request(
                 store.as_ref(),
                 params,
                 |agent_id, child_input, child_index, attempt| {
-                    Ok(json!({
-                        "agent_id": agent_id,
-                        "child_index": child_index,
-                        "attempt": attempt,
-                        "result": child_input,
-                    }))
+                    let store = store.clone();
+                    let one_api_config = one_api_config.clone();
+                    let agent_id = agent_id.to_string();
+                    let child_input = child_input.clone();
+                    async move {
+                        let prompt = summarize_a2a_input(&child_input).ok_or_else(|| {
+                            AgentError::InvalidInput(
+                                "orchestrator child input must include prompt, message, content, summary, or work"
+                                    .to_string(),
+                            )
+                        })?;
+
+                        let execution = execute_run_agent(
+                            store,
+                            &one_api_config,
+                            RunAgentParams {
+                                input: prompt.clone(),
+                                model: None,
+                                agent_id: Some(agent_id.clone()),
+                                stream: Some(false),
+                            },
+                        )
+                        .await?;
+
+                        Ok(json!({
+                            "agent_id": agent_id,
+                            "child_index": child_index,
+                            "attempt": attempt,
+                            "input": child_input,
+                            "prompt": prompt,
+                            "result": execution.output,
+                            "model": execution.model_name,
+                            "usage": if execution.usage_available {
+                                json!({
+                                    "input_tokens": execution.input_tokens,
+                                    "output_tokens": execution.output_tokens,
+                                })
+                            } else {
+                                Value::Null
+                            },
+                            "usage_source": if execution.usage_available { "provider" } else { "unavailable" },
+                        }))
+                    }
                 },
             )
             .await
