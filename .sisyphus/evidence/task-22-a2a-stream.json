@@ -1,10 +1,14 @@
 {
-  "command": "cargo test -p agentd-daemon a2a_server_task_crud_and_stream -- --exact",
-  "result": "PASS",
-  "checks": [
-    "POST /a2a/tasks returns 201 Created with task id",
-    "GET /a2a/tasks/{id} returns 200 OK",
-    "GET /a2a/stream?task_id=<id> returns SSE payload",
-    "SSE payload contains submitted -> working -> completed states"
-  ]
+  "task": 22,
+  "status": "passed",
+  "step": "a2a-live-stream",
+  "create_status": 201,
+  "get_status": 200,
+  "stream_status": 200,
+  "states": [
+    "submitted",
+    "working",
+    "completed"
+  ],
+  "final_state": "completed"
 }

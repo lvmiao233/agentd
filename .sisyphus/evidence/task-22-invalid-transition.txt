@@ -1,5 +1,13 @@
-command: cargo test -p agentd-daemon a2a_state_machine_rejects_completed_to_working -- --exact
-result: PASS
-assertions:
-  - completed -> working transition is rejected
-  - error message contains "invalid a2a state transition"
+task=22
+status=passed
+step=invalid-transition
+transition_test=cargo test -p agentd-daemon a2a_state_machine_rejects_completed_to_working -- --exact
+--- test log ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/main.rs (target/debug/deps/agentd-f0df9f67224d37bc)
+
+running 1 test
+test a2a_state_machine_rejects_completed_to_working ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
