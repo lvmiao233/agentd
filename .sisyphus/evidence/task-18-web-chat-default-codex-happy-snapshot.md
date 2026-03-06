@@ -1,0 +1,60 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - heading "Agent Chat" [level=1] [ref=e38]
+            - paragraph [ref=e39]: 选择一个 agent 后再发起实时对话
+          - combobox "Active agent selector" [ref=e41]:
+            - generic: real-codex-chat · gpt-5.3-codex · ready
+            - img
+        - log [ref=e42]:
+          - generic [ref=e44]:
+            - paragraph [ref=e63]: Reply with exactly OK
+            - paragraph [ref=e69]: OK
+            - generic [ref=e70]:
+              - button "重新生成" [ref=e71]:
+                - img
+                - generic [ref=e72]: 重新生成
+              - button "复制" [ref=e73]:
+                - img
+                - generic [ref=e74]: 复制
+        - group [ref=e53]:
+          - textbox "Ask the agent…" [active] [ref=e55]
+          - group [ref=e56]:
+            - button "Submit" [disabled]:
+              - img
+  - alert [ref=e57]

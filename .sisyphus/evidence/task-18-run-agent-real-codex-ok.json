@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"agent_id":"abf82a06-572e-45bc-b37b-2c331492fc0b","model":"gpt-5.3-codex","output":"OK","stream":false,"usage":{"input_tokens":10,"output_tokens":16},"usage_source":"provider"}}
