@@ -517,10 +517,20 @@ impl AgentShellApp {
                     _ => return self.push_slash_error("usage: /agent <id>"),
                 };
                 self.active_agent_id = Some(agent_id.to_string());
+                match fetch_agent_model_name(agent_id, rpc) {
+                    Ok(Some(model_name)) => {
+                        self.active_model = model_name;
+                    }
+                    Ok(None) => {}
+                    Err(err) => return self.push_slash_error(&err),
+                }
                 self.event_panel
                     .entries
                     .push(format!("active agent -> {agent_id}"));
-                self.push_system_message(format!("agent -> {agent_id}"));
+                self.push_system_message(format!(
+                    "agent -> {} (model: {})",
+                    agent_id, self.active_model
+                ));
                 Ok(())
             }
             "/usage" => {
@@ -906,6 +916,14 @@ fn extract_agent_model_name(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
+}
+
+fn fetch_agent_model_name<F>(agent_id: &str, rpc: &mut F) -> Result<Option<String>, String>
+where
+    F: FnMut(&str, Value) -> Result<Value, String>,
+{
+    let profile = rpc("GetAgent", json!({ "agent_id": agent_id }))?;
+    Ok(extract_agent_model_name(&profile))
 }
 
 fn bootstrap_shell_context_with_rpc<F>(
@@ -1296,17 +1314,26 @@ fn submit_input_requires_active_agent() {
 #[test]
 fn agent_command_sets_active_agent() {
     let mut app = AgentShellApp::new();
-    let mut rpc = |_method: &str, _params: Value| -> Result<Value, String> {
-        Ok(json!(null))
+    let mut rpc = |method: &str, _params: Value| -> Result<Value, String> {
+        match method {
+            "GetAgent" => Ok(json!({
+                "profile": {
+                    "id": "agent-123",
+                    "model": {"model_name": "gpt-5.3-codex"}
+                }
+            })),
+            _ => Ok(json!(null)),
+        }
     };
 
     app.execute_slash_command_with_rpc("/agent agent-123", &mut rpc);
 
     assert_eq!(app.active_agent_id.as_deref(), Some("agent-123"));
+    assert_eq!(app.active_model, "gpt-5.3-codex");
     assert!(app
         .messages
         .iter()
-        .any(|message| message.content.contains("agent -> agent-123")));
+        .any(|message| message.content.contains("agent -> agent-123 (model: gpt-5.3-codex)")));
 }
 
 #[cfg(test)]
