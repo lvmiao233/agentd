@@ -1,0 +1,90 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Usage & Cost" [level=1] [ref=e36]
+          - paragraph [ref=e37]: 来自 daemon 的 Agent token 用量与费用统计
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - generic [ref=e40]:
+              - img [ref=e41]
+              - text: 总 Tokens
+            - paragraph [ref=e43]: "0"
+          - generic [ref=e44]:
+            - generic [ref=e45]:
+              - img [ref=e46]
+              - text: 输入 Tokens
+            - paragraph [ref=e48]: "0"
+          - generic [ref=e49]:
+            - generic [ref=e50]:
+              - img [ref=e51]
+              - text: 输出 Tokens
+            - paragraph [ref=e53]: "0"
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - img [ref=e56]
+              - text: 预估费用 (USD)
+            - paragraph [ref=e58]: $0.0000
+        - generic [ref=e59]:
+          - generic [ref=e60]:
+            - heading "Agent 用量明细" [level=2] [ref=e61]
+            - generic "token usage bars" [ref=e62]:
+              - generic "1 tokens" [ref=e63]
+              - generic "1 tokens" [ref=e64]
+          - list [ref=e65]:
+            - listitem [ref=e66]:
+              - generic [ref=e67]:
+                - generic [ref=e68]:
+                  - generic [ref=e69]: my-coding-agent
+                  - generic [ref=e70]: gpt-4.1-mini
+                - generic [ref=e71]: 0 tokens
+              - generic [ref=e73]:
+                - generic [ref=e74]: "输入: 0"
+                - generic [ref=e75]: "输出: 0"
+                - generic [ref=e76]: $0.0000
+                - generic [ref=e77]: eea73790…
+            - listitem [ref=e78]:
+              - generic [ref=e79]:
+                - generic [ref=e80]:
+                  - generic [ref=e81]: real-mcp-check
+                  - generic [ref=e82]: gpt-4.1-mini
+                - generic [ref=e83]: 0 tokens
+              - generic [ref=e85]:
+                - generic [ref=e86]: "输入: 0"
+                - generic [ref=e87]: "输出: 0"
+                - generic [ref=e88]: $0.0000
+                - generic [ref=e89]: 73999c5c…
+  - alert [ref=e90]

@@ -1,0 +1,99 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Agent Dashboard" [level=1] [ref=e36]
+          - paragraph [ref=e37]: 来自 agentd daemon 的实时运行概览
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - generic [ref=e40]:
+              - img [ref=e41]
+              - text: 注册 Agents
+            - paragraph [ref=e44]: "2"
+          - generic [ref=e45]:
+            - generic [ref=e46]:
+              - img [ref=e47]
+              - text: 运行中
+            - paragraph [ref=e49]: "0"
+          - generic [ref=e50]:
+            - generic [ref=e51]:
+              - img [ref=e52]
+              - text: 总 Tokens
+            - paragraph [ref=e55]: "0"
+          - generic [ref=e56]:
+            - generic [ref=e57]:
+              - img [ref=e58]
+              - text: 最近事件
+            - paragraph [ref=e63]: none
+        - generic [ref=e65]:
+          - generic [ref=e66]: "Daemon: ok"
+          - generic [ref=e67]: "Degraded agents: 0"
+          - generic [ref=e68]: "Latest event: none"
+        - generic [ref=e73]:
+          - heading "子系统" [level=2] [ref=e74]
+          - generic [ref=e75]:
+            - generic [ref=e76]: "daemon: ready"
+            - generic [ref=e77]: "one_api: disabled"
+            - generic [ref=e78]: "protocol: ready"
+            - generic [ref=e79]: "storage: ready"
+        - generic [ref=e69]:
+          - heading "Agent 列表" [level=2] [ref=e70]
+          - list [ref=e80]:
+            - listitem [ref=e81]:
+              - generic [ref=e82]:
+                - generic [ref=e83]:
+                  - generic [ref=e84]: my-coding-agent
+                  - generic [ref=e85]: ready
+                - generic [ref=e86]:
+                  - generic [ref=e87]: gpt-4.1-mini
+                  - generic [ref=e88]:
+                    - img [ref=e89]
+                    - text: 0 tokens
+                  - generic [ref=e91]: "Sessions: 0"
+              - generic [ref=e92]: eea73790…
+            - listitem [ref=e93]:
+              - generic [ref=e94]:
+                - generic [ref=e95]:
+                  - generic [ref=e96]: real-mcp-check
+                  - generic [ref=e97]: ready
+                - generic [ref=e98]:
+                  - generic [ref=e99]: gpt-4.1-mini
+                  - generic [ref=e100]:
+                    - img [ref=e101]
+                    - text: 0 tokens
+                  - generic [ref=e103]: "Sessions: 0"
+              - generic [ref=e104]: 73999c5c…
+  - alert [ref=e72]

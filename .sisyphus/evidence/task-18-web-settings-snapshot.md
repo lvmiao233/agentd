@@ -1,0 +1,128 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Settings" [level=1] [ref=e36]
+          - paragraph [ref=e37]: MCP 服务器管理、第三方注册与健康监控
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - paragraph [ref=e40]: 健康 MCP 服务器
+            - paragraph [ref=e41]: "4"
+          - generic [ref=e42]:
+            - paragraph [ref=e43]: 总数
+            - paragraph [ref=e44]: "4"
+        - generic [ref=e45]:
+          - generic [ref=e46]:
+            - generic [ref=e47]: "onboarding: onboarded"
+            - generic [ref=e48]: "builtin tools intact: yes"
+            - generic [ref=e49]: "healthy servers: 4/4"
+          - generic [ref=e50]:
+            - generic [ref=e51]: mcp.read_file
+            - generic [ref=e52]: mcp.list_directory
+            - generic [ref=e53]: mcp.search_files
+            - generic [ref=e54]: mcp.patch_file
+            - generic [ref=e55]: mcp.tree
+            - generic [ref=e56]: mcp.git_status
+            - generic [ref=e57]: mcp.git_diff
+            - generic [ref=e58]: mcp.git_log
+        - generic [ref=e59]:
+          - heading "注册第三方 MCP 服务器" [level=2] [ref=e60]
+          - generic [ref=e61]:
+            - generic [ref=e62]:
+              - generic [ref=e63]:
+                - generic [ref=e64]: 服务器名称
+                - textbox "mcp-figma" [ref=e65]
+              - generic [ref=e66]:
+                - generic [ref=e67]: 启动命令
+                - textbox "npx" [ref=e68]
+              - generic [ref=e69]:
+                - generic [ref=e70]: 信任级别
+                - combobox [ref=e71]:
+                  - generic: community
+                  - img
+                - combobox [ref=e72]
+            - generic [ref=e73]:
+              - generic [ref=e74]: 参数（JSON 数组或每行一个）
+              - textbox "[\"-y\", \"@modelcontextprotocol/server-figma\"]" [ref=e75]
+            - button "注册" [ref=e76]:
+              - img
+              - text: 注册
+        - generic [ref=e77]:
+          - heading "MCP 服务器注册表" [level=2] [ref=e78]
+          - list [ref=e79]:
+            - listitem [ref=e80]:
+              - generic [ref=e82]:
+                - img [ref=e83]
+                - generic [ref=e86]: mcp-fs
+                - generic [ref=e87]: healthy
+                - generic [ref=e88]: builtin
+              - generic [ref=e89]:
+                - generic [ref=e90]: read_file
+                - generic [ref=e91]: list_directory
+                - generic [ref=e92]: search_files
+                - generic [ref=e93]: patch_file
+                - generic [ref=e94]: tree
+            - listitem [ref=e95]:
+              - generic [ref=e97]:
+                - img [ref=e98]
+                - generic [ref=e101]: mcp-git
+                - generic [ref=e102]: healthy
+                - generic [ref=e103]: builtin
+              - generic [ref=e104]:
+                - generic [ref=e105]: git_status
+                - generic [ref=e106]: git_diff
+                - generic [ref=e107]: git_log
+                - generic [ref=e108]: git_apply_patch
+            - listitem [ref=e109]:
+              - generic [ref=e111]:
+                - img [ref=e112]
+                - generic [ref=e115]: mcp-search
+                - generic [ref=e116]: healthy
+                - generic [ref=e117]: builtin
+              - generic [ref=e118]:
+                - generic [ref=e119]: ripgrep
+                - generic [ref=e120]: find_definition
+                - generic [ref=e121]: semantic_search
+            - listitem [ref=e122]:
+              - generic [ref=e124]:
+                - img [ref=e125]
+                - generic [ref=e128]: mcp-shell
+                - generic [ref=e129]: healthy
+                - generic [ref=e130]: builtin
+              - generic [ref=e131]:
+                - generic [ref=e132]: execute_with_timeout
+                - generic [ref=e133]: get_output
+  - alert [ref=e134]
