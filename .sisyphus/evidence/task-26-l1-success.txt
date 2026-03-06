@@ -1,0 +1,23 @@
+Task 26 live migration CLI evidence
+==================================
+
+Date: 2026-03-06
+Setup:
+  - source daemon: /tmp/agentd-migrate-source.toml on 127.0.0.1:18086
+  - target daemon: /tmp/agentd-migrate-target.toml on 127.0.0.1:18087
+
+Command sequence:
+  1. target/debug/agentctl --socket-path /tmp/agentd-migrate-source.sock agent create --name migrate-source-agent --model claude-4-sonnet --json
+  2. target/debug/agentctl --socket-path /tmp/agentd-migrate-source.sock migrate --source-agent-id <agent-id> --target-base-url http://127.0.0.1:18087 --message "user:remember project codename atlas" --message "assistant:atlas checklist captured" --key-file README.md --json
+
+Observed result summary:
+  - migration_level      = l1
+  - source_session_state = migrated
+  - target_state         = completed
+  - summary.message_count = 2
+  - summary.key_files     = ["README.md"]
+  - target_output.result  = ok
+  - target_output.migration_restore.resume_prompt contains "project codename atlas"
+
+Conclusion:
+  The migration flow is now callable from agentctl and successfully completes an end-to-end L1 transfer between two live daemon instances.
