@@ -6443,6 +6443,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_agent_provisions_one_api_for_external_management() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("ready");
+
+        let management_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind one-api management listener");
+        let management_addr = management_listener
+            .local_addr()
+            .expect("resolve one-api management listener address");
+
+        let management_task = tokio::spawn(async move {
+            let (mut socket, _) = management_listener
+                .accept()
+                .await
+                .expect("accept one-api management request");
+
+            let mut request_bytes = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let read = socket
+                    .read(&mut buf)
+                    .await
+                    .expect("read one-api management request bytes");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buf[..read]);
+
+                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request_bytes)
+                .expect("one-api management request should be utf8");
+            assert!(
+                request_text.starts_with("POST /api/token/ HTTP/1.1"),
+                "unexpected one-api management request line: {request_text}"
+            );
+            assert!(
+                request_text.contains("authorization: Bearer mgmt-key-123"),
+                "expected management authorization header: {request_text}"
+            );
+            let body = request_body(&request_text);
+            assert!(
+                body.contains("\"idempotency_key\":\"external-managed-agent:one-api:claude-4-sonnet\""),
+                "expected idempotency key in one-api provisioning body: {body}"
+            );
+            assert!(
+                body.contains("\"model_limits\":[\"claude-4-sonnet\"]"),
+                "expected model limits in one-api provisioning body: {body}"
+            );
+
+            let response_body = json!({
+                "success": true,
+                "data": {
+                    "id": "token-external-1",
+                    "key": "sk-external-1"
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write one-api management response");
+            let _ = socket.shutdown().await;
+        });
+
+        let one_api_config = OneApiConfig {
+            enabled: false,
+            management_enabled: true,
+            management_base_url: format!("http://{management_addr}"),
+            management_api_key: Some("mgmt-key-123".to_string()),
+            management_timeout_secs: 1,
+            management_retries: 1,
+            management_retry_backoff_secs: 0,
+            ..OneApiConfig::default()
+        };
+
+        let created = handle_rpc_request(
+            create_agent_request("external-managed-agent", "claude-4-sonnet"),
+            store.clone(),
+            state,
+            one_api_config,
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create with external one-api management should succeed: {created:?}"
+        );
+        let created_result = created.result.expect("create result should exist");
+        assert_eq!(created_result["agent"]["status"], json!("ready"));
+        assert_eq!(created_result["one_api"]["token_id"], json!("token-external-1"));
+
+        let mapping = store
+            .get_mapping_by_idempotency_key("external-managed-agent:one-api:claude-4-sonnet")
+            .await
+            .expect("query mapping should succeed")
+            .expect("one-api mapping should be persisted");
+        assert_eq!(mapping.one_api_token_id, "token-external-1");
+        assert_eq!(mapping.one_api_access_token, "sk-external-1");
+
+        management_task
+            .await
+            .expect("one-api management task should finish");
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn usage_query_and_quota_enforcement_work() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
@@ -11948,10 +12064,7 @@ async fn handle_rpc_request(
                 );
             }
 
-            let provisioned = if one_api_config.enabled
-                && one_api_config.management_enabled
-                && provider == "one-api"
-            {
+            let provisioned = if one_api_config.management_enabled && provider == "one-api" {
                 match provision_one_api(&one_api_config, &profile, &idempotency_key).await {
                     Ok(result) => Some(result),
                     Err(err) => {
