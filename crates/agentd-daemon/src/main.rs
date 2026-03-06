@@ -8823,7 +8823,7 @@ fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
         ));
     }
 
-    if normalized.starts_with("mcp.") {
+    if normalized.starts_with("mcp.") || normalized.starts_with("builtin.") {
         return Ok(normalized.to_string());
     }
 
@@ -8854,6 +8854,22 @@ fn canonical_mcp_server_tool_name(server: &str, tool: &str) -> Result<String, Ag
         .replace('-', ".");
 
     Ok(format!("mcp.{server_scope}.{normalized}"))
+}
+
+#[cfg(test)]
+#[test]
+fn canonical_mcp_tool_name_preserves_builtin_namespace() {
+    let canonical = canonical_mcp_tool_name("builtin.lite.upper")
+        .expect("builtin tool namespace should be accepted as-is");
+    assert_eq!(canonical, "builtin.lite.upper");
+}
+
+#[cfg(test)]
+#[test]
+fn canonical_mcp_server_tool_name_preserves_builtin_namespace() {
+    let canonical = canonical_mcp_server_tool_name("mcp-shell", "builtin.lite.upper")
+        .expect("builtin tool name should not be rewritten to mcp namespace");
+    assert_eq!(canonical, "builtin.lite.upper");
 }
 
 fn parse_onboard_mcp_transport(value: Option<&str>) -> Result<mcp::McpTransport, AgentError> {

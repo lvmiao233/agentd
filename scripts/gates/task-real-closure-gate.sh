@@ -977,7 +977,7 @@ log_info "Running happy path (requires real one_api)..."
 
 REAL_BASE_URL="${ONE_API_BASE_URL:-http://127.0.0.1:3000/v1}"
 REAL_API_KEY="${ONE_API_TOKEN:-}"
-REAL_TOOL_NAME="${ONE_API_TOOL_NAME:-builtin_lite_upper}"
+REAL_TOOL_NAME="${ONE_API_TOOL_NAME:-builtin.lite.upper}"
 
 if [[ -z "$REAL_API_KEY" ]]; then
     {
@@ -1070,6 +1070,7 @@ if ! "$AGENTCTL_BIN" --socket-path "$SOCKET_PATH" agent create \
     --name test-real-closure \
     --model "$REAL_MODEL" \
     --token-budget 1000 \
+    --allow-tool "$REAL_TOOL_NAME" \
     --json >"$AGENT_CREATE_OUTPUT" 2>&1; then
     {
         echo "ASSERT preflight=PASS"
