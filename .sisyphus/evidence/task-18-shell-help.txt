@@ -1,0 +1,6 @@
+Usage: agentctl agent shell [OPTIONS]
+
+Options:
+      --agent-id <AGENT_ID>  
+      --model <MODEL>        
+  -h, --help                 Print help

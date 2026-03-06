@@ -1,0 +1,24 @@
+┌Messages + Stream─────────────────────────────────────┐┌Events────────────────┐
+│system: select an agent first with /agent <id> or     ││chat blocked: missing │
+│restart with --agent-id <id>                          ││active agent          │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      │└──────────────────────┘
+│                                                      │┌Approval Queue────────┐
+│                                                      ││No pending approvals  │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      │└──────────────────────┘
+│                                                      │┌Multi-Agent Delegation┐
+│                                                      ││No delegations        │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+└──────────────────────────────────────────────────────┘└──────────────────────┘
+┌Input─────────────────────────────────────────────────────────────────────────┐
+│>                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+mode=idle | model=claude-4-sonnet | agent_id=<none> | pending_events=1 | pending

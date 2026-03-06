@@ -1,0 +1,24 @@
+┌Messages + Stream─────────────────────────────────────┐┌Events────────────────┐
+│system: tools:                                        ││No events             │
+│{"agent_id":"73999c5c-c83f-47d1-a22a-5645953d7c93","to││                      │
+│ols":[{"decision":"allow","description":"Read text    ││                      │
+│content from a                                        ││                      │
+│file.","health":"healthy","input_schema":{"properties"││                      │
+│:{"encoding":{"default":"utf-8","title":"Encoding","ty│└──────────────────────┘
+│pe":"string"},"max_chars":{"default":200000,"title":"M│┌Approval Queue────────┐
+│ax                                                    ││No pending approvals  │
+│Chars","type":"integer"},"path":{"title":"Path","type"││                      │
+│:"string"}},"required":["path"],"title":"read_fileArgu││                      │
+│ments","type":"object"},"policy_tool":"mcp.fs.read_fil││                      │
+│e","reason":"policy.allow: tool=mcp.fs.read_file      │└──────────────────────┘
+│matched_rule=mcp.fs.read_file                         │┌Multi-Agent Delegation┐
+│source_layer=agent_profile","server":"mcp-fs","tool":"││No delegations        │
+│read_file","trace_id":"trace-rpc-1","trust_level":"bui││                      │
+│ltin"},{"decision":"allow","description":"List entries││                      │
+│in a                                                  ││                      │
+│directory.","health":"healthy","input_schema":{"proper││                      │
+└──────────────────────────────────────────────────────┘└──────────────────────┘
+┌Input─────────────────────────────────────────────────────────────────────────┐
+│>                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+mode=idle | model=gpt-5.3-codex | agent_id=73999c5c-c83f-47d1-a22a-5645953d7c93
