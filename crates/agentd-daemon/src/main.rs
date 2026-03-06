@@ -3269,6 +3269,93 @@ async fn ws_bridge_forwards_rpc_and_stream() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn ws_bridge_streams_run_agent_frames() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task27-runagent-ws-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind health server listener");
+    let bind_addr = listener
+        .local_addr()
+        .expect("resolve health server local address");
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(health_server(
+        listener,
+        bind_addr,
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+        shutdown_rx,
+    ));
+
+    let (mut socket, _) = connect_async(format!("ws://{bind_addr}/ws"))
+        .await
+        .expect("connect websocket bridge");
+
+    socket
+        .send(Message::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9003,
+                "method": "RunAgent",
+                "params": {
+                    "input": "stream over websocket",
+                    "stream": true
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send run-agent rpc over ws");
+
+    let mut ack_seen = false;
+    let mut stream_frame_seen = false;
+    for _ in 0..8 {
+        let next = tokio::time::timeout(Duration::from_millis(800), socket.next())
+            .await
+            .expect("ws run-agent timeout");
+        let Some(message) = next else {
+            break;
+        };
+        let message = message.expect("receive ws run-agent response");
+        let Message::Text(payload) = message else {
+            continue;
+        };
+
+        if payload.starts_with('{') {
+            let decoded: Value = serde_json::from_str(payload.as_ref()).expect("decode ws json ack");
+            if decoded.get("id") == Some(&json!(9003)) {
+                ack_seen = true;
+            }
+            continue;
+        }
+
+        if payload.contains("\"status\":\"working\"") || payload.contains("\"status\":\"failed\"") {
+            stream_frame_seen = true;
+            break;
+        }
+    }
+
+    assert!(ack_seen, "expected run-agent websocket ack");
+    assert!(stream_frame_seen, "expected run-agent websocket stream frame");
+
+    let _ = socket.close(None).await;
+    let _ = shutdown_tx.send(true);
+    let _ = server_task.await;
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn health_rpc_streams_run_agent_frames_over_http() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-http-stream-test-{}.sqlite",
@@ -4852,14 +4939,23 @@ async fn health_server(
                 let (path, query) = split_path_and_query(raw_path);
 
                 if ws_bridge::is_ws_upgrade_request(method, path, &request) {
-                    ws_bridge::serve_ws_bridge(
-                        stream,
-                        &request,
-                        store.clone(),
-                        state.clone(),
-                        one_api_config.clone(),
-                    )
-                    .await?;
+                    let ws_request = request.clone();
+                    let ws_store = store.clone();
+                    let ws_state = state.clone();
+                    let ws_one_api_config = one_api_config.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = ws_bridge::serve_ws_bridge(
+                            stream,
+                            &ws_request,
+                            ws_store,
+                            ws_state,
+                            ws_one_api_config,
+                        )
+                        .await
+                        {
+                            warn!(%err, "websocket bridge session failed");
+                        }
+                    });
                     continue;
                 }
 
@@ -7373,7 +7469,7 @@ struct InvokeSkillParams {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct RunAgentParams {
+pub(crate) struct RunAgentParams {
     input: String,
     #[serde(default)]
     model: Option<String>,
@@ -9525,7 +9621,7 @@ where
     Ok(())
 }
 
-async fn stream_run_agent_over_uds<W>(
+pub(crate) async fn stream_run_agent_over_uds<W>(
     stream: &mut W,
     store: Arc<SqliteStore>,
     one_api_config: OneApiConfig,

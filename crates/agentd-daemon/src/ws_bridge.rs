@@ -1,13 +1,16 @@
-use super::{handle_rpc_request, OneApiConfig, RuntimeState};
+use super::{handle_rpc_request, stream_run_agent_over_uds, OneApiConfig, RunAgentParams, RuntimeState};
 use agentd_protocol::{
     A2AStreamParams, A2ATaskEvent, A2ATaskState, JsonRpcRequest, JsonRpcResponse,
 };
 use agentd_store::SqliteStore;
 use chrono::Utc;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{ready, Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncWriteExt, Result as TokioIoResult};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncWrite, AsyncWriteExt, Result as TokioIoResult};
 use tokio::net::TcpStream;
 use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::{handshake::derive_accept_key, protocol::Role, Message};
@@ -113,8 +116,45 @@ async fn handle_text_message(
         return Ok(());
     }
 
+    if request.method == "RunAgent"
+        && request
+            .params
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        handle_run_agent_stream_over_ws(ws, request, store, one_api_config).await?;
+        return Ok(());
+    }
+
     let response = handle_rpc_request(request, store, state, one_api_config).await;
     send_rpc_response(ws, &response).await?;
+    Ok(())
+}
+
+async fn handle_run_agent_stream_over_ws(
+    ws: &mut WebSocketStream<TcpStream>,
+    request: JsonRpcRequest,
+    store: Arc<SqliteStore>,
+    one_api_config: OneApiConfig,
+) -> Result<(), DynError> {
+    let params = match serde_json::from_value::<RunAgentParams>(request.params.clone()) {
+        Ok(params) => params,
+        Err(err) => {
+            send_rpc_response(
+                ws,
+                &JsonRpcResponse::error(request.id, -32602, format!("invalid params: {err}")),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    send_rpc_response(ws, &JsonRpcResponse::success(request.id, json!({"stream": true}))).await?;
+
+    let mut writer = WsTextBridgeWriter::new(ws);
+    stream_run_agent_over_uds(&mut writer, store, one_api_config, params).await;
+    writer.flush_pending().await?;
     Ok(())
 }
 
@@ -180,7 +220,11 @@ async fn handle_a2a_stream_subscription(
         }
     }
 
-    if history.last().is_some_and(|event| is_terminal_state(event.state)) || is_terminal_state(task.state) {
+    if history
+        .last()
+        .is_some_and(|event| is_terminal_state(event.state))
+        || is_terminal_state(task.state)
+    {
         return Ok(());
     }
 
@@ -237,6 +281,65 @@ async fn send_json(ws: &mut WebSocketStream<TcpStream>, payload: &Value) -> Resu
     let encoded = serde_json::to_string(payload)?;
     ws.send(Message::Text(encoded)).await?;
     Ok(())
+}
+
+struct WsTextBridgeWriter<'a> {
+    ws: &'a mut WebSocketStream<TcpStream>,
+    buffer: Vec<u8>,
+}
+
+impl<'a> WsTextBridgeWriter<'a> {
+    fn new(ws: &'a mut WebSocketStream<TcpStream>) -> Self {
+        Self {
+            ws,
+            buffer: Vec::new(),
+        }
+    }
+
+    async fn flush_pending(&mut self) -> Result<(), DynError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let text = String::from_utf8(std::mem::take(&mut self.buffer))?;
+        self.ws.send(Message::Text(text.into())).await?;
+        Ok(())
+    }
+}
+
+impl AsyncWrite for WsTextBridgeWriter<'_> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        self.buffer.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        if self.buffer.is_empty() {
+            return Poll::Ready(Ok(()));
+        }
+
+        ready!(Pin::new(&mut *self.ws).poll_ready(cx)).map_err(io::Error::other)?;
+        let text = String::from_utf8(std::mem::take(&mut self.buffer))
+            .map_err(io::Error::other)?;
+        Pin::new(&mut *self.ws)
+            .start_send(Message::Text(text.into()))
+            .map_err(io::Error::other)?;
+        ready!(Pin::new(&mut *self.ws).poll_flush(cx)).map_err(io::Error::other)?;
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        self.poll_flush(cx)
+    }
 }
 
 async fn write_bad_ws_request(stream: &mut TcpStream, message: &str) -> TokioIoResult<()> {
