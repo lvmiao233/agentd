@@ -23,6 +23,13 @@ import {
   PromptInputSubmit,
 } from '@/components/ai-elements/prompt-input';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Tool,
   ToolHeader,
   ToolContent,
@@ -39,6 +46,13 @@ import {
 type ChatStatus = 'ready' | 'streaming' | 'error';
 
 type ChatMessage = WebAgentChatMessage;
+
+type AgentOption = {
+  agent_id: string;
+  name: string;
+  model: string;
+  status: string;
+};
 
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
@@ -98,6 +112,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('ready');
   const [agentId, setAgentId] = useState<string | null>(null);
+  const [availableAgents, setAvailableAgents] = useState<AgentOption[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const activeRequestIdRef = useRef<number | null>(null);
@@ -110,21 +125,29 @@ export default function ChatPage() {
     setShowReconnectBanner(snapshot.showReconnectBanner);
   };
 
-  const resolvePreferredAgentId = async () => {
+  const loadAgents = async () => {
     const response = await fetch('/api/agents');
     if (!response.ok) {
       throw new Error('load agents failed');
     }
-    const payload = (await response.json()) as { agents?: Array<{ agent_id: string; model: string; status: string }> };
+    const payload = (await response.json()) as {
+      agents?: AgentOption[];
+    };
     const agents = payload.agents ?? [];
+    setAvailableAgents(agents);
     if (agents.length === 0) {
+      setAgentId(null);
       return null;
     }
     const preferred =
       agents.find(
         (agent) => agent.status === 'ready' && agent.model === 'gpt-5.3-codex',
       ) ?? agents.find((agent) => agent.status === 'ready') ?? agents[0];
-    setAgentId(preferred.agent_id);
+    setAgentId((current) =>
+      current && agents.some((agent) => agent.agent_id === current)
+        ? current
+        : preferred.agent_id,
+    );
     return preferred.agent_id;
   };
 
@@ -263,7 +286,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     let cancelled = false;
-    resolvePreferredAgentId()
+    loadAgents()
       .then((agents) => {
         if (cancelled) {
           return;
@@ -288,7 +311,10 @@ export default function ChatPage() {
     lastSubmittedInputRef.current = text;
     setStatus('streaming');
 
-    const resolvedAgentId = agentId ?? (await resolvePreferredAgentId().catch(() => null));
+    const resolvedAgentId = agentId ?? (await loadAgents().catch(() => null));
+    const selectedAgent = availableAgents.find(
+      (candidate) => candidate.agent_id === resolvedAgentId,
+    );
 
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -302,8 +328,8 @@ export default function ChatPage() {
 
     activeRequestIdRef.current = sendWsRpc(ws, 'RunAgent', {
       input: text,
-      model: 'gpt-5.3-codex',
       ...(resolvedAgentId ? { agent_id: resolvedAgentId } : {}),
+      ...(!selectedAgent ? { model: 'gpt-5.3-codex' } : {}),
       stream: true,
     });
   };
@@ -321,6 +347,28 @@ export default function ChatPage() {
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col rounded-xl border border-border bg-card shadow-lg">
       <div className="flex flex-1 flex-col overflow-hidden p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold">Agent Chat</h1>
+            <p className="text-sm text-muted-foreground">
+              选择一个 agent 后再发起实时对话
+            </p>
+          </div>
+          <div className="min-w-72">
+            <Select value={agentId ?? ''} onValueChange={setAgentId}>
+              <SelectTrigger aria-label="Active agent selector">
+                <SelectValue placeholder="Select an agent" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableAgents.map((agent) => (
+                  <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                    {agent.name} · {agent.model} · {agent.status}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
         {showReconnectBanner && (
           <div className="reconnect-banner mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
             Daemon WebSocket disconnected. Reconnecting…
