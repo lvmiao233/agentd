@@ -4,7 +4,10 @@ step=build-rootfs
 tag=0.1.0
 rootfs_dir=images/agent-rootfs/out/0.1.0/rootfs
 archive=images/agent-rootfs/out/0.1.0/rootfs.tar.gz
-sha256=23c7916b1a2ea2b67b875b74fd710124a883ea3c4b4538b1ae690a8c3c51bfda
+sha256=21fdd6baabf5e8b075b49a58eec16f5e73b53d4029ca49375e83082ff423cb14
+ext4_image=images/agent-rootfs/out/0.1.0/rootfs.ext4
+ext4_sha256=2be178318f321fe0c864c0c0bd453021497c6288b33b17a3327546bd6817da87
+runtime_rootfs=data/firecracker/rootfs.ext4
 manifest=images/agent-rootfs/rootfs-manifest.json
 ---
 task=19
@@ -16,3 +19,5 @@ python_runtime=available
 agent_lite=available
 import_check=passed
 help_check=passed
+rootfs_image=images/agent-rootfs/out/0.1.0/rootfs.ext4
+ext4_check=passed
