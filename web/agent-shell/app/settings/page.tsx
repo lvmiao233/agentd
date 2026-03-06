@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { evaluateThirdPartyOnboarding } from '@/lib/dashboard-events-model';
 import {
   Select,
@@ -59,11 +60,17 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [agentSubmitting, setAgentSubmitting] = useState(false);
 
   const [name, setName] = useState('');
   const [command, setCommand] = useState('');
   const [argsText, setArgsText] = useState('');
   const [trustLevel, setTrustLevel] = useState('community');
+  const [agentName, setAgentName] = useState('');
+  const [agentModel, setAgentModel] = useState('gpt-5.3-codex');
+  const [agentPolicy, setAgentPolicy] = useState('ask');
+  const [allowedToolsText, setAllowedToolsText] = useState('');
+  const [deniedToolsText, setDeniedToolsText] = useState('');
 
   function parseArgs(raw: string) {
     const trimmed = raw.trim();
@@ -76,6 +83,13 @@ export default function SettingsPage() {
       return parsed;
     }
     return trimmed
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  function parseToolPatterns(raw: string) {
+    return raw
       .split(/\r?\n/)
       .map((entry) => entry.trim())
       .filter(Boolean);
@@ -139,6 +153,45 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleCreateAgent(e: FormEvent) {
+    e.preventDefault();
+    const trimmedName = agentName.trim();
+    const trimmedModel = agentModel.trim();
+    if (!trimmedName || !trimmedModel) {
+      setFeedback('Agent 名称和模型不能为空');
+      return;
+    }
+
+    setAgentSubmitting(true);
+    setFeedback(null);
+    try {
+      const response = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: trimmedName,
+          model: trimmedModel,
+          permission_policy: agentPolicy,
+          allowed_tools: parseToolPatterns(allowedToolsText),
+          denied_tools: parseToolPatterns(deniedToolsText),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setFeedback(payload.error ?? 'Agent 创建失败');
+        return;
+      }
+      setFeedback(`${trimmedName} 创建成功`);
+      setAgentName('');
+      setAllowedToolsText('');
+      setDeniedToolsText('');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Agent 创建失败');
+    } finally {
+      setAgentSubmitting(false);
+    }
+  }
+
   const healthyCount = servers.filter((s) => s.health === 'healthy').length;
   const onboardingSummary = evaluateThirdPartyOnboarding({
     currentServers: servers,
@@ -197,6 +250,75 @@ export default function SettingsPage() {
         )}
       </section>
 
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          创建 Agent Profile
+        </h2>
+        <form onSubmit={handleCreateAgent} className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Agent 名称</label>
+              <Input
+                value={agentName}
+                onChange={(e) => setAgentName(e.target.value)}
+                placeholder="web-codex-agent"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">模型</label>
+              <Input
+                value={agentModel}
+                onChange={(e) => setAgentModel(e.target.value)}
+                placeholder="gpt-5.3-codex"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">默认策略</label>
+              <Select value={agentPolicy} onValueChange={setAgentPolicy}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="allow">allow</SelectItem>
+                  <SelectItem value="ask">ask</SelectItem>
+                  <SelectItem value="deny">deny</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                allow tool patterns（每行一个）
+              </label>
+              <Textarea
+                value={allowedToolsText}
+                onChange={(e) => setAllowedToolsText(e.target.value)}
+                placeholder={'mcp.fs.read_file\nmcp.search.ripgrep'}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                deny tool patterns（每行一个）
+              </label>
+              <Textarea
+                value={deniedToolsText}
+                onChange={(e) => setDeniedToolsText(e.target.value)}
+                placeholder={'mcp.shell.execute'}
+              />
+            </div>
+          </div>
+          <Button type="submit" disabled={agentSubmitting}>
+            {agentSubmitting ? (
+              <Loader2 className="mr-1 size-4 animate-spin" />
+            ) : (
+              <Plus className="mr-1 size-4" />
+            )}
+            创建 Agent
+          </Button>
+        </form>
+      </section>
+
       {/* Onboard form */}
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
@@ -244,8 +366,7 @@ export default function SettingsPage() {
             <label className="mb-1 block text-xs text-muted-foreground">
               参数（JSON 数组或每行一个）
             </label>
-            <textarea
-              className="min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            <Textarea
               value={argsText}
               onChange={(e) => setArgsText(e.target.value)}
               placeholder={'["-y", "@modelcontextprotocol/server-figma"]'}
