@@ -1675,6 +1675,7 @@ fn build_firecracker_executor_from_config(
         .vsock_root_dir(PathBuf::from(&config.firecracker_vsock_root_dir))
         .api_socket_root_dir(PathBuf::from(&config.firecracker_api_socket_root_dir))
         .launch_mode(firecracker::FirecrackerLaunchMode::RealFirecracker)
+        .default_jailer(None)
         .build()
         .map_err(|err| {
             format!(
@@ -12166,7 +12167,7 @@ async fn handle_rpc_request(
                         mem_size_mib: None,
                         network: None,
                         network_policy: Some(network_policy),
-                        jailer: Some(firecracker::JailerConfig::default()),
+                        jailer: None,
                         launch_timeout: Duration::from_secs(20),
                     })
                 }

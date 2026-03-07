@@ -467,6 +467,13 @@ impl FirecrackerExecutor {
         spec: FirecrackerAgentLaunchSpec,
         vm_config: FirecrackerVmConfig,
     ) -> Result<FirecrackerVmHandle, AgentError> {
+        if vm_config.jailer.is_some() {
+            return Err(AgentError::InvalidInput(
+                "real firecracker jailer integration is not implemented; omit jailer config"
+                    .to_string(),
+            ));
+        }
+
         ensure_path_exists(&self.firecracker_binary, "binary")?;
         prepare_socket_file(&vm_config.vsock_path, "firecracker vsock")?;
 
@@ -1654,6 +1661,65 @@ mod tests {
 
         server.await.expect("server task should join");
         let _ = cleanup_socket_file(&socket_path, "test guest readiness socket");
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
+    async fn real_firecracker_rejects_jailer_config_until_supported() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-jailer-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+
+        let binary_path = runtime_root.join("firecracker-bin");
+        std::fs::write(&binary_path, b"#!/bin/sh\nexit 0\n").expect("write fake firecracker binary");
+        let mut perms = std::fs::metadata(&binary_path)
+            .expect("stat fake firecracker binary")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms)
+                .expect("chmod fake firecracker binary");
+        }
+
+        let kernel_path = runtime_root.join("vmlinux.bin");
+        std::fs::write(&kernel_path, b"kernel").expect("write fake kernel");
+        let rootfs_path = runtime_root.join("rootfs.ext4");
+        std::fs::write(&rootfs_path, b"rootfs").expect("write fake rootfs");
+
+        let executor = FirecrackerExecutor::builder()
+            .firecracker_binary(&binary_path)
+            .kernel_path(&kernel_path)
+            .rootfs_path(&rootfs_path)
+            .vsock_root_dir(runtime_root.join("vsock"))
+            .api_socket_root_dir(runtime_root.join("api"))
+            .launch_mode(FirecrackerLaunchMode::RealFirecracker)
+            .default_jailer(None)
+            .build()
+            .expect("build real firecracker executor");
+
+        let err = executor
+            .launch_agent(FirecrackerAgentLaunchSpec {
+                agent_id: Uuid::new_v4(),
+                command: "/bin/true".to_string(),
+                args: Vec::new(),
+                env: HashMap::new(),
+                vcpu_count: None,
+                mem_size_mib: None,
+                network: None,
+                network_policy: Some(NetworkIsolationPolicy::AllowAll),
+                jailer: Some(JailerConfig::default()),
+                launch_timeout: Duration::from_millis(250),
+            })
+            .await
+            .expect_err("real firecracker should reject unsupported jailer config");
+
+        assert!(
+            err.to_string()
+                .contains("real firecracker jailer integration is not implemented"),
+            "unexpected jailer rejection error: {err}"
+        );
+
         let _ = std::fs::remove_dir_all(runtime_root);
     }
 
