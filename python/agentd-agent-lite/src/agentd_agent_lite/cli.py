@@ -1056,6 +1056,112 @@ def _tool_output_to_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _chunk_to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude_none=True)
+        if isinstance(dumped, dict):
+            return dumped
+
+    return {}
+
+
+def _extract_stream_text_delta(delta: Any) -> str:
+    delta_dict = _chunk_to_dict(delta)
+    content = delta_dict.get("content")
+    if isinstance(content, str):
+        return content
+
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for item in content:
+        item_dict = _chunk_to_dict(item)
+        text_value = item_dict.get("text")
+        if isinstance(text_value, str) and text_value:
+            parts.append(text_value)
+            continue
+        if isinstance(text_value, dict):
+            nested_value = text_value.get("value")
+            if isinstance(nested_value, str) and nested_value:
+                parts.append(nested_value)
+
+    return "".join(parts)
+
+
+def _merge_stream_tool_calls(
+    accumulators: list[dict[str, Any]],
+    raw_tool_calls: Any,
+) -> None:
+    if not isinstance(raw_tool_calls, list):
+        return
+
+    for fallback_index, item in enumerate(raw_tool_calls):
+        item_dict = _chunk_to_dict(item)
+        index_value = item_dict.get("index")
+        index = (
+            index_value
+            if isinstance(index_value, int) and index_value >= 0
+            else fallback_index
+        )
+
+        while len(accumulators) <= index:
+            accumulators.append({"id": None, "name": "", "arguments_parts": []})
+
+        accumulator = accumulators[index]
+
+        call_id = item_dict.get("id")
+        if isinstance(call_id, str) and call_id:
+            accumulator["id"] = call_id
+
+        function_dict = item_dict.get("function")
+        if not isinstance(function_dict, dict):
+            function_dict = {}
+
+        raw_name = function_dict.get("name")
+        if isinstance(raw_name, str) and raw_name:
+            accumulator["name"] = raw_name
+
+        raw_arguments = function_dict.get("arguments")
+        if isinstance(raw_arguments, str) and raw_arguments:
+            accumulator["arguments_parts"].append(raw_arguments)
+
+
+def _finalize_stream_tool_calls(
+    accumulators: list[dict[str, Any]],
+    provider_to_policy: dict[str, str],
+) -> list[dict[str, str]]:
+    tool_calls: list[dict[str, str]] = []
+
+    for index, item in enumerate(accumulators):
+        call_id = item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = f"call_{index}"
+
+        raw_name = item.get("name")
+        if not isinstance(raw_name, str) or not raw_name:
+            continue
+
+        mapped_name = provider_to_policy.get(raw_name, raw_name)
+        arguments_text = "".join(
+            part for part in item.get("arguments_parts", []) if isinstance(part, str)
+        )
+
+        tool_calls.append(
+            {
+                "id": call_id,
+                "name": mapped_name,
+                "arguments": arguments_text,
+            }
+        )
+
+    return tool_calls
+
+
 def _invoke_real_chat_once(
     *,
     base_url: str,
@@ -1065,6 +1171,7 @@ def _invoke_real_chat_once(
     messages: list[dict[str, Any]],
     tool_name: str | None = None,
     tools: list[dict[str, Any]] | None = None,
+    stream_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     _ensure_openai_types()
     if OpenAI is None:
@@ -1082,26 +1189,111 @@ def _invoke_real_chat_once(
     provider_tools, provider_to_policy = _prepare_provider_tools(request_tools)
 
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
-    raw_response = client.chat.completions.with_raw_response.create(
-        model=model,
-        messages=messages,
-        tools=provider_tools,
-    )
-    completion = raw_response.parse()
-    response_text = _extract_message_text(completion)
-    tool_calls = _extract_tool_calls(completion)
-    if provider_to_policy and isinstance(tool_calls, list):
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            provider_name = tool_call.get("name")
-            if not isinstance(provider_name, str):
-                continue
-            mapped = provider_to_policy.get(provider_name)
-            if isinstance(mapped, str) and mapped:
-                tool_call["name"] = mapped
-    if not response_text and not tool_calls:
-        raise RuntimeError("provider returned empty assistant content")
+    provider_request_id = ""
+    request_id_source = "unavailable"
+    provider_model: str | None = None
+    usage_source = "provider"
+
+    if stream_handler is None:
+        raw_response = client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=messages,
+            tools=provider_tools,
+        )
+        completion = raw_response.parse()
+        response_text = _extract_message_text(completion)
+        tool_calls = _extract_tool_calls(completion)
+        if provider_to_policy and isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                provider_name = tool_call.get("name")
+                if not isinstance(provider_name, str):
+                    continue
+                mapped = provider_to_policy.get(provider_name)
+                if isinstance(mapped, str) and mapped:
+                    tool_call["name"] = mapped
+        if not response_text and not tool_calls:
+            raise RuntimeError("provider returned empty assistant content")
+
+        usage = getattr(completion, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+
+        raw_headers = dict(raw_response.headers.items()) if raw_response.headers else {}
+        provider_request_id, request_id_source = _extract_provider_request_id(
+            completion, raw_headers
+        )
+        raw_provider_model = getattr(completion, "model", None)
+        provider_model = (
+            raw_provider_model if isinstance(raw_provider_model, str) else model
+        )
+    else:
+        response_parts: list[str] = []
+        tool_call_accumulators: list[dict[str, Any]] = []
+        prompt_tokens = None
+        completion_tokens = None
+        total_tokens = None
+
+        with client.chat.completions.with_streaming_response.create(
+            model=model,
+            messages=messages,
+            tools=provider_tools,
+            stream=True,
+            stream_options={"include_usage": True},
+        ) as response:
+            response_request_id = getattr(response, "request_id", None)
+            if isinstance(response_request_id, str) and response_request_id:
+                provider_request_id = response_request_id
+                request_id_source = "header"
+
+            for chunk in response.parse():
+                chunk_dict = _chunk_to_dict(chunk)
+                chunk_id = chunk_dict.get("id")
+                if not provider_request_id and isinstance(chunk_id, str) and chunk_id:
+                    provider_request_id = chunk_id
+                    request_id_source = "body"
+
+                raw_provider_model = chunk_dict.get("model")
+                if isinstance(raw_provider_model, str) and raw_provider_model:
+                    provider_model = raw_provider_model
+
+                usage = chunk_dict.get("usage")
+                if isinstance(usage, dict):
+                    raw_prompt_tokens = usage.get("prompt_tokens")
+                    raw_completion_tokens = usage.get("completion_tokens")
+                    raw_total_tokens = usage.get("total_tokens")
+                    if isinstance(raw_prompt_tokens, int):
+                        prompt_tokens = raw_prompt_tokens
+                    if isinstance(raw_completion_tokens, int):
+                        completion_tokens = raw_completion_tokens
+                    if isinstance(raw_total_tokens, int):
+                        total_tokens = raw_total_tokens
+
+                choices = chunk_dict.get("choices")
+                if not isinstance(choices, list):
+                    continue
+
+                for choice in choices:
+                    choice_dict = _chunk_to_dict(choice)
+                    delta = choice_dict.get("delta")
+                    text_delta = _extract_stream_text_delta(delta)
+                    if text_delta:
+                        response_parts.append(text_delta)
+                        stream_handler({"type": "text-delta", "delta": text_delta})
+
+                    delta_dict = _chunk_to_dict(delta)
+                    _merge_stream_tool_calls(
+                        tool_call_accumulators, delta_dict.get("tool_calls")
+                    )
+
+        response_text = "".join(response_parts)
+        tool_calls = _finalize_stream_tool_calls(
+            tool_call_accumulators, provider_to_policy
+        )
+        if not response_text and not tool_calls:
+            raise RuntimeError("provider returned empty assistant content")
 
     prompt_text_parts: list[str] = []
     for message in messages:
@@ -1110,12 +1302,6 @@ def _invoke_real_chat_once(
             prompt_text_parts.append(content)
     prompt_text = "\n".join(prompt_text_parts)
 
-    usage = getattr(completion, "usage", None)
-    prompt_tokens = getattr(usage, "prompt_tokens", None)
-    completion_tokens = getattr(usage, "completion_tokens", None)
-    total_tokens = getattr(usage, "total_tokens", None)
-
-    usage_source = "provider"
     if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
         prompt_tokens = estimate_tokens(prompt_text)
         completion_tokens = estimate_tokens(response_text)
@@ -1123,13 +1309,6 @@ def _invoke_real_chat_once(
         usage_source = "estimated"
     elif not isinstance(total_tokens, int):
         total_tokens = prompt_tokens + completion_tokens
-
-    raw_headers = dict(raw_response.headers.items()) if raw_response.headers else {}
-    provider_request_id, request_id_source = _extract_provider_request_id(
-        completion, raw_headers
-    )
-
-    provider_model = getattr(completion, "model", None)
     return {
         "output": response_text,
         "input_tokens": prompt_tokens,
@@ -1166,6 +1345,7 @@ def _invoke_real_with_retry(
     tool_name: str | None = None,
     tools: list[dict[str, Any]] | None = None,
     max_retries: int,
+    stream_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     attempt = 0
     while True:
@@ -1178,6 +1358,7 @@ def _invoke_real_with_retry(
                 messages=messages,
                 tool_name=tool_name,
                 tools=tools,
+                stream_handler=stream_handler,
             )
         except Exception as err:
             if not _is_retryable_error(err):
@@ -1220,6 +1401,10 @@ def _classify_llm_error(err: Exception) -> tuple[str, str]:
         return "provider.http", "UNKNOWN"
 
     return "provider.unknown", "UNKNOWN"
+
+
+def emit_stream_event(payload: dict[str, Any]) -> None:
+    print(json.dumps({"agentd_stream": payload}, ensure_ascii=False), flush=True)
 
 
 def _provider_messages_from_session(session: AgentSession) -> list[dict[str, Any]]:
@@ -1268,6 +1453,7 @@ def _run_chat_turn(
     session: AgentSession,
     max_iterations: int,
     max_retries: int,
+    stream_handler: Callable[[dict[str, Any]], None] | None,
 ) -> dict[str, Any]:
     tool_call_records: list[dict[str, Any]] = []
     accumulated_input_tokens = 0
@@ -1295,6 +1481,7 @@ def _run_chat_turn(
             messages=_provider_messages_from_session(session),
             tools=openai_tools,
             max_retries=max_retries,
+            stream_handler=stream_handler,
         )
 
         accumulated_input_tokens += int(llm_result["input_tokens"])
@@ -1374,22 +1561,38 @@ def _run_chat_turn(
                 raise RpcError(-32024, "policy.ask: approval required")
 
             discovered_tool = _resolve_discovered_tool(session, tool_name)
-            if discovered_tool is not None:
-                invoke_result = call_rpc(
-                    args.socket_path,
-                    "InvokeSkill",
-                    {
-                        "agent_id": args.agent_id,
-                        "server": discovered_tool.server,
-                        "tool": discovered_tool.tool,
-                        "args": parsed_arguments,
-                    },
-                )
-                tool_output = _tool_output_to_text(invoke_result)
-                tool_output_record: Any = invoke_result
-            else:
-                tool_output = run_builtin_tool(policy_tool_name, parsed_prompt)
-                tool_output_record = tool_output
+            tool_error_text: str | None = None
+            try:
+                if discovered_tool is not None:
+                    invoke_result = call_rpc(
+                        args.socket_path,
+                        "InvokeSkill",
+                        {
+                            "agent_id": args.agent_id,
+                            "server": discovered_tool.server,
+                            "tool": discovered_tool.tool,
+                            "args": parsed_arguments,
+                        },
+                    )
+                    tool_output = _tool_output_to_text(invoke_result)
+                    tool_output_record: Any = invoke_result
+                else:
+                    tool_output = run_builtin_tool(policy_tool_name, parsed_prompt)
+                    tool_output_record = tool_output
+            except Exception as err:
+                tool_error_text = str(err)
+                if isinstance(err, RpcError):
+                    tool_output_record = {
+                        "status": "failed",
+                        "code": err.code,
+                        "message": err.message,
+                    }
+                else:
+                    tool_output_record = {
+                        "status": "failed",
+                        "message": tool_error_text,
+                    }
+                tool_output = _tool_output_to_text(tool_output_record)
 
             tool_call_records.append(
                 {
@@ -1401,8 +1604,19 @@ def _run_chat_turn(
                     "decision": tool_decision,
                     "input": parsed_prompt,
                     "output": tool_output_record,
+                    "error": tool_error_text,
                 }
             )
+
+            if stream_handler is not None:
+                stream_handler(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": call_id,
+                        "toolName": policy_tool_name,
+                        "input": parsed_arguments,
+                    }
+                )
 
             assistant_message["tool_calls"].append(
                 {
@@ -1420,6 +1634,18 @@ def _run_chat_turn(
             tool_message = session._append_message("tool", tool_output)
             tool_message["tool_call_id"] = call_id
             session.tool_results_cache[call_id] = tool_output_record
+
+            if stream_handler is not None:
+                stream_handler(
+                    {
+                        "type": "tool-output-available",
+                        "toolCallId": call_id,
+                        "toolName": policy_tool_name,
+                        "input": parsed_arguments,
+                        "output": tool_output_record,
+                        "errorText": tool_error_text,
+                    }
+                )
 
         session._refresh_context_window_tokens()
     else:
@@ -1447,6 +1673,7 @@ def run_chat(
     user_input: str,
     max_iterations: int,
     max_retries: int,
+    stream_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     return session.chat(
         user_input,
@@ -1456,6 +1683,7 @@ def run_chat(
             session=session,
             max_iterations=max_iterations,
             max_retries=max_retries,
+            stream_handler=stream_handler,
         ),
     )
 
@@ -1467,7 +1695,7 @@ def emit_result(payload: dict[str, Any], *, result_path: str | None = None) -> N
         if path.parent != Path(""):
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(encoded, encoding="utf-8")
-    print(encoded)
+    print(encoded, flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1527,6 +1755,11 @@ def parse_args() -> argparse.Namespace:
         "--result-path",
         default=None,
         help="Write final result JSON to a file before exiting",
+    )
+    parser.add_argument(
+        "--stream-events",
+        action="store_true",
+        help="Emit incremental stream events to stdout while chat mode runs",
     )
     parser.add_argument(
         "--session-command",
@@ -1839,6 +2072,9 @@ def run_once(args: argparse.Namespace) -> int:
     provider_call_attempted = False
 
     try:
+        stream_handler = (
+            emit_stream_event if bool(getattr(args, "stream_events", False)) else None
+        )
         chat_result = run_chat(
             args=args,
             llm_config=llm_config,
@@ -1846,6 +2082,7 @@ def run_once(args: argparse.Namespace) -> int:
             user_input=args.prompt,
             max_iterations=max_iterations,
             max_retries=max_retries,
+            stream_handler=stream_handler,
         )
         provider_call_attempted = True
         response_text = str(chat_result.get("output", ""))

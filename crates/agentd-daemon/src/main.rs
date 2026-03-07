@@ -39,7 +39,7 @@ use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
@@ -11752,6 +11752,97 @@ async fn run_agent_lite_session_command(
     parse_agent_lite_session_metadata(&session_file, session_id)
 }
 
+fn encode_agent_lite_stream_arguments(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
+        None => "{}".to_string(),
+    }
+}
+
+async fn forward_agent_lite_stream_event<W>(
+    stream: &mut W,
+    event: &Value,
+) -> Result<bool, AgentError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = match event.get("agentd_stream") {
+        Some(payload) if payload.is_object() => payload,
+        _ => return Ok(false),
+    };
+
+    let event_type = match payload.get("type").and_then(Value::as_str) {
+        Some(event_type) if !event_type.trim().is_empty() => event_type,
+        _ => return Ok(false),
+    };
+
+    match event_type {
+        "text-delta" => {
+            if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
+                if !delta.is_empty() {
+                    write_run_agent_stream_frame(
+                        stream,
+                        &json!({
+                            "result": {
+                                "status": "working",
+                                "llm": {
+                                    "output": delta,
+                                }
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            Ok(true)
+        }
+        "tool-input-available" | "tool-output-available" => {
+            let call_id = payload
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("call-0");
+            let mut call = json!({ "id": call_id });
+
+            if event_type == "tool-input-available" {
+                let tool_name = payload
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("unknown_tool");
+                let arguments_text = encode_agent_lite_stream_arguments(payload.get("input"));
+                call["name"] = Value::String(tool_name.to_string());
+                call["arguments"] = Value::String(arguments_text);
+            } else {
+                if let Some(output) = payload.get("output") {
+                    call["output"] = output.clone();
+                }
+                if let Some(error_text) = payload.get("errorText").and_then(Value::as_str) {
+                    if !error_text.trim().is_empty() {
+                        call["error"] = json!({ "message": error_text });
+                    }
+                }
+            }
+
+            write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "result": {
+                        "status": "working",
+                        "tool": {
+                            "calls": [call],
+                        }
+                    }
+                }),
+            )
+            .await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn run_agent_via_agent_lite(
     state: &RuntimeState,
     _one_api_config: &OneApiConfig,
@@ -11950,6 +12041,228 @@ async fn run_agent_via_agent_lite(
     })
 }
 
+async fn run_agent_via_agent_lite_streaming<W>(
+    stream: &mut W,
+    state: &RuntimeState,
+    _one_api_config: &OneApiConfig,
+    context: &RunAgentResolvedContext,
+    params: &RunAgentParams,
+) -> Result<RunAgentExecution, AgentError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let profile = context.profile.as_ref().ok_or_else(|| {
+        AgentError::InvalidInput(
+            "session-backed RunAgent requires a concrete agent_id or auto-selected agent"
+                .to_string(),
+        )
+    })?;
+
+    let requested_session_id = params
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentError::InvalidInput("session_id must be non-empty".to_string()))?;
+    let session_file = agent_lite_session_file(profile.id, requested_session_id);
+    if let Some(parent) = session_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            AgentError::Runtime(format!(
+                "create agent-lite session directory failed: path={} error={err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let result_path = std::env::temp_dir().join(format!(
+        "agentd-run-agent-lite-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let repo_root = agent_lite_repo_root();
+    let project_dir = agent_lite_project_dir();
+    let socket_path = state.socket_path();
+
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("--project")
+        .arg(&project_dir)
+        .arg("agentd-agent-lite")
+        .arg("--socket-path")
+        .arg(socket_path.as_str())
+        .arg("--agent-id")
+        .arg(profile.id.to_string())
+        .arg("--prompt")
+        .arg(params.input.as_str())
+        .arg("--model")
+        .arg(context.model_name.as_str())
+        .arg("--base-url")
+        .arg(context.base_url.as_str())
+        .arg("--timeout")
+        .arg(DEFAULT_RUN_AGENT_TIMEOUT_SECS.to_string())
+        .arg("--max-context-tokens")
+        .arg(DEFAULT_AGENT_LITE_MAX_CONTEXT_TOKENS.to_string())
+        .arg("--session-save")
+        .arg(&session_file)
+        .arg("--result-path")
+        .arg(&result_path)
+        .arg("--stream-events")
+        .current_dir(&repo_root)
+        .env("NO_PROXY", "127.0.0.1,localhost,::1")
+        .env("no_proxy", "127.0.0.1,localhost,::1")
+        .env("PYTHONUNBUFFERED", "1")
+        .env_remove("HTTP_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if session_file.exists() {
+        command.arg("--session-load").arg(&session_file);
+    }
+    command
+        .arg("--api-key")
+        .arg(context.access_token.as_deref().unwrap_or("agentd-local"));
+
+    let mut child = command.spawn().map_err(|err| {
+        AgentError::Runtime(format!(
+            "spawn agent-lite runtime failed: project={} error={err}",
+            project_dir.display()
+        ))
+    })?;
+
+    let stdout = child.stdout.take().ok_or_else(|| {
+        AgentError::Runtime("agent-lite streaming stdout unavailable".to_string())
+    })?;
+    let mut stdout_lines = BufReader::new(stdout).lines();
+
+    match timeout(Duration::from_secs(DEFAULT_RUN_AGENT_TIMEOUT_SECS), async {
+        while let Some(line) = stdout_lines.next_line().await.map_err(|err| {
+            AgentError::Runtime(format!("read agent-lite stdout failed: {err}"))
+        })? {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parsed = match serde_json::from_str::<Value>(trimmed) {
+                Ok(parsed) => parsed,
+                Err(_) => continue,
+            };
+            let _ = forward_agent_lite_stream_event(stream, &parsed).await?;
+        }
+        Ok::<(), AgentError>(())
+    })
+    .await
+    {
+        Ok(read_result) => read_result?,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(AgentError::Runtime(format!(
+                "agent-lite runtime timed out after {}s",
+                DEFAULT_RUN_AGENT_TIMEOUT_SECS
+            )));
+        }
+    }
+
+    let status = child.wait().await.map_err(|err| {
+        AgentError::Runtime(format!("wait for agent-lite runtime failed: {err}"))
+    })?;
+
+    let stderr_text = if let Some(mut stderr) = child.stderr.take() {
+        let mut stderr_bytes = Vec::new();
+        stderr.read_to_end(&mut stderr_bytes).await.map_err(|err| {
+            AgentError::Runtime(format!("read agent-lite stderr failed: {err}"))
+        })?;
+        String::from_utf8_lossy(&stderr_bytes).trim().to_string()
+    } else {
+        String::new()
+    };
+
+    let result_text = std::fs::read_to_string(&result_path).map_err(|err| {
+        AgentError::Runtime(format!(
+            "read agent-lite result payload failed: path={} error={err} stderr={stderr_text}",
+            result_path.display()
+        ))
+    })?;
+    let _ = std::fs::remove_file(&result_path);
+
+    let result_value: Value = serde_json::from_str(&result_text).map_err(|err| {
+        AgentError::Runtime(format!(
+            "parse agent-lite result payload failed: path={} error={err} body={} stderr={stderr_text}",
+            result_path.display(),
+            result_text
+        ))
+    })?;
+
+    if !status.success() {
+        let message = extract_string_value(&result_value, &["message", "error"]).unwrap_or_else(|| {
+            format!(
+                "agent-lite runtime exited with status {status}{}",
+                if stderr_text.is_empty() {
+                    String::new()
+                } else {
+                    format!(" stderr={stderr_text}")
+                }
+            )
+        });
+        return Err(AgentError::Runtime(message));
+    }
+
+    let model_name = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("provider_model"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| context.model_name.clone());
+    let output = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("output"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let input_tokens = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let usage_source = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("usage_source"))
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable")
+        .to_string();
+    let tool_calls = result_value
+        .get("tool")
+        .and_then(|tool| tool.get("calls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let session = result_value.get("session").cloned();
+
+    Ok(RunAgentExecution {
+        agent_id: Some(profile.id),
+        model_name,
+        output,
+        input_tokens,
+        output_tokens,
+        usage_available: usage_source != "unavailable",
+        usage_source,
+        tool_calls,
+        session,
+    })
+}
+
 async fn execute_run_agent(
     store: Arc<SqliteStore>,
     state: &RuntimeState,
@@ -12062,38 +12375,8 @@ where
 
     let context = resolve_run_agent_context(&store, one_api_config, &params).await?;
     if run_agent_uses_agent_lite(&params) {
-        let execution = run_agent_via_agent_lite(state, one_api_config, &context, &params).await?;
-        if !execution.tool_calls.is_empty() {
-            write_run_agent_stream_frame(
-                stream,
-                &json!({
-                    "result": {
-                        "status": "working",
-                        "tool": {
-                            "calls": execution.tool_calls,
-                        }
-                    }
-                }),
-            )
-            .await?;
-        }
-        if !execution.output.trim().is_empty() {
-            write_run_agent_stream_frame(
-                stream,
-                &json!({
-                    "result": {
-                        "status": "working",
-                        "llm": {
-                            "output": execution.output,
-                        },
-                        "model": execution.model_name,
-                        "agent_id": execution.agent_id,
-                    }
-                }),
-            )
-            .await?;
-        }
-        return Ok(execution);
+        return run_agent_via_agent_lite_streaming(stream, state, one_api_config, &context, &params)
+            .await;
     }
     let model_name = context.model_name.clone();
     let mut request = reqwest::Client::builder()
