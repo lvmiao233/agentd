@@ -1,0 +1,29 @@
+iteration=2
+feature=chat_approval_inbox
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs chat-approval-feed.spec.ts chat-route-streaming.spec.ts chat-ui-stream.spec.ts run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. playwright_mcp approval inbox interaction against http://127.0.0.1:4173/chat
+   mocked_endpoints=/api/agents,/api/approvals
+   result=PASS
+   approvalInboxVisible=true
+   approvedVisible=true
+   noticeText=Approval resolved: approve (approval-1)
+   screenshot=approval-inbox-iteration2.png
+
+[scope]
+- web/agent-shell/components/ai-elements/confirmation.tsx
+- web/agent-shell/lib/chat-approval-feed.js
+- web/agent-shell/lib/chat-approval-feed.d.ts
+- web/agent-shell/app/chat/page.tsx
+- web/agent-shell/tests/chat-approval-feed.spec.ts
+
+[summary]
+Pending approvals are now rendered inside the conversation as an approval inbox built with ai-elements-style confirmation cards. Approve and deny actions remain wired to the existing approvals API, and recently resolved approvals stay visible inline so the coding flow feels conversational instead of detached.

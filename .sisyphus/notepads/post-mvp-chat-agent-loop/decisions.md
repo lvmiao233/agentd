@@ -9,3 +9,6 @@
 - 2026-03-08 (Iteration 1): 下一轮若继续增强 chat 体验，优先方向不是手写更多状态组件，而是引入/补齐 ai-elements 官方已存在的 `sources`、`reasoning`、`suggestions`、`confirmation`、`preview` 等组件。
 - 2026-03-08 (Iteration 1): 工具执行失败时必须输出 `tool-output-error` 而不是继续复用 `tool-output-available`，否则 ai-elements `Tool` 会把失败误渲染为 Completed。
 - 2026-03-08 (Iteration 1): 非终止 EOF 不允许降级成 `finishReason=stop`；若流已产生内容但缺失 terminal frame，必须显式标记为 error 并保留已见文本。
+- 2026-03-08 (Iteration 2): approval UX 先不做全局横幅/管理面板增强，而是把审批入口塞回会话流本身；因为对持续 coding 场景来说，“正在等你批准什么”必须和聊天上下文处在同一滚动区域。
+- 2026-03-08 (Iteration 2): 当前仓库未收录 ai-elements 官方 `confirmation` 组件，因此本轮按官方模式补入本地 `components/ai-elements/confirmation.tsx`，优先复用已有 Button / Message / Conversation 体系，避免再造一套独立审批 UI。
+- 2026-03-08 (Iteration 2): 已批准/已拒绝状态需要在会话里短暂保留，而不是点击后直接消失；因此引入 `resolvedApprovals` 本地历史，让用户能看到 agent 流因自己决策而继续推进。

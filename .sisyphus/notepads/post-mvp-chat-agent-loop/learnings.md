@@ -10,3 +10,5 @@
 - 2026-03-08 (Iteration 1): Cherry Studio 的 chunk 模型把 `pending -> in-progress -> complete` 拆成明确事件类型，说明如果后续需要更强的 agent 可视化，可以在现有 AI SDK 事件之外再加一层稳定 chunk 适配，而不是让页面自己猜状态。
 - 2026-03-08 (Iteration 1): ai SDK 的 `tool-output-error` 是独立 chunk 类型；如果上游只塞 `errorText` 进 `tool-output-available`，UI 语义会被污染，状态徽标也会误导用户。
 - 2026-03-08 (Iteration 1): `tool-input-start` 对应的 `input` 可能是 `undefined`，所以任何 ToolInput/CodeBlock 组件都不能假设“只要是工具块就必有参数 JSON”。
+- 2026-03-08 (Iteration 2): 即使后端审批机制还不是 AI SDK 原生 `approval-requested` tool part，只要已有独立 approval queue，也可以先通过 feed 合并与会话内渲染把体验拉近到 ai-elements confirmation 模式。
+- 2026-03-08 (Iteration 2): 浏览器侧用接口拦截验证 approval flow 非常高性价比：既能真实点按钮，又不依赖 daemon 当下有没有恰好挂起的审批任务。
