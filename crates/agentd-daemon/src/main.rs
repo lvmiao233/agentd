@@ -6995,6 +6995,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_agents_marks_ready_one_api_agent_without_token_as_unrunnable() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("ready");
+
+        let profile = AgentProfile::new(
+            "ready-without-token".to_string(),
+            ModelConfig {
+                provider: "one-api".to_string(),
+                model_name: "gpt-5.3-codex".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        );
+        let created = store
+            .create_agent(profile.clone())
+            .await
+            .expect("create test agent");
+        store
+            .update_agent_state(created.id, AgentLifecycleState::Ready, None)
+            .await
+            .expect("mark test agent ready");
+
+        let listed = handle_rpc_request(
+            JsonRpcRequest::new(json!(701), "ListAgents", json!({})),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(listed.error.is_none(), "list agents should succeed: {listed:?}");
+        let listed_result = listed.result.expect("list result should exist");
+        let agents = listed_result
+            .get("agents")
+            .and_then(Value::as_array)
+            .expect("agents should be array");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["status"], json!("ready"));
+        assert_eq!(agents[0]["runnable"], json!(false));
+        assert!(
+            agents[0]["runnable_reason"]
+                .as_str()
+                .is_some_and(|value| value.contains("one-api access token unavailable")),
+            "expected runnable_reason to explain missing token: {:?}",
+            agents[0]
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn create_agent_provisions_one_api_for_external_management() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
@@ -10724,6 +10775,51 @@ async fn is_runnable_delegate_agent(
     Ok(resolve_run_agent_access_token(store, profile).await?.is_some())
 }
 
+async fn summarize_agent_runnability(
+    store: &SqliteStore,
+    profile: &AgentProfile,
+) -> Result<(bool, Option<String>), AgentError> {
+    if profile.status != AgentLifecycleState::Ready {
+        return Ok((
+            false,
+            Some(format!(
+                "agent status is {}; wait until it is ready",
+                format!("{:?}", profile.status).to_ascii_lowercase()
+            )),
+        ));
+    }
+
+    if profile.model.provider != "one-api" {
+        return Ok((true, None));
+    }
+
+    if resolve_run_agent_access_token(store, profile).await?.is_some() {
+        return Ok((true, None));
+    }
+
+    Ok((
+        false,
+        Some(format!(
+            "one-api access token unavailable for agent {} ({})",
+            profile.id, profile.name
+        )),
+    ))
+}
+
+async fn serialize_agent_profile_with_runnability(
+    store: &SqliteStore,
+    profile: &AgentProfile,
+) -> Result<Value, AgentError> {
+    let (runnable, runnable_reason) = summarize_agent_runnability(store, profile).await?;
+    let mut value = serde_json::to_value(profile)
+        .map_err(|err| AgentError::Runtime(format!("serialize agent profile failed: {err}")))?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("runnable".to_string(), json!(runnable));
+        object.insert("runnable_reason".to_string(), json!(runnable_reason));
+    }
+    Ok(value)
+}
+
 async fn resolve_runnable_orchestrator_agent_ids(
     store: &SqliteStore,
     explicit_agents: &[String],
@@ -12814,10 +12910,21 @@ async fn handle_rpc_request(
                 }
             };
 
+            let profile_json = match serialize_agent_profile_with_runnability(&store, &profile).await {
+                Ok(profile_json) => profile_json,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32010,
+                        format!("serialize get agent response failed: {err}"),
+                    )
+                }
+            };
+
             JsonRpcResponse::success(
                 request.id,
                 json!({
-                    "profile": profile,
+                    "profile": profile_json,
                     "audit_events": audit_events,
                 }),
             )
@@ -12908,12 +13015,28 @@ async fn handle_rpc_request(
             }
         }
         "ListAgents" | "management.ListAgents" => match store.list_agents().await {
-            Ok(agents) => JsonRpcResponse::success(
-                request.id,
-                json!({
-                    "agents": agents
-                }),
-            ),
+            Ok(agents) => {
+                let mut serialized = Vec::with_capacity(agents.len());
+                for agent in &agents {
+                    match serialize_agent_profile_with_runnability(&store, agent).await {
+                        Ok(value) => serialized.push(value),
+                        Err(err) => {
+                            return JsonRpcResponse::error(
+                                request.id,
+                                -32010,
+                                format!("serialize list agents response failed: {err}"),
+                            )
+                        }
+                    }
+                }
+
+                JsonRpcResponse::success(
+                    request.id,
+                    json!({
+                        "agents": serialized
+                    }),
+                )
+            }
             Err(err) => {
                 JsonRpcResponse::error(request.id, -32010, format!("list agents failed: {err}"))
             }

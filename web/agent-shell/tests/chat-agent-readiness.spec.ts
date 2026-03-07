@@ -29,6 +29,11 @@ export async function run() {
 
   assert.equal(isAgentRunnable(agents[0]), false, 'failed agents are not runnable');
   assert.equal(isAgentRunnable(agents[1]), true, 'ready agents are runnable');
+  assert.equal(
+    isAgentRunnable({ ...agents[1], runnable: false }),
+    false,
+    'explicit runnable=false should override a ready status'
+  );
 
   assert.equal(
     choosePreferredAgent(agents)?.agent_id,
@@ -58,5 +63,15 @@ export async function run() {
     buildChatAgentUnavailableMessage(agents[0]),
     'Agent failed-agent is failed and cannot run chat requests yet. Select a ready agent first.',
     'non-runnable selection should surface a specific agent status message'
+  );
+
+  assert.equal(
+    buildChatAgentUnavailableMessage({
+      ...agents[1],
+      runnable: false,
+      runnable_reason: 'one-api access token unavailable for agent ready-codex',
+    }),
+    'one-api access token unavailable for agent ready-codex',
+    'daemon-provided runnable_reason should win over the generic fallback message'
   );
 }

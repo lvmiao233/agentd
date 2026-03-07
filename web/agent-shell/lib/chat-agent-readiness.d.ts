@@ -1,5 +1,7 @@
-export function isAgentRunnable(agent: { status: string }): boolean;
-export function choosePreferredAgent<T extends { status: string; model: string }>(
+export function isAgentRunnable(agent: { status: string; runnable?: boolean }): boolean;
+export function choosePreferredAgent<
+  T extends { status: string; model: string; runnable?: boolean }
+>(
   agents: T[],
   preferredModel?: string,
 ): T | null;
@@ -8,6 +10,7 @@ export function buildChatAgentUnavailableMessage(
     | {
         name: string;
         status: string;
+        runnable_reason?: string;
       }
     | null
     | undefined,

@@ -58,6 +58,8 @@ type ChatAgentOption = {
   name: string;
   model: string;
   status: string;
+  runnable?: boolean;
+  runnable_reason?: string;
 };
 
 type ChatStatus = 'ready' | 'streaming' | 'error';

@@ -110,6 +110,8 @@ export type AgentProfile = {
   model: string;
   provider?: string;
   status: string;
+   runnable?: boolean;
+   runnable_reason?: string;
   token_budget?: number;
   max_tokens?: number;
   temperature?: number;
@@ -136,6 +138,8 @@ type RawAgentProfile = {
       };
   provider?: string;
   status?: string;
+  runnable?: boolean;
+  runnable_reason?: string;
   permissions?: {
     policy?: string;
     allowed_tools?: string[];
@@ -165,6 +169,8 @@ function normalizeAgentProfile(raw: RawAgentProfile): AgentProfile {
     model,
     provider,
     status: raw.status ?? 'unknown',
+    runnable: raw.runnable,
+    runnable_reason: raw.runnable_reason,
     permission_policy: raw.permissions?.policy?.toLowerCase(),
     allowed_tools: raw.permissions?.allowed_tools ?? [],
     denied_tools: raw.permissions?.denied_tools ?? [],
