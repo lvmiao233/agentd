@@ -18,7 +18,8 @@ use agentd_core::{
 };
 use agentd_protocol::{
     A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
-    GetA2ATaskResponse, JsonRpcRequest, JsonRpcResponse,
+    GetA2ATaskResponse, JsonRpcRequest, JsonRpcResponse, LoadAgentSessionParams,
+    SaveAgentSessionParams,
 };
 use agentd_store::agent::{delegation_candidates_from_profiles, ContextSessionSnapshot};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -11160,6 +11161,102 @@ fn agent_lite_session_file(agent_id: uuid::Uuid, session_id: &str) -> PathBuf {
         .join(format!("{}.jsonl", sanitize_session_component(session_id)))
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentLiteSessionMetadata {
+    session_id: String,
+    path: String,
+    message_count: usize,
+    head_id: Option<String>,
+}
+
+fn parse_agent_lite_session_metadata(
+    session_path: &Path,
+    session_id: &str,
+) -> Result<AgentLiteSessionMetadata, AgentError> {
+    let raw_text = std::fs::read_to_string(session_path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => AgentError::NotFound(format!(
+            "agent session not found: path={}",
+            session_path.display()
+        )),
+        _ => AgentError::Runtime(format!(
+            "read agent session failed: path={} error={err}",
+            session_path.display()
+        )),
+    })?;
+
+    let mut message_count = 0usize;
+    let mut head_id: Option<String> = None;
+
+    for (line_index, line) in raw_text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let record: Value = serde_json::from_str(trimmed).map_err(|err| {
+            AgentError::Runtime(format!(
+                "parse agent session metadata failed: path={} line={} error={err}",
+                session_path.display(),
+                line_index + 1
+            ))
+        })?;
+
+        let kind = record.get("kind").and_then(Value::as_str);
+        if kind == Some("session") {
+            head_id = record
+                .get("head_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            continue;
+        }
+
+        if kind == Some("message") || record.get("id").and_then(Value::as_str).is_some() {
+            message_count += 1;
+        }
+    }
+
+    Ok(AgentLiteSessionMetadata {
+        session_id: session_id.to_string(),
+        path: session_path.display().to_string(),
+        message_count,
+        head_id,
+    })
+}
+
+fn save_agent_lite_session_copy(
+    source_path: &Path,
+    target_path: &Path,
+    target_session_id: &str,
+) -> Result<AgentLiteSessionMetadata, AgentError> {
+    if !source_path.exists() {
+        return Err(AgentError::NotFound(format!(
+            "agent session not found: path={}",
+            source_path.display()
+        )));
+    }
+
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            AgentError::Runtime(format!(
+                "create agent session directory failed: path={} error={err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    if source_path != target_path {
+        std::fs::copy(source_path, target_path).map_err(|err| {
+            AgentError::Runtime(format!(
+                "copy agent session failed: source={} target={} error={err}",
+                source_path.display(),
+                target_path.display()
+            ))
+        })?;
+    }
+
+    parse_agent_lite_session_metadata(target_path, target_session_id)
+}
+
 async fn run_agent_via_agent_lite(
     state: &RuntimeState,
     _one_api_config: &OneApiConfig,
@@ -12436,6 +12533,148 @@ async fn handle_rpc_request(
                     }
                     JsonRpcResponse::error(request.id, -32030, format!("run agent failed: {err}"))
                 }
+            }
+        }
+        "SaveAgentSession" | "management.SaveAgentSession" => {
+            let params = match serde_json::from_value::<SaveAgentSessionParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid save agent session params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let source_session_id = params.source_session_id.trim();
+            let target_session_id = params.target_session_id.trim();
+            if source_session_id.is_empty() || target_session_id.is_empty() {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32602,
+                    "source_session_id and target_session_id must be non-empty",
+                );
+            }
+
+            let source_path = agent_lite_session_file(agent_id, source_session_id);
+            let target_path = agent_lite_session_file(agent_id, target_session_id);
+            match save_agent_lite_session_copy(&source_path, &target_path, target_session_id) {
+                Ok(metadata) => {
+                    record_audit_event(
+                        &store,
+                        &audit_context,
+                        agent_id,
+                        EventType::ToolInvoked,
+                        EventResult::Success,
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("agent session saved".to_string()),
+                            metadata: json!({
+                                "source_session_id": source_session_id,
+                                "target_session_id": target_session_id,
+                                "path": metadata.path,
+                                "message_count": metadata.message_count,
+                            }),
+                        },
+                    )
+                    .await;
+
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "saved": true,
+                            "source_session_id": source_session_id,
+                            "session": metadata,
+                        }),
+                    )
+                }
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32031,
+                    format!("save agent session failed: {err}"),
+                ),
+            }
+        }
+        "LoadAgentSession" | "management.LoadAgentSession" => {
+            let params = match serde_json::from_value::<LoadAgentSessionParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid load agent session params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let session_id = params.session_id.trim();
+            if session_id.is_empty() {
+                return JsonRpcResponse::error(request.id, -32602, "session_id must be non-empty");
+            }
+
+            let session_path = agent_lite_session_file(agent_id, session_id);
+            match parse_agent_lite_session_metadata(&session_path, session_id) {
+                Ok(metadata) => {
+                    record_audit_event(
+                        &store,
+                        &audit_context,
+                        agent_id,
+                        EventType::ToolInvoked,
+                        EventResult::Success,
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("agent session loaded".to_string()),
+                            metadata: json!({
+                                "session_id": session_id,
+                                "path": metadata.path,
+                                "message_count": metadata.message_count,
+                            }),
+                        },
+                    )
+                    .await;
+
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "loaded": true,
+                            "session": metadata,
+                        }),
+                    )
+                }
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32031,
+                    format!("load agent session failed: {err}"),
+                ),
             }
         }
         "AuthorizeMcpTool" | "management.AuthorizeMcpTool" => {

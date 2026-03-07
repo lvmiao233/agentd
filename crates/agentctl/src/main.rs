@@ -1251,6 +1251,12 @@ fn approval_queue_roundtrip() {
 
 #[cfg(test)]
 #[test]
+fn session_persistence_roundtrip() {
+    assert!(tui::session_persistence_roundtrip_probe());
+}
+
+#[cfg(test)]
+#[test]
 fn build_migration_messages_chains_parent_ids() {
     let (messages, head_id) = build_migration_messages(
         &[

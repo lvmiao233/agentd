@@ -30,6 +30,7 @@ enum TuiCommand {
         input: String,
         model: String,
         agent_id: Option<String>,
+        session_id: Option<String>,
     },
 }
 
@@ -98,6 +99,7 @@ struct SessionSnapshot {
     tool_calls: Vec<ToolCallFold>,
     active_model: String,
     active_agent_id: Option<String>,
+    active_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -120,6 +122,7 @@ pub struct AgentShellApp {
     saved_sessions: BTreeMap<String, SessionSnapshot>,
     active_model: String,
     active_agent_id: Option<String>,
+    active_session_id: Option<String>,
     stream_seq: u64,
     stream_active: bool,
     stream_target_index: Option<usize>,
@@ -138,6 +141,7 @@ impl AgentShellApp {
         agent_id: Option<String>,
         model: Option<String>,
     ) -> Self {
+        let active_session_id = agent_id.as_deref().map(default_agent_lite_session_id);
         Self {
             socket_path: socket_path.into(),
             input_buffer: String::new(),
@@ -153,6 +157,7 @@ impl AgentShellApp {
             saved_sessions: BTreeMap::new(),
             active_model: model.unwrap_or_else(|| "claude-4-sonnet".to_string()),
             active_agent_id: agent_id,
+            active_session_id,
             stream_seq: 0,
             stream_active: false,
             stream_target_index: None,
@@ -255,6 +260,7 @@ impl AgentShellApp {
             input,
             model: self.active_model.clone(),
             agent_id: self.active_agent_id.clone(),
+            session_id: self.active_session_id.clone(),
         };
         if let Some(command_tx) = &self.command_tx {
             if let Err(err) = command_tx.send(command) {
@@ -492,6 +498,7 @@ impl AgentShellApp {
             tool_calls: self.tool_calls.clone(),
             active_model: self.active_model.clone(),
             active_agent_id: self.active_agent_id.clone(),
+            active_session_id: self.active_session_id.clone(),
         };
         self.saved_sessions.insert(name.to_string(), snapshot);
         self.event_panel
@@ -511,6 +518,7 @@ impl AgentShellApp {
         self.tool_calls = snapshot.tool_calls;
         self.active_model = snapshot.active_model;
         self.active_agent_id = snapshot.active_agent_id;
+        self.active_session_id = snapshot.active_session_id;
         self.event_panel
             .entries
             .push(format!("session loaded: {name}"));
@@ -534,6 +542,7 @@ impl AgentShellApp {
                     _ => return self.push_slash_error("usage: /agent <id>"),
                 };
                 self.active_agent_id = Some(agent_id.to_string());
+                self.active_session_id = Some(default_agent_lite_session_id(agent_id));
                 match fetch_agent_model_name(agent_id, rpc) {
                     Ok(Some(model_name)) => {
                         self.active_model = model_name;
@@ -669,11 +678,87 @@ impl AgentShellApp {
                     }
                 };
                 match action {
-                    "save" => {
-                        self.save_session(name);
-                        Ok(())
-                    }
-                    "load" => self.load_session(name),
+                    "save" => match self.current_or_default_agent_id(None) {
+                        Ok(agent_id) => {
+                            let source_session_id = self
+                                .active_session_id
+                                .clone()
+                                .unwrap_or_else(|| default_agent_lite_session_id(&agent_id));
+                            let target_session_id = named_agent_lite_session_id(name);
+                            match rpc(
+                                "SaveAgentSession",
+                                json!({
+                                    "agent_id": agent_id,
+                                    "source_session_id": source_session_id,
+                                    "target_session_id": target_session_id,
+                                }),
+                            ) {
+                                Ok(value) => {
+                                    self.save_session(name);
+                                    if let Some(snapshot) = self.saved_sessions.get_mut(name) {
+                                        snapshot.active_session_id =
+                                            Some(target_session_id.clone());
+                                    }
+                                    let persisted_session_id = value
+                                        .get("session")
+                                        .and_then(|session| session.get("session_id"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or(name);
+                                    self.event_panel
+                                        .entries
+                                        .push(format!("session persisted: {persisted_session_id}"));
+                                    self.push_system_message(format!(
+                                        "session {} persisted",
+                                        persisted_session_id
+                                    ));
+                                    Ok(())
+                                }
+                                Err(err) => Err(err),
+                            }
+                        }
+                        Err(err) => Err(err),
+                    },
+                    "load" => match self.current_or_default_agent_id(None) {
+                        Ok(agent_id) => {
+                            let target_session_id = named_agent_lite_session_id(name);
+                            match rpc(
+                                "LoadAgentSession",
+                                json!({
+                                    "agent_id": agent_id,
+                                    "session_id": target_session_id,
+                                }),
+                            ) {
+                                Ok(value) => {
+                                    let local_load = if self.saved_sessions.contains_key(name) {
+                                        self.load_session(name)
+                                    } else {
+                                        Ok(())
+                                    };
+                                    if let Err(err) = local_load {
+                                        Err(err)
+                                    } else {
+                                        self.active_session_id = Some(target_session_id.clone());
+                                        let message_count = value
+                                            .get("session")
+                                            .and_then(|session| session.get("message_count"))
+                                            .and_then(Value::as_u64)
+                                            .unwrap_or(0);
+                                        self.event_panel.entries.push(format!(
+                                            "session rpc loaded: {} ({} messages)",
+                                            target_session_id, message_count
+                                        ));
+                                        self.push_system_message(format!(
+                                            "session {} ready ({} messages)",
+                                            name, message_count
+                                        ));
+                                        Ok(())
+                                    }
+                                }
+                                Err(err) => Err(err),
+                            }
+                        }
+                        Err(err) => Err(err),
+                    },
                     _ => Err("usage: /session save <name> | /session load <name>".to_string()),
                 }
             }
@@ -956,8 +1041,30 @@ where
     Ok(extract_agent_model_name(&profile))
 }
 
-fn agent_lite_session_id(agent_id: &str) -> String {
+fn default_agent_lite_session_id(agent_id: &str) -> String {
     format!("tui-{agent_id}")
+}
+
+fn sanitize_session_name(raw: &str) -> String {
+    let mut sanitized = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "session".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn named_agent_lite_session_id(name: &str) -> String {
+    format!("tui-session-{}", sanitize_session_name(name))
 }
 
 fn bootstrap_shell_context_with_rpc<F>(
@@ -1117,6 +1224,7 @@ async fn stream_chat_rpc_over_uds(
     input: String,
     model: String,
     agent_id: Option<String>,
+    session_id: Option<String>,
     chunk_tx: &Sender<StreamChunk>,
 ) -> Result<(), String> {
     let mut stream = TokioUnixStream::connect(socket_path)
@@ -1132,7 +1240,7 @@ async fn stream_chat_rpc_over_uds(
             "agent_id": agent_id,
             "stream": true,
             "runtime": if agent_id.is_some() { Some("agent-lite") } else { None },
-            "session_id": agent_id.as_deref().map(agent_lite_session_id),
+            "session_id": session_id,
         }),
     );
     let payload =
@@ -1217,12 +1325,14 @@ fn spawn_chat_worker(
                     input,
                     model,
                     agent_id,
+                    session_id,
                 } => {
                     let result = runtime.block_on(stream_chat_rpc_over_uds(
                         &socket_path,
                         input,
                         model,
                         agent_id,
+                        session_id,
                         &chunk_tx,
                     ));
                     match result {
@@ -1558,4 +1668,66 @@ pub(crate) fn approval_queue_roundtrip_probe() -> bool {
             .messages
             .iter()
             .any(|message| message.content.contains("approval req-1 resolved as deny"))
+}
+
+#[cfg(test)]
+pub(crate) fn session_persistence_roundtrip_probe() -> bool {
+    let mut app = AgentShellApp::with_initial_context(
+        "/tmp/agentd.sock",
+        Some("agent-1".to_string()),
+        Some("gpt-5.3-codex".to_string()),
+    );
+    app.messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: "remember this branch".to_string(),
+    });
+
+    let mut rpc = |method: &str, params: Value| -> Result<Value, String> {
+        match method {
+            "SaveAgentSession" => {
+                if params["agent_id"] != json!("agent-1")
+                    || params["source_session_id"] != json!("tui-agent-1")
+                    || params["target_session_id"] != json!("tui-session-review")
+                {
+                    return Err(format!("unexpected save params: {params}"));
+                }
+                Ok(json!({
+                    "saved": true,
+                    "session": {
+                        "session_id": "tui-session-review",
+                        "message_count": 1,
+                    }
+                }))
+            }
+            "LoadAgentSession" => {
+                if params["agent_id"] != json!("agent-1")
+                    || params["session_id"] != json!("tui-session-review")
+                {
+                    return Err(format!("unexpected load params: {params}"));
+                }
+                Ok(json!({
+                    "loaded": true,
+                    "session": {
+                        "session_id": "tui-session-review",
+                        "message_count": 1,
+                    }
+                }))
+            }
+            _ => Err(format!("unexpected method: {method}")),
+        }
+    };
+
+    app.execute_slash_command_with_rpc("/session save review", &mut rpc);
+    app.messages.clear();
+    app.execute_slash_command_with_rpc("/session load review", &mut rpc);
+
+    app.active_session_id.as_deref() == Some("tui-session-review")
+        && app
+            .messages
+            .iter()
+            .any(|message| message.content.contains("remember this branch"))
+        && app
+            .messages
+            .iter()
+            .any(|message| message.content.contains("session review ready"))
 }

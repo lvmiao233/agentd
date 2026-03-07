@@ -4,6 +4,8 @@ use serde_json::Value;
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const METHOD_LIST_AVAILABLE_TOOLS: &str = "ListAvailableTools";
 pub const METHOD_INVOKE_SKILL: &str = "InvokeSkill";
+pub const METHOD_SAVE_AGENT_SESSION: &str = "SaveAgentSession";
+pub const METHOD_LOAD_AGENT_SESSION: &str = "LoadAgentSession";
 pub const METHOD_A2A_CREATE_TASK: &str = "A2A.CreateTask";
 pub const METHOD_A2A_GET_TASK: &str = "A2A.GetTask";
 pub const METHOD_A2A_SUBSCRIBE_STREAM: &str = "A2A.SubscribeStream";
@@ -20,6 +22,19 @@ pub struct InvokeSkillParams {
     pub tool: String,
     #[serde(default)]
     pub args: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveAgentSessionParams {
+    pub agent_id: String,
+    pub source_session_id: String,
+    pub target_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadAgentSessionParams {
+    pub agent_id: String,
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
