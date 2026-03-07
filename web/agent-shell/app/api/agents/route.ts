@@ -18,6 +18,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       name?: string;
       model?: string;
+      provider?: string;
       permission_policy?: string;
       allowed_tools?: string[];
       denied_tools?: string[];
@@ -32,6 +33,7 @@ export async function POST(req: Request) {
     const agent = await createAgent({
       name: body.name.trim(),
       model: body.model.trim(),
+      provider: body.provider?.trim(),
       permission_policy: body.permission_policy?.trim(),
       allowed_tools: body.allowed_tools ?? [],
       denied_tools: body.denied_tools ?? [],

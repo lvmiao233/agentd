@@ -68,6 +68,7 @@ export default function SettingsPage() {
   const [trustLevel, setTrustLevel] = useState('community');
   const [agentName, setAgentName] = useState('');
   const [agentModel, setAgentModel] = useState('gpt-5.3-codex');
+  const [agentProvider, setAgentProvider] = useState('agent-lite');
   const [agentPolicy, setAgentPolicy] = useState('ask');
   const [allowedToolsText, setAllowedToolsText] = useState('');
   const [deniedToolsText, setDeniedToolsText] = useState('');
@@ -168,12 +169,13 @@ export default function SettingsPage() {
       const response = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: trimmedName,
-          model: trimmedModel,
-          permission_policy: agentPolicy,
-          allowed_tools: parseToolPatterns(allowedToolsText),
-          denied_tools: parseToolPatterns(deniedToolsText),
+          body: JSON.stringify({
+            name: trimmedName,
+            model: trimmedModel,
+            provider: agentProvider,
+            permission_policy: agentPolicy,
+            allowed_tools: parseToolPatterns(allowedToolsText),
+            denied_tools: parseToolPatterns(deniedToolsText),
         }),
       });
       const payload = await response.json();
@@ -291,6 +293,18 @@ export default function SettingsPage() {
               />
             </div>
             <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Provider</label>
+              <Select value={agentProvider} onValueChange={setAgentProvider}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="agent-lite">agent-lite</SelectItem>
+                  <SelectItem value="one-api">one-api</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <label className="mb-1 block text-xs text-muted-foreground">默认策略</label>
               <Select value={agentPolicy} onValueChange={setAgentPolicy}>
                 <SelectTrigger>
@@ -304,6 +318,9 @@ export default function SettingsPage() {
               </Select>
             </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            选择 <code>agent-lite</code> 可避免默认依赖 one-api token 映射；如需走受管 one-api 凭据，再切换为 <code>one-api</code>。
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">
