@@ -63,8 +63,8 @@ export default function SettingsPage() {
   const [agentSubmitting, setAgentSubmitting] = useState(false);
 
   const [name, setName] = useState('');
-  const [command, setCommand] = useState('');
-  const [argsText, setArgsText] = useState('');
+  const [command, setCommand] = useState('npx');
+  const [argsText, setArgsText] = useState('["-y", "@modelcontextprotocol/server-figma"]');
   const [trustLevel, setTrustLevel] = useState('community');
   const [agentName, setAgentName] = useState('');
   const [agentModel, setAgentModel] = useState('gpt-5.3-codex');
@@ -407,6 +407,9 @@ export default function SettingsPage() {
               placeholder={'["-y", "@modelcontextprotocol/server-figma"]'}
             />
           </div>
+          <p className="text-xs text-muted-foreground">
+            已预填一个可直接修改的 MCP server 示例；只改名称即可试跑，接入其他 server 时再调整命令和参数。
+          </p>
           <Button type="submit" disabled={submitting || !name.trim() || !command.trim()}>
             {submitting ? (
               <Loader2 className="mr-1 size-4 animate-spin" />
