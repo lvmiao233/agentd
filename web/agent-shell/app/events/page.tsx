@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { createDaemonWs, sendWsRpc } from '@/lib/daemon-rpc';
 import {
   Activity,
   AlertTriangle,
@@ -76,8 +75,6 @@ export default function EventsPage() {
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
   const cursorRef = useRef<string | undefined>(undefined);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const mergeEvents = (incoming: RuntimeEvent[]) => {
     if (incoming.length === 0) {
@@ -109,112 +106,23 @@ export default function EventsPage() {
       }
       mergeEvents((payload.events ?? []).map((event) => normalizeRuntimeEvent(event as Record<string, unknown>)));
       setError(null);
+      setConnected(true);
     } catch {
       setError('无法从 daemon 获取事件');
+      setConnected(false);
     }
-  };
-
-  const requestNextBatch = () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || paused) {
-      return;
-    }
-    sendWsRpc(wsRef.current, 'SubscribeEvents', {
-      cursor: cursorRef.current,
-      limit: 50,
-      wait_timeout_secs: 30,
-    });
   };
 
   useEffect(() => {
-    let closed = false;
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-    };
-
-    const connect = () => {
-      clearReconnectTimer();
-      const ws = createDaemonWs();
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (closed) {
-          return;
-        }
-        setConnected(true);
-        setError(null);
-        void refreshOnce().then(requestNextBatch);
-      };
-
-      ws.onmessage = (event) => {
-        if (closed || typeof event.data !== 'string') {
-          return;
-        }
-        try {
-          const payload = JSON.parse(event.data) as {
-            result?: { events?: RuntimeEvent[]; next_cursor?: string };
-            error?: { message?: string };
-          };
-          if (payload.error?.message) {
-            setError(payload.error.message);
-            return;
-          }
-          const result = payload.result;
-          if (!result) {
-            return;
-          }
-          if (result.next_cursor) {
-            cursorRef.current = result.next_cursor;
-          }
-          mergeEvents(
-            (result.events ?? []).map((event) =>
-              normalizeRuntimeEvent(event as Record<string, unknown>),
-            ),
-          );
-          setError(null);
-          requestNextBatch();
-        } catch {
-          setError('无法解析 daemon 事件流');
-        }
-      };
-
-      ws.onerror = () => {
-        if (!closed) {
-          setConnected(false);
-          setError('daemon WebSocket 连接失败');
-        }
-      };
-
-      ws.onclose = () => {
-        if (closed) {
-          return;
-        }
-        setConnected(false);
-        wsRef.current = null;
-        if (!paused) {
-          reconnectTimerRef.current = setTimeout(connect, 1000);
-        }
-      };
-    };
-
     void refreshOnce();
     const pollTimer = setInterval(() => {
-      void refreshOnce();
-    }, 5000);
-    if (!paused) {
-      connect();
-    }
+      if (!paused) {
+        void refreshOnce();
+      }
+    }, 2000);
 
     return () => {
-      closed = true;
       clearInterval(pollTimer);
-      clearReconnectTimer();
-      wsRef.current?.close();
-      wsRef.current = null;
-      setConnected(false);
     };
   }, [paused]);
 

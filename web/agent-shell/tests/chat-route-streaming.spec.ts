@@ -59,18 +59,20 @@ export async function run() {
     new Request('http://local.test/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [
-          {
+        body: JSON.stringify({
+          messages: [
+            {
             id: 'msg-1',
             role: 'user',
             parts: [{ type: 'text', text: '分析' }, { type: 'text', text: ' main.rs' }],
           },
-        ],
-        model: 'gpt-test-model',
-        agentId: 'agent-42',
+          ],
+          model: 'gpt-test-model',
+          agentId: 'agent-42',
+          sessionId: 'web-agent-42',
+          runtime: 'agent-lite',
+        }),
       }),
-    }),
     {
       daemonUrl: 'http://daemon.test:7000',
       fetchImpl: async (url, init) => {
@@ -105,6 +107,8 @@ export async function run() {
     input: '[user]\n分析 main.rs',
     model: 'gpt-test-model',
     agent_id: 'agent-42',
+    session_id: 'web-agent-42',
+    runtime: 'agent-lite',
     stream: true,
   });
 

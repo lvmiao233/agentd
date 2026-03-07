@@ -39,14 +39,13 @@ import {
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
 import {
-  createDaemonWs,
-  sendWsRpc,
   type ApprovalItem,
 } from '@/lib/daemon-rpc';
 import {
   WebAgentChatModel,
   type WebAgentChatMessage,
 } from '@/lib/web-agent-chat';
+import { consumeChatUiStream } from '@/lib/chat-ui-stream';
 import {
   buildChatAgentUnavailableMessage,
   choosePreferredAgent,
@@ -70,70 +69,6 @@ function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
 }
 
-function extractErrorMessage(payload: any): string | null {
-  const error = payload?.error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object' && typeof error.message === 'string' && error.message.trim()) {
-    return error.message;
-  }
-  const message = payload?.message;
-  if (typeof message === 'string' && message.trim()) return message;
-  if (payload?.status === 'failed' || payload?.status === 'blocked') {
-    return 'RunAgent streaming failed.';
-  }
-  return null;
-}
-
-function extractTextDelta(payload: any): string {
-  const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
-  const llmOutput = normalized?.llm?.output;
-  if (typeof llmOutput === 'string' && llmOutput.length > 0) return llmOutput;
-  for (const field of ['delta', 'token', 'text', 'content', 'output']) {
-    const value = normalized?.[field];
-    if (typeof value === 'string' && value.length > 0) return value;
-  }
-  return '';
-}
-
-function extractToolCalls(payload: any): Array<{
-  id: string;
-  name: string;
-  input: unknown;
-  output: unknown;
-  errorText?: string;
-}> {
-  const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
-  const calls = normalized?.tool?.calls;
-  if (!Array.isArray(calls)) return [];
-  return calls
-    .map((call: any, index: number) => {
-      const id = typeof call?.id === 'string' && call.id.trim() ? call.id : `call-${index}`;
-      const name = typeof call?.function?.name === 'string' && call.function.name.trim()
-        ? call.function.name
-        : 'unknown_tool';
-      const argsRaw = typeof call?.function?.arguments === 'string' ? call.function.arguments : '';
-      let input: unknown = {};
-      if (argsRaw.trim()) {
-        try {
-          input = JSON.parse(argsRaw);
-        } catch {
-          input = argsRaw;
-        }
-      }
-
-      const output = call?.output;
-      const errorValue = call?.error;
-      const errorText =
-        typeof errorValue === 'string'
-          ? errorValue
-          : typeof errorValue?.message === 'string'
-            ? errorValue.message
-            : undefined;
-
-      return { id, name, input, output, errorText };
-    });
-}
-
 function agentLiteSessionId(agentId: string): string {
   return `web-${agentId}`;
 }
@@ -147,11 +82,8 @@ export default function ChatPage() {
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const activeRequestIdRef = useRef<number | null>(null);
+  const activeRequestAbortRef = useRef<AbortController | null>(null);
   const lastSubmittedInputRef = useRef('');
-  const agentIdRef = useRef<string | null>(null);
   const chatModelRef = useRef(new WebAgentChatModel());
 
   const syncChatModel = () => {
@@ -187,10 +119,6 @@ export default function ChatPage() {
     return preferred.agent_id;
   };
 
-  useEffect(() => {
-    agentIdRef.current = agentId;
-  }, [agentId]);
-
   const refreshApprovalQueue = async (targetAgentId: string | null) => {
     if (!targetAgentId) {
       setApprovalQueue([]);
@@ -211,140 +139,11 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    let closed = false;
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-    };
-
-    const connect = () => {
-      clearReconnectTimer();
-      const ws = createDaemonWs();
-      wsRef.current = ws;
-
-      const appendAssistantError = (message: string) => {
-        chatModelRef.current.appendAssistantMessage(`RunAgent failed: ${message}`);
-        syncChatModel();
-        setStatus('error');
-        activeRequestIdRef.current = null;
-        if (message.includes('policy.ask') && agentIdRef.current) {
-          void refreshApprovalQueue(agentIdRef.current);
-        }
-      };
-
-      const applyStreamPayload = (payload: any) => {
-        const errorMessage = extractErrorMessage(payload);
-        if (errorMessage) {
-          appendAssistantError(errorMessage);
-          return;
-        }
-
-        const delta = extractTextDelta(payload);
-        if (delta) {
-          chatModelRef.current.appendAssistantToken(delta);
-          syncChatModel();
-        }
-
-        const toolCalls = extractToolCalls(payload);
-        if (toolCalls.length > 0) {
-          for (const toolCall of toolCalls) {
-            chatModelRef.current.appendToolCall(
-              toolCall.name,
-              toolCall.input,
-              toolCall.id,
-              toolCall.output,
-              toolCall.errorText,
-            );
-          }
-          syncChatModel();
-        }
-
-        const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
-        if (normalized?.status === 'completed' || normalized?.type === 'done') {
-          setStatus('ready');
-          activeRequestIdRef.current = null;
-        }
-      };
-
-      const handleStreamFrame = (frameText: string) => {
-        const frames = frameText
-          .split(/\n\n+/)
-          .map((frame) => frame.trim())
-          .filter(Boolean);
-        for (const frame of frames) {
-          if (!frame.startsWith('data:')) continue;
-          const payloadText = frame.slice(5).trim();
-          if (!payloadText || payloadText === '[DONE]') {
-            setStatus('ready');
-            activeRequestIdRef.current = null;
-            continue;
-          }
-          try {
-            applyStreamPayload(JSON.parse(payloadText));
-          } catch {
-            appendAssistantError('invalid websocket stream payload');
-          }
-        }
-      };
-
-      ws.onopen = () => {
-        if (!closed) {
-          chatModelRef.current.handleReconnect();
-          syncChatModel();
-        }
-      };
-
-      ws.onerror = () => {
-        if (!closed) {
-          chatModelRef.current.handleDisconnect();
-          syncChatModel();
-        }
-      };
-
-      ws.onclose = () => {
-        if (closed) return;
-        chatModelRef.current.handleDisconnect();
-        syncChatModel();
-        wsRef.current = null;
-        reconnectTimerRef.current = setTimeout(connect, 1000);
-      };
-
-      ws.onmessage = (event) => {
-        if (closed || typeof event.data !== 'string') return;
-        const payloadText = event.data.trim();
-        if (!payloadText) return;
-        if (payloadText.startsWith('data:')) {
-          handleStreamFrame(payloadText);
-          return;
-        }
-        if (!payloadText.startsWith('{')) {
-          return;
-        }
-        try {
-          const payload = JSON.parse(payloadText);
-          if (payload?.id === activeRequestIdRef.current && payload?.error) {
-            appendAssistantError(
-              typeof payload.error?.message === 'string'
-                ? payload.error.message
-                : 'websocket rpc request failed',
-            );
-          }
-        } catch {
-          appendAssistantError('websocket returned invalid rpc payload');
-        }
-      };
-    };
-
-    connect();
-
+    chatModelRef.current.handleReconnect();
+    syncChatModel();
     return () => {
-      closed = true;
-      clearReconnectTimer();
-      wsRef.current?.close();
-      wsRef.current = null;
+      activeRequestAbortRef.current?.abort();
+      activeRequestAbortRef.current = null;
     };
   }, []);
 
@@ -438,24 +237,60 @@ export default function ChatPage() {
     lastSubmittedInputRef.current = text;
     setStatus('streaming');
 
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      chatModelRef.current.appendAssistantMessage(
-        'RunAgent websocket transport unavailable.',
-      );
+    activeRequestAbortRef.current?.abort();
+    const abortController = new AbortController();
+    activeRequestAbortRef.current = abortController;
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [
+            {
+              id: nextMessageId(),
+              role: 'user',
+              parts: [{ type: 'text', text }],
+            },
+          ],
+          model: selectedAgent.model,
+          agentId: selectedAgent.agent_id,
+          sessionId: agentLiteSessionId(selectedAgent.agent_id),
+          runtime: 'agent-lite',
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`chat request failed (${response.status})`);
+      }
+
+      await consumeChatUiStream(response, {
+        onAssistantDelta: (delta) => {
+          chatModelRef.current.appendAssistantToken(delta);
+          syncChatModel();
+        },
+        onToolInput: ({ toolCallId, toolName, input }) => {
+          chatModelRef.current.appendToolCall(toolName, input, toolCallId);
+          syncChatModel();
+        },
+      });
+
+      setStatus('ready');
+      await refreshApprovalQueue(selectedAgent.agent_id);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'chat transport failed';
+      chatModelRef.current.appendAssistantMessage(`RunAgent failed: ${message}`);
       syncChatModel();
       setStatus('error');
+      await refreshApprovalQueue(selectedAgent.agent_id);
       return false;
+    } finally {
+      if (activeRequestAbortRef.current === abortController) {
+        activeRequestAbortRef.current = null;
+      }
     }
-
-    activeRequestIdRef.current = sendWsRpc(ws, 'RunAgent', {
-      input: text,
-      agent_id: selectedAgent.agent_id,
-      stream: true,
-      runtime: 'agent-lite',
-      session_id: agentLiteSessionId(selectedAgent.agent_id),
-    });
-    return true;
   };
 
   const handleSubmit = () => {

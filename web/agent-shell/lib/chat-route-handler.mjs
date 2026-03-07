@@ -78,6 +78,8 @@ export async function handleChatPost(
     messages,
     model: modelId,
     agentId,
+    sessionId,
+    runtime,
   } = await req.json();
 
   const selectedModel = modelId ?? 'gpt-5.3-codex';
@@ -100,6 +102,8 @@ export async function handleChatPost(
           input,
           model: selectedModel,
           ...(agentId ? { agent_id: agentId } : {}),
+          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(runtime ? { runtime } : {}),
           stream: true,
         },
       }),
