@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev . --hostname 127.0.0.1 --port 4173",
-    "build": "next build .",
-    "start": "next start . --hostname 127.0.0.1 --port 4173",
+    "dev": "./node_modules/.bin/next dev --hostname 127.0.0.1 --port 4173",
+    "build": "./node_modules/.bin/next build",
+    "start": "./node_modules/.bin/next start --hostname 127.0.0.1 --port 4173",
     "test": "node ./tests/run-tests.mjs"
   },
   "dependencies": {

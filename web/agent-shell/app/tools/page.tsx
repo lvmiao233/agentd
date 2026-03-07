@@ -81,13 +81,21 @@ export default function ToolsPage() {
       }
 
       const data = await res.json();
+      const nextTools = data.tools ?? [];
       setAgents(data.agents ?? []);
-      setTools(data.tools ?? []);
+      setTools(nextTools);
 
       if (!selectedAgentId) {
         const preferred = choosePreferredAgent(data.agents ?? []) as AgentOption | null;
         setAgentId(preferred?.agent_id ?? data.agent_id ?? '');
       }
+      setProbeTool((current) => {
+        if (current.trim()) {
+          return current;
+        }
+        const preferredTool = nextTools.find((tool: AvailableTool) => tool.policy_tool)?.policy_tool;
+        return preferredTool ?? current;
+      });
       setError(null);
     } catch {
       setError('无法从 daemon 获取可用工具列表');
@@ -112,9 +120,19 @@ export default function ToolsPage() {
 
   async function handleProbe(e: FormEvent) {
     e.preventDefault();
-    if (!agentId || !probeTool.trim()) {
+    if (!agentId && !probeTool.trim()) {
       setProbeResult(null);
       setError('请选择 Agent 并输入 policy tool 名称');
+      return;
+    }
+    if (!agentId) {
+      setProbeResult(null);
+      setError('请选择 Agent');
+      return;
+    }
+    if (!probeTool.trim()) {
+      setProbeResult(null);
+      setError('请输入 policy tool 名称');
       return;
     }
 
@@ -201,11 +219,11 @@ export default function ToolsPage() {
         </h2>
         <form onSubmit={handleProbe} className="space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Input
-              value={probeTool}
-              onChange={(e) => setProbeTool(e.target.value)}
-              placeholder="mcp.shell.execute"
-            />
+              <Input
+                value={probeTool}
+                onChange={(e) => setProbeTool(e.target.value)}
+                placeholder="mcp.shell.execute_with_timeout"
+              />
             <Button
               type="submit"
               disabled={
