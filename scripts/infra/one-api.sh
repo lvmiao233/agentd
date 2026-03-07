@@ -139,7 +139,11 @@ do_start() {
         return 1
     fi
 
-    wait_healthy
+    if ! wait_healthy; then
+        log_warn "startup failed health checks; stopping spawned process"
+        do_stop || true
+        return 1
+    fi
     echo ""
     log_success "One API running at http://127.0.0.1:${PORT}"
     log_info "binary: $ONE_API_BIN"
@@ -260,7 +264,7 @@ do_health() {
         log_success "PASS: /v1/models -> $model_count model(s) available"
         python3 -c 'import json,sys
 for model in json.load(sys.stdin).get("data", []):
-    print(f"  - {model.get("id", "?")}")' <<< "$models_response" 2>/dev/null || true
+    print("  - {}".format(model.get("id", "?")))' <<< "$models_response" 2>/dev/null || true
     else
         log_warn "WARN: /v1/models returned empty (token may be invalid or no channels configured)"
     fi
