@@ -5,6 +5,7 @@ import {
   listAgents,
   listAvailableTools,
 } from '@/lib/daemon-rpc';
+import { choosePreferredAgent } from '@/lib/chat-agent-readiness.js';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -12,7 +13,10 @@ export async function GET(req: Request) {
 
   try {
     const agents = await listAgents();
-    const agentId = requestedAgentId ?? agents[0]?.agent_id;
+    const selectedAgent = requestedAgentId
+      ? agents.find((agent) => agent.agent_id === requestedAgentId)
+      : choosePreferredAgent(agents);
+    const agentId = selectedAgent?.agent_id;
 
     if (!agentId) {
       return NextResponse.json({
@@ -29,6 +33,9 @@ export async function GET(req: Request) {
         agent_id: agent.agent_id,
         name: agent.name,
         model: agent.model,
+        status: agent.status,
+        runnable: agent.runnable,
+        runnable_reason: agent.runnable_reason,
       })),
       tools,
     });

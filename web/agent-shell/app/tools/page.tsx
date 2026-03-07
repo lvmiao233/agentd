@@ -11,12 +11,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  buildChatAgentUnavailableMessage,
+  choosePreferredAgent,
+  isAgentRunnable,
+} from '@/lib/chat-agent-readiness.js';
 import { AlertTriangle, Loader2, ShieldCheck, Wrench } from 'lucide-react';
 
 type AgentOption = {
   agent_id: string;
   name: string;
   model: string;
+  status: string;
+  runnable?: boolean;
+  runnable_reason?: string;
 };
 
 type AvailableTool = {
@@ -76,8 +84,9 @@ export default function ToolsPage() {
       setAgents(data.agents ?? []);
       setTools(data.tools ?? []);
 
-      if (!selectedAgentId && data.agent_id) {
-        setAgentId(data.agent_id);
+      if (!selectedAgentId) {
+        const preferred = choosePreferredAgent(data.agents ?? []) as AgentOption | null;
+        setAgentId(preferred?.agent_id ?? data.agent_id ?? '');
       }
       setError(null);
     } catch {
@@ -99,6 +108,7 @@ export default function ToolsPage() {
     () => Array.from(new Set(tools.map((tool) => tool.policy_tool))).slice(0, 8),
     [tools],
   );
+  const selectedAgent = agents.find((agent) => agent.agent_id === agentId);
 
   async function handleProbe(e: FormEvent) {
     e.preventDefault();
@@ -167,13 +177,22 @@ export default function ToolsPage() {
             </SelectTrigger>
             <SelectContent>
               {agents.map((agent) => (
-                <SelectItem key={agent.agent_id} value={agent.agent_id}>
-                  {agent.name} · {agent.model} · {agent.agent_id.slice(0, 8)}…
+                <SelectItem
+                  key={agent.agent_id}
+                  value={agent.agent_id}
+                  disabled={!isAgentRunnable(agent)}
+                >
+                  {agent.name} · {agent.model} · {agent.status}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         )}
+        {selectedAgent?.runnable === false && (
+            <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+              {buildChatAgentUnavailableMessage(selectedAgent)}
+            </div>
+          )}
       </section>
 
       <section className="rounded-xl border border-border bg-card p-4">
@@ -187,7 +206,15 @@ export default function ToolsPage() {
               onChange={(e) => setProbeTool(e.target.value)}
               placeholder="mcp.shell.execute"
             />
-            <Button type="submit" disabled={probeSubmitting || !agentId}>
+            <Button
+              type="submit"
+              disabled={
+                probeSubmitting ||
+                !agentId ||
+                !selectedAgent ||
+                !isAgentRunnable(selectedAgent)
+              }
+            >
               {probeSubmitting ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
               探测策略
             </Button>
