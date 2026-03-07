@@ -57,6 +57,7 @@ import {
 } from '@/components/ui/select';
 import {
   Tool,
+  getToolDisplayName,
   ToolHeader,
   ToolContent,
   ToolInput,
@@ -75,6 +76,7 @@ import {
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
+import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 
 type ChatAgentOption = {
   agent_id: string;
@@ -327,7 +329,29 @@ export default function ChatPage() {
 
   const selectedAgent = availableAgents.find((candidate) => candidate.agent_id === agentId);
   const selectedAgentRunnable = selectedAgent ? isAgentRunnable(selectedAgent) : false;
-  const approvalFeed = buildApprovalFeed({ pending: approvalQueue, resolved: resolvedApprovals });
+  const toolApprovalNodes = messages.flatMap((message) =>
+    message.parts.flatMap((part, partIndex) => {
+      if (!isToolUIPart(part)) {
+        return [];
+      }
+
+      return [
+        {
+          key: `${message.id}-tool-${partIndex}`,
+          toolCallId: part.toolCallId,
+          toolName: getToolDisplayName({
+            type: part.type,
+            toolName: part.type === 'dynamic-tool' ? part.toolName : undefined,
+          }),
+        },
+      ];
+    }),
+  );
+  const { assignments: toolApprovalAssignments, unmatchedApprovals } = assignApprovalsToTools({
+    toolNodes: toolApprovalNodes,
+    approvals: approvalQueue,
+  });
+  const approvalFeed = buildApprovalFeed({ pending: unmatchedApprovals, resolved: resolvedApprovals });
 
   const lastAssistantMessage = [...messages]
     .reverse()
@@ -467,11 +491,15 @@ export default function ChatPage() {
                 for (const [partIndex, part] of message.parts.entries()) {
                   if (isToolUIPart(part)) {
                     flushContentParts();
+                    const toolKey = `${message.id}-tool-${partIndex}`;
+                    const linkedApproval = toolApprovalAssignments.get(toolKey);
                     renderedSegments.push(
                       <Tool
-                        key={`${message.id}-tool-${partIndex}`}
+                        key={toolKey}
                         defaultOpen={
-                          part.state === 'output-available' || part.state === 'output-error'
+                          part.state === 'output-available' ||
+                          part.state === 'output-error' ||
+                          linkedApproval !== undefined
                         }
                       >
                         {part.type === 'dynamic-tool' ? (
@@ -484,6 +512,34 @@ export default function ChatPage() {
                           <ToolHeader type={part.type} state={part.state} />
                         )}
                         <ToolContent>
+                          {linkedApproval && (
+                            <Confirmation state="approval-requested">
+                              <ConfirmationRequest>
+                                <div className="font-medium">Approval required for {linkedApproval.tool}</div>
+                                <div className="text-muted-foreground text-sm">
+                                  {linkedApproval.reason}
+                                </div>
+                                <div className="text-muted-foreground text-xs">
+                                  Requested at {linkedApproval.requested_at}
+                                </div>
+                              </ConfirmationRequest>
+                              <ConfirmationActions>
+                                <ConfirmationAction
+                                  onClick={() => void handleApprovalDecision(linkedApproval.id, 'approve')}
+                                  disabled={approvalBusyId === linkedApproval.id}
+                                >
+                                  Approve
+                                </ConfirmationAction>
+                                <ConfirmationAction
+                                  variant="outline"
+                                  onClick={() => void handleApprovalDecision(linkedApproval.id, 'deny')}
+                                  disabled={approvalBusyId === linkedApproval.id}
+                                >
+                                  Deny
+                                </ConfirmationAction>
+                              </ConfirmationActions>
+                            </Confirmation>
+                          )}
                           <ToolInput input={part.input} />
                           <ToolOutput output={part.output} errorText={part.errorText} />
                         </ToolContent>

@@ -72,6 +72,15 @@ export const getStatusBadge = (status: ToolPart["state"]) => (
   </Badge>
 );
 
+export function getToolDisplayName(params: {
+  type: ToolUIPart["type"] | DynamicToolUIPart["type"];
+  toolName?: string;
+}) {
+  return params.type === "dynamic-tool"
+    ? params.toolName ?? "dynamic-tool"
+    : params.type.split("-").slice(1).join("-");
+}
+
 export const ToolHeader = ({
   className,
   title,
@@ -80,8 +89,7 @@ export const ToolHeader = ({
   toolName,
   ...props
 }: ToolHeaderProps) => {
-  const derivedName =
-    type === "dynamic-tool" ? toolName : type.split("-").slice(1).join("-");
+  const derivedName = getToolDisplayName({ type, toolName });
 
   return (
     <CollapsibleTrigger
