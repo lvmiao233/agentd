@@ -18,8 +18,8 @@ use agentd_core::{
 };
 use agentd_protocol::{
     A2ATask, A2ATaskEvent, A2ATaskState, CreateA2ATaskRequest, CreateA2ATaskResponse,
-    GetA2ATaskResponse, JsonRpcRequest, JsonRpcResponse, LoadAgentSessionParams,
-    SaveAgentSessionParams,
+    CompactAgentSessionParams, GetA2ATaskResponse, JsonRpcRequest, JsonRpcResponse,
+    LoadAgentSessionParams, SaveAgentSessionParams,
 };
 use agentd_store::agent::{delegation_candidates_from_profiles, ContextSessionSnapshot};
 use agentd_store::{AgentStore, OneApiMapping, SqliteStore, UsageWindow};
@@ -11257,6 +11257,122 @@ fn save_agent_lite_session_copy(
     parse_agent_lite_session_metadata(target_path, target_session_id)
 }
 
+async fn run_agent_lite_session_command(
+    state: &RuntimeState,
+    agent_id: uuid::Uuid,
+    session_id: &str,
+    command_name: &str,
+) -> Result<AgentLiteSessionMetadata, AgentError> {
+    let session_file = agent_lite_session_file(agent_id, session_id);
+    let result_path = std::env::temp_dir().join(format!(
+        "agentd-session-maintenance-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let repo_root = agent_lite_repo_root();
+    let project_dir = agent_lite_project_dir();
+    let socket_path = state.socket_path();
+
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("--project")
+        .arg(&project_dir)
+        .arg("agentd-agent-lite")
+        .arg("--mode")
+        .arg("session")
+        .arg("--session-command")
+        .arg(command_name)
+        .arg("--socket-path")
+        .arg(socket_path.as_str())
+        .arg("--agent-id")
+        .arg(agent_id.to_string())
+        .arg("--session-load")
+        .arg(&session_file)
+        .arg("--session-save")
+        .arg(&session_file)
+        .arg("--result-path")
+        .arg(&result_path)
+        .current_dir(&repo_root)
+        .env("NO_PROXY", "127.0.0.1,localhost,::1")
+        .env("no_proxy", "127.0.0.1,localhost,::1")
+        .env_remove("HTTP_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = command.spawn().map_err(|err| {
+        AgentError::Runtime(format!(
+            "spawn agent-lite session command failed: project={} error={err}",
+            project_dir.display()
+        ))
+    })?;
+
+    let status = match timeout(
+        Duration::from_secs(DEFAULT_RUN_AGENT_TIMEOUT_SECS),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(wait_result) => wait_result
+            .map_err(|err| AgentError::Runtime(format!("wait for session command failed: {err}")))?,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(AgentError::Runtime(format!(
+                "agent-lite session command timed out after {}s",
+                DEFAULT_RUN_AGENT_TIMEOUT_SECS
+            )));
+        }
+    };
+
+    let stderr_text = if let Some(mut stderr) = child.stderr.take() {
+        let mut stderr_bytes = Vec::new();
+        stderr.read_to_end(&mut stderr_bytes).await.map_err(|err| {
+            AgentError::Runtime(format!("read session command stderr failed: {err}"))
+        })?;
+        String::from_utf8_lossy(&stderr_bytes).trim().to_string()
+    } else {
+        String::new()
+    };
+
+    let result_text = std::fs::read_to_string(&result_path).map_err(|err| {
+        AgentError::Runtime(format!(
+            "read session command result failed: path={} error={err} stderr={stderr_text}",
+            result_path.display()
+        ))
+    })?;
+    let _ = std::fs::remove_file(&result_path);
+
+    let result_value: Value = serde_json::from_str(&result_text).map_err(|err| {
+        AgentError::Runtime(format!(
+            "parse session command result failed: path={} error={err} body={} stderr={stderr_text}",
+            result_path.display(),
+            result_text
+        ))
+    })?;
+
+    if !status.success() {
+        let message = extract_string_value(&result_value, &["message", "error"]).unwrap_or_else(|| {
+            format!(
+                "agent-lite session command exited with status {status}{}",
+                if stderr_text.is_empty() {
+                    String::new()
+                } else {
+                    format!(" stderr={stderr_text}")
+                }
+            )
+        });
+        return Err(AgentError::Runtime(message));
+    }
+
+    parse_agent_lite_session_metadata(&session_file, session_id)
+}
+
 async fn run_agent_via_agent_lite(
     state: &RuntimeState,
     _one_api_config: &OneApiConfig,
@@ -12674,6 +12790,73 @@ async fn handle_rpc_request(
                     request.id,
                     -32031,
                     format!("load agent session failed: {err}"),
+                ),
+            }
+        }
+        "CompactAgentSession" | "management.CompactAgentSession" => {
+            let params = match serde_json::from_value::<CompactAgentSessionParams>(request.params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid compact agent session params: {err}"),
+                    )
+                }
+            };
+
+            let agent_id = match uuid::Uuid::parse_str(&params.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32602,
+                        format!("invalid agent_id: {err}"),
+                    )
+                }
+            };
+
+            let session_id = params.session_id.trim();
+            if session_id.is_empty() {
+                return JsonRpcResponse::error(request.id, -32602, "session_id must be non-empty");
+            }
+
+            match run_agent_lite_session_command(&state, agent_id, session_id, "compact").await {
+                Ok(metadata) => {
+                    record_audit_event(
+                        &store,
+                        &audit_context,
+                        agent_id,
+                        EventType::ToolInvoked,
+                        EventResult::Success,
+                        EventPayload {
+                            tool_name: None,
+                            message: Some("agent session compacted".to_string()),
+                            metadata: json!({
+                                "session_id": session_id,
+                                "path": metadata.path,
+                                "message_count": metadata.message_count,
+                                "head_id": metadata.head_id,
+                            }),
+                        },
+                    )
+                    .await;
+
+                    JsonRpcResponse::success(
+                        request.id,
+                        json!({
+                            "compacted": true,
+                            "session": metadata,
+                        }),
+                    )
+                }
+                Err(AgentError::NotFound(message)) => {
+                    JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => JsonRpcResponse::error(
+                    request.id,
+                    -32031,
+                    format!("compact agent session failed: {err}"),
                 ),
             }
         }

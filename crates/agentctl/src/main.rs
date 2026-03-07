@@ -1257,6 +1257,12 @@ fn session_persistence_roundtrip() {
 
 #[cfg(test)]
 #[test]
+fn compact_roundtrip() {
+    assert!(tui::compact_roundtrip_probe());
+}
+
+#[cfg(test)]
+#[test]
 fn build_migration_messages_chains_parent_ids() {
     let (messages, head_id) = build_migration_messages(
         &[

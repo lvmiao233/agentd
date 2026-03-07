@@ -620,11 +620,45 @@ impl AgentShellApp {
                 }
             }
             "/compact" => {
-                self.event_panel
-                    .entries
-                    .push("manual compact requested".to_string());
-                self.push_system_message("compact requested");
-                Ok(())
+                match self.current_or_default_agent_id(None) {
+                    Ok(agent_id) => {
+                        let session_id = self
+                            .active_session_id
+                            .clone()
+                            .unwrap_or_else(|| default_agent_lite_session_id(&agent_id));
+                        match rpc(
+                            "CompactAgentSession",
+                            json!({
+                                "agent_id": agent_id,
+                                "session_id": session_id,
+                            }),
+                        ) {
+                            Ok(value) => {
+                                let compacted_message_count = value
+                                    .get("session")
+                                    .and_then(|session| session.get("message_count"))
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0);
+                                let compacted_head_id = value
+                                    .get("session")
+                                    .and_then(|session| session.get("head_id"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("<unknown>");
+                                self.event_panel.entries.push(format!(
+                                    "manual compact completed: messages={} head={}",
+                                    compacted_message_count, compacted_head_id
+                                ));
+                                self.push_system_message(format!(
+                                    "compact completed (messages: {}, head: {})",
+                                    compacted_message_count, compacted_head_id
+                                ));
+                                Ok(())
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
             }
             "/model" => {
                 let model_name = match parts.next() {
@@ -1730,4 +1764,44 @@ pub(crate) fn session_persistence_roundtrip_probe() -> bool {
             .messages
             .iter()
             .any(|message| message.content.contains("session review ready"))
+}
+
+#[cfg(test)]
+pub(crate) fn compact_roundtrip_probe() -> bool {
+    let mut app = AgentShellApp::with_initial_context(
+        "/tmp/agentd.sock",
+        Some("agent-1".to_string()),
+        Some("gpt-5.3-codex".to_string()),
+    );
+
+    let mut rpc = |method: &str, params: Value| -> Result<Value, String> {
+        match method {
+            "CompactAgentSession" => {
+                if params["agent_id"] != json!("agent-1")
+                    || params["session_id"] != json!("tui-agent-1")
+                {
+                    return Err(format!("unexpected compact params: {params}"));
+                }
+                Ok(json!({
+                    "compacted": true,
+                    "session": {
+                        "session_id": "tui-agent-1",
+                        "message_count": 3,
+                        "head_id": "msg-compact",
+                    }
+                }))
+            }
+            _ => Err(format!("unexpected method: {method}")),
+        }
+    };
+
+    app.execute_slash_command_with_rpc("/compact", &mut rpc);
+    app.event_panel
+        .entries
+        .iter()
+        .any(|entry| entry.contains("manual compact completed: messages=3 head=msg-compact"))
+        && app
+            .messages
+            .iter()
+            .any(|message| message.content.contains("compact completed (messages: 3, head: msg-compact)"))
 }

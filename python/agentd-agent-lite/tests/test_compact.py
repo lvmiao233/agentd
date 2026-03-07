@@ -35,3 +35,35 @@ def test_auto_compact_preserves_key_facts() -> None:
     ]
     assert compact_summaries
     assert "atlas" in compact_summaries[0]["content"]
+
+
+def test_run_session_command_compact_rewrites_session_file(tmp_path: Path) -> None:
+    session_path = tmp_path / "compact-session.jsonl"
+    session = _CLI_MODULE.AgentSession("agent-compact-file", max_context_tokens=12)
+    session._append_message("user", "remember fact: branch is release/atlas")
+    session._append_message("assistant", "confirmed release branch")
+    session._append_message("user", "keep atlas notes available after compact")
+    _CLI_MODULE.save_session_jsonl(session, str(session_path))
+
+    compacted = _CLI_MODULE.run_session_command(
+        command="compact",
+        file_path=str(session_path),
+        agent_id="agent-compact-file",
+        max_context_tokens=12,
+    )
+
+    reloaded = _CLI_MODULE.load_session_jsonl(
+        str(session_path), agent_id="agent-compact-file"
+    )
+    active_branch = reloaded._get_active_branch()
+    compact_summaries = [
+        message
+        for message in active_branch
+        if message.get("role") == "system"
+        and isinstance(message.get("compact"), dict)
+        and message["compact"].get("kind") == "auto_compact_summary"
+    ]
+
+    assert compacted.head_id == reloaded.head_id
+    assert compact_summaries
+    assert "atlas" in compact_summaries[0]["content"]

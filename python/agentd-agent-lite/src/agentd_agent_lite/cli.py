@@ -415,6 +415,19 @@ def run_session_command(
             max_context_tokens=max_context_tokens,
         )
 
+    if normalized_command == "compact":
+        effective_session = session
+        if effective_session is None:
+            effective_session = load_session_jsonl(
+                file_path,
+                agent_id=agent_id,
+                max_context_tokens=max_context_tokens,
+            )
+
+        effective_session._compact_context()
+        save_session_jsonl(effective_session, file_path)
+        return effective_session
+
     raise ValueError(f"unsupported session command: {command}")
 
 
@@ -1438,9 +1451,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="agentd-agent-lite")
     parser.add_argument(
         "--mode",
-        choices=("chat", "onboard-mcp"),
+        choices=("chat", "onboard-mcp", "session"),
         default="chat",
-        help="Execution mode: normal chat loop or third-party MCP onboarding",
+        help="Execution mode: normal chat loop, third-party MCP onboarding, or session maintenance",
     )
     parser.add_argument("--socket-path", default="/tmp/agentd.sock")
     parser.add_argument("--agent-id", required=True)
@@ -1493,6 +1506,12 @@ def parse_args() -> argparse.Namespace:
         help="Write final result JSON to a file before exiting",
     )
     parser.add_argument(
+        "--session-command",
+        choices=("load", "save", "compact"),
+        default=None,
+        help="Session maintenance command when --mode=session",
+    )
+    parser.add_argument(
         "--onboard-name",
         default=None,
         help="Third-party MCP server name when --mode=onboard-mcp",
@@ -1524,6 +1543,71 @@ def parse_args() -> argparse.Namespace:
 def run_once(args: argparse.Namespace) -> int:
     result_path = getattr(args, "result_path", None)
     mode = str(getattr(args, "mode", "chat"))
+    if mode == "session":
+        session_command = getattr(args, "session_command", None)
+        session_path = getattr(args, "session_load", None) or getattr(
+            args, "session_save", None
+        )
+        if not isinstance(session_command, str) or not session_command.strip():
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "session",
+                    "error": "invalid_session_command",
+                    "message": "--session-command is required when --mode=session",
+                },
+                result_path=result_path,
+            )
+            return 1
+        if not isinstance(session_path, str) or not session_path.strip():
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "session",
+                    "error": "missing_session_path",
+                    "message": "--session-load or --session-save is required when --mode=session",
+                },
+                result_path=result_path,
+            )
+            return 1
+
+        max_context_tokens = max(0, int(getattr(args, "max_context_tokens", 0)))
+        try:
+            session = run_session_command(
+                command=session_command,
+                file_path=session_path,
+                agent_id=args.agent_id,
+                max_context_tokens=max_context_tokens,
+            )
+        except ValueError as err:
+            emit_result(
+                {
+                    "status": "failed",
+                    "stage": "session",
+                    "error": "session_command_failed",
+                    "message": str(err),
+                },
+                result_path=result_path,
+            )
+            return 1
+
+        emit_result(
+            {
+                "status": "completed",
+                "stage": "session",
+                "command": session_command,
+                "session": {
+                    "head_id": session.head_id,
+                    "message_count": len(session.messages),
+                    "path": session_path,
+                    "context_window_tokens": session.context_window_tokens,
+                    "max_context_tokens": session.max_context_tokens,
+                },
+            },
+            result_path=result_path,
+        )
+        return 0
+
     if mode == "onboard-mcp":
         onboard_name = getattr(args, "onboard_name", None)
         onboard_command = getattr(args, "onboard_command", None)
