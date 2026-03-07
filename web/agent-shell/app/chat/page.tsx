@@ -20,6 +20,7 @@ import {
   MessageActions,
   MessageAction,
 } from '@/components/ai-elements/message';
+import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
 import {
   Reasoning,
   ReasoningContent,
@@ -75,6 +76,7 @@ import {
   buildApprovalFeed,
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
+import { buildFollowUpSuggestions } from '@/lib/chat-follow-up-suggestions.js';
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 
@@ -359,6 +361,15 @@ export default function ChatPage() {
   const lastAssistantText = lastAssistantMessage
     ? extractMessageText(lastAssistantMessage)
     : '';
+  const lastAssistantHasToolParts = lastAssistantMessage
+    ? lastAssistantMessage.parts.some((part) => isToolUIPart(part))
+    : false;
+  const followUpSuggestions = buildFollowUpSuggestions({
+    status,
+    lastAssistantText,
+    hasToolParts: lastAssistantHasToolParts,
+    hasPendingApprovals: approvalQueue.length > 0,
+  });
 
   const handleRegenerate = async () => {
     if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
@@ -593,17 +604,31 @@ export default function ChatPage() {
                       messageIndex === messages.length - 1 &&
                       (status === 'ready' || status === 'error') &&
                       lastAssistantText && (
-                        <MessageActions>
-                          <MessageAction onClick={() => void handleRegenerate()} label="重新生成">
-                            <RefreshCcw className="size-3" />
-                          </MessageAction>
-                          <MessageAction
-                            onClick={() => navigator.clipboard.writeText(lastAssistantText)}
-                            label="复制"
-                          >
-                            <Copy className="size-3" />
-                          </MessageAction>
-                        </MessageActions>
+                        <>
+                          {followUpSuggestions.length > 0 && (
+                            <Suggestions>
+                              {followUpSuggestions.map((suggestion) => (
+                                <Suggestion
+                                  key={suggestion}
+                                  onClick={() => void submitPrompt({ text: suggestion, files: [] })}
+                                >
+                                  {suggestion}
+                                </Suggestion>
+                              ))}
+                            </Suggestions>
+                          )}
+                          <MessageActions>
+                            <MessageAction onClick={() => void handleRegenerate()} label="重新生成">
+                              <RefreshCcw className="size-3" />
+                            </MessageAction>
+                            <MessageAction
+                              onClick={() => navigator.clipboard.writeText(lastAssistantText)}
+                              label="复制"
+                            >
+                              <Copy className="size-3" />
+                            </MessageAction>
+                          </MessageActions>
+                        </>
                       )}
                   </Fragment>
                 );
