@@ -474,6 +474,10 @@ impl FirecrackerExecutor {
             ));
         }
 
+        if let Some(network) = &vm_config.network {
+            ensure_tap_device_exists(network)?;
+        }
+
         ensure_path_exists(&self.firecracker_binary, "binary")?;
         prepare_socket_file(&vm_config.vsock_path, "firecracker vsock")?;
 
@@ -1606,6 +1610,19 @@ fn enforce_network_isolation_policy(config: &FirecrackerVmConfig) -> Result<(), 
     Ok(())
 }
 
+fn ensure_tap_device_exists(network: &FirecrackerNetworkConfig) -> Result<(), AgentError> {
+    let tap_sysfs_path = Path::new("/sys/class/net").join(&network.tap_device);
+    if tap_sysfs_path.exists() {
+        return Ok(());
+    }
+
+    Err(AgentError::Runtime(format!(
+        "firecracker network tap device not found: tap={} expected_path={} host_setup=create_or_attach_tap_before_launch",
+        network.tap_device,
+        tap_sysfs_path.display()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1718,6 +1735,74 @@ mod tests {
             err.to_string()
                 .contains("real firecracker jailer integration is not implemented"),
             "unexpected jailer rejection error: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(runtime_root);
+    }
+
+    #[tokio::test]
+    async fn real_firecracker_requires_existing_tap_device() {
+        let runtime_root = std::env::temp_dir().join(format!("agentd-fc-tap-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+
+        let binary_path = runtime_root.join("firecracker-bin");
+        std::fs::write(&binary_path, b"#!/bin/sh\nexit 0\n").expect("write fake firecracker binary");
+        let mut perms = std::fs::metadata(&binary_path)
+            .expect("stat fake firecracker binary")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms)
+                .expect("chmod fake firecracker binary");
+        }
+
+        let kernel_path = runtime_root.join("vmlinux.bin");
+        std::fs::write(&kernel_path, b"kernel").expect("write fake kernel");
+        let rootfs_path = runtime_root.join("rootfs.ext4");
+        std::fs::write(&rootfs_path, b"rootfs").expect("write fake rootfs");
+
+        let executor = FirecrackerExecutor::builder()
+            .firecracker_binary(&binary_path)
+            .kernel_path(&kernel_path)
+            .rootfs_path(&rootfs_path)
+            .vsock_root_dir(runtime_root.join("vsock"))
+            .api_socket_root_dir(runtime_root.join("api"))
+            .launch_mode(FirecrackerLaunchMode::RealFirecracker)
+            .default_jailer(None)
+            .build()
+            .expect("build real firecracker executor");
+
+        let missing_tap = format!("fc-missing-{}", Uuid::new_v4().simple());
+        let err = executor
+            .launch_agent(FirecrackerAgentLaunchSpec {
+                agent_id: Uuid::new_v4(),
+                command: "/bin/true".to_string(),
+                args: Vec::new(),
+                env: HashMap::new(),
+                vcpu_count: None,
+                mem_size_mib: None,
+                network: Some(FirecrackerNetworkConfig {
+                    tap_device: missing_tap.clone(),
+                    host_ipv4: "172.16.0.1/30".to_string(),
+                    guest_ipv4: "172.16.0.2/30".to_string(),
+                }),
+                network_policy: Some(NetworkIsolationPolicy::AllowAll),
+                jailer: None,
+                launch_timeout: Duration::from_millis(250),
+            })
+            .await
+            .expect_err("real firecracker should require an existing tap device");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("firecracker network tap device not found"),
+            "unexpected missing-tap error: {message}"
+        );
+        assert!(
+            message.contains(&missing_tap),
+            "missing tap name should be present in error: {message}"
         );
 
         let _ = std::fs::remove_dir_all(runtime_root);
