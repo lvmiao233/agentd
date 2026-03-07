@@ -62,25 +62,59 @@ function extractStreamToolCalls(frame) {
       const id = typeof idValue === 'string' && idValue.trim() ? idValue : `call-${index}`;
 
       const functionValue = call.function;
-      let name = 'unknown_tool';
+      let name;
       let argumentsText = '';
+      let hasInput = false;
 
       if (functionValue && typeof functionValue === 'object') {
         const nameValue = functionValue.name;
         if (typeof nameValue === 'string' && nameValue.trim()) {
           name = nameValue;
+          hasInput = true;
         }
 
         const argumentsValue = functionValue.arguments;
         if (typeof argumentsValue === 'string') {
           argumentsText = argumentsValue;
+          hasInput = true;
+        } else if (argumentsValue !== undefined) {
+          argumentsText = JSON.stringify(argumentsValue);
+          hasInput = true;
+        }
+      }
+
+      if (!name) {
+        for (const key of ['name', 'toolName', 'tool']) {
+          const value = call[key];
+          if (typeof value === 'string' && value.trim()) {
+            name = value;
+            hasInput = true;
+            break;
+          }
+        }
+      }
+
+      if (!argumentsText) {
+        for (const key of ['arguments', 'input', 'args']) {
+          const value = call[key];
+          if (typeof value === 'string') {
+            argumentsText = value;
+            hasInput = true;
+            break;
+          }
+          if (value !== undefined) {
+            argumentsText = JSON.stringify(value);
+            hasInput = true;
+            break;
+          }
         }
       }
 
       return {
         id,
-        name,
+        name: typeof name === 'string' && name.trim() ? name : 'unknown_tool',
         argumentsText,
+        hasInput,
         output: call.output,
         errorText:
           typeof call.error === 'string'
@@ -160,12 +194,14 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
   const toolCalls = extractStreamToolCalls(parsed);
   if (toolCalls.length > 0) {
     for (const toolCall of toolCalls) {
-      writer.write({
-        type: 'tool-input-available',
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        input: parseToolCallInput(toolCall.argumentsText),
-      });
+      if (toolCall.hasInput) {
+        writer.write({
+          type: 'tool-input-available',
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          input: parseToolCallInput(toolCall.argumentsText),
+        });
+      }
       if (toolCall.output !== undefined || toolCall.errorText !== undefined) {
         writer.write({
           type: 'tool-output-available',

@@ -70,6 +70,28 @@ export async function run() {
   });
 
   writes.length = 0;
+  const flatToolOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_flat","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}","output":{"content":"ok"}}]}}}',
+    textId: 'text-flat',
+    writer,
+  });
+
+  assert.equal(flatToolOutcome.emitted, true, 'flat agent-lite tool frame should emit chunks');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-available',
+    toolCallId: 'call_flat',
+    toolName: 'mcp.fs.read_file',
+    input: { path: 'README.md' },
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-output-available',
+    toolCallId: 'call_flat',
+    output: { content: 'ok' },
+    errorText: undefined,
+  });
+
+  writes.length = 0;
   const failedOutcome = emitRunAgentStreamLine({
     lineRaw: 'data: {"error":{"message":"upstream overloaded"},"status":"failed"}',
     textId: 'text-3',
