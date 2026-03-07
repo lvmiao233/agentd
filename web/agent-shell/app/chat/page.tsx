@@ -78,7 +78,7 @@ export default function ChatPage() {
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('ready');
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
@@ -103,12 +103,12 @@ export default function ChatPage() {
     const agents = payload.agents ?? [];
     setAvailableAgents(agents);
     if (agents.length === 0) {
-      setAgentId(null);
+      setAgentId('');
       return null;
     }
     const preferred = choosePreferredAgent(agents);
     if (!preferred) {
-      setAgentId(null);
+      setAgentId('');
       return null;
     }
     setAgentId((current) => {
@@ -123,7 +123,7 @@ export default function ChatPage() {
     return preferred.agent_id;
   };
 
-  const refreshApprovalQueue = async (targetAgentId: string | null) => {
+  const refreshApprovalQueue = async (targetAgentId: string) => {
     if (!targetAgentId) {
       setApprovalQueue([]);
       return;
@@ -161,7 +161,7 @@ export default function ChatPage() {
       })
       .catch(() => {
         if (!cancelled) {
-          setAgentId(null);
+          setAgentId('');
         }
       });
 
@@ -222,7 +222,7 @@ export default function ChatPage() {
     const text = raw.trim();
     if (!text) return false;
 
-    const resolvedAgentId = agentId ?? (await loadAgents().catch(() => null));
+    const resolvedAgentId = agentId || (await loadAgents().catch(() => null));
     const selectedAgent = availableAgents.find(
       (candidate) => candidate.agent_id === resolvedAgentId,
     );
@@ -328,7 +328,7 @@ export default function ChatPage() {
             </p>
           </div>
           <div className="min-w-72">
-            <Select value={agentId ?? undefined} onValueChange={setAgentId}>
+            <Select value={agentId} onValueChange={setAgentId}>
               <SelectTrigger aria-label="Active agent selector">
                 <SelectValue placeholder="Select an agent" />
               </SelectTrigger>
