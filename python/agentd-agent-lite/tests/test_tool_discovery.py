@@ -141,3 +141,47 @@ def test_policy_filtered_tools_not_exposed(monkeypatch) -> None:
     names = [item["function"]["name"] for item in schemas]
     assert "mcp.search.ripgrep" in names
     assert "mcp.fs.read_file" not in names
+
+
+def test_discovery_failure_reuses_cached_tools(monkeypatch) -> None:
+    session = _CLI_MODULE.AgentSession("agent-cached-tools")
+    state = {"calls": 0}
+
+    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+        assert method == "ListAvailableTools"
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return {
+                "tools": [
+                    {
+                        "server": "mcp-fs",
+                        "tool": "fs.read_file",
+                        "policy_tool": "mcp.fs.read_file",
+                        "description": "Read file from workspace",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    }
+                ]
+            }
+        raise OSError("uds unavailable")
+
+    monkeypatch.setattr(_CLI_MODULE, "call_rpc", fake_call_rpc)
+
+    first = _CLI_MODULE.discover_openai_tools(
+        socket_path="/tmp/agentd.sock",
+        agent_id="agent-cached-tools",
+        fallback_tool_name="builtin.lite.echo",
+        session=session,
+    )
+    second = _CLI_MODULE.discover_openai_tools(
+        socket_path="/tmp/agentd.sock",
+        agent_id="agent-cached-tools",
+        fallback_tool_name="builtin.lite.echo",
+        session=session,
+    )
+
+    assert [item["function"]["name"] for item in first] == ["mcp.fs.read_file"]
+    assert [item["function"]["name"] for item in second] == ["mcp.fs.read_file"]

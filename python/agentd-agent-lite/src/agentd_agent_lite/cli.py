@@ -765,6 +765,18 @@ def discover_openai_tools(
             },
         )
     except Exception:
+        if session.discovered_tools:
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.openai_name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in session.discovered_tools
+            ]
         return fallback_tools
 
     tools_value = result.get("tools")
