@@ -8,3 +8,5 @@
 - 2026-03-08 (Iteration 2): 现阶段 approval queue 与具体 tool part 还没有稳定的 message-level 绑定字段，因此本轮先实现 conversation-level approval inbox；后续若补上 trace/toolCall 映射，可继续把审批卡片进一步贴到具体 Tool 节点内。
 - 2026-03-08 (Iteration 3): reasoning / source 旧体验的问题不只是外观简陋，而是层级混乱：元信息与正文没有明确区分，导致 assistant 输出既难扫读，也难按需展开上下文。
 - 2026-03-08 (Iteration 3): 当前 sources 仍然是 message 级 disclosure，而不是 inline citation；若后续需要 OpenCode/OpenClaw 那种更强的引用体验，应继续补 `inline-citation` 或 message-level source anchoring，而不是退回手写链接列表。
+- 2026-03-08 (Iteration 4): approval inbox 虽然已经在会话内，但如果不贴回具体 Tool，用户仍然要自己猜“这一条审批到底对应哪个调用”；这对持续 coding 场景是认知负担。
+- 2026-03-08 (Iteration 4): 当前 inline approval 仍受限于 fuzzy matching：一旦同名工具在单轮消息里多次出现，前端无法 100% 判断审批属于哪个 call。真正的根治方案仍是 daemon/stream 层补 `toolCallId` 或等价关联字段到 approval payload。

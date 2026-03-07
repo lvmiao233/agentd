@@ -15,3 +15,5 @@
 - 2026-03-08 (Iteration 3): reasoning / sources 先做成 message 级 disclosure，而不是继续散落在 `page.tsx` 里用 `<pre>` 和裸链接拼装；因为这类元信息需要“可折叠但不抢正文”。
 - 2026-03-08 (Iteration 3): 当前仓库未收录 ai-elements 官方 `reasoning` / `sources` 组件，因此本轮参照官方结构补入本地组件，保持与现有 `message` / `conversation` 体系一致。
 - 2026-03-08 (Iteration 3): `source-url` 与 `source-document` 统一通过 `collectSourceParts` 预处理，再交给 Sources 面板渲染，避免在主页面循环里堆更多类型分支。
+- 2026-03-08 (Iteration 4): 在后端尚未提供 `toolCallId -> approval` 的稳定映射前，先把 pending approval 通过 canonical tool-name heuristic 贴到 Tool 卡片；无法安全匹配的审批继续保留在 conversation-level inbox。
+- 2026-03-08 (Iteration 4): 为避免 UI 双份噪音，已成功分配到 Tool 节点的 pending approval 不再重复显示在 approval inbox；inbox 只承担 fallback 角色。

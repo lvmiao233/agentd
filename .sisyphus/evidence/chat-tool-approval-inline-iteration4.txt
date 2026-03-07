@@ -1,0 +1,29 @@
+iteration=4
+feature=chat_tool_inline_approval
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs chat-tool-approvals.spec.ts chat-message-parts.spec.ts chat-approval-feed.spec.ts chat-route-streaming.spec.ts chat-ui-stream.spec.ts run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. playwright_mcp tool approval interaction against http://127.0.0.1:4174/chat?fresh=tool-approval-inline
+   mocked_endpoints=/api/agents,/api/chat,/api/approvals
+   result=PASS
+   precondition=waitForSelector('Approval required for mcp.fs.read_file') passed
+   approvalInboxBefore=0
+   inlineCountAfterApprove=0
+   noticeVisible=true
+
+[scope]
+- web/agent-shell/lib/chat-tool-approvals.js
+- web/agent-shell/lib/chat-tool-approvals.d.ts
+- web/agent-shell/tests/chat-tool-approvals.spec.ts
+- web/agent-shell/components/ai-elements/tool.tsx
+- web/agent-shell/app/chat/page.tsx
+
+[summary]
+Pending approvals can now be rendered directly inside matched tool cards instead of only appearing in the global approval inbox. Matching currently uses a canonicalized tool-name heuristic, and any pending approvals that cannot be safely attached stay in the conversation-level inbox as a fallback.
