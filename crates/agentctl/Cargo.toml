@@ -21,5 +21,6 @@ serde_json.workspace = true
 serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+rusqlite.workspace = true
 crossterm = "0.27"
 ratatui = "0.26"

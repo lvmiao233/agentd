@@ -1,6 +1,8 @@
 use agentd_protocol::{A2ATask, A2ATaskState, CreateA2ATaskRequest, JsonRpcRequest, JsonRpcResponse};
 use clap::{Parser, Subcommand};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::{sleep, Duration};
@@ -9,6 +11,71 @@ use tracing::info;
 mod tui;
 
 type DynError = Box<dyn std::error::Error>;
+
+const DEFAULT_LOCAL_ONE_API_BASE_URL: &str = "http://127.0.0.1:3000/v1";
+
+fn resolve_local_one_api_runtime_config(model: &str) -> Result<Option<(String, String)>, DynError> {
+    let env_base_url = std::env::var("ONE_API_BASE_URL").ok();
+    let env_token = std::env::var("ONE_API_TOKEN").ok();
+    if let (Some(base_url), Some(api_key)) = (env_base_url, env_token) {
+        if !base_url.trim().is_empty() && !api_key.trim().is_empty() {
+            return Ok(Some((base_url, api_key)));
+        }
+    }
+
+    let db_path = Path::new("data/one-api/one-api.db");
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let connection = Connection::open(db_path)?;
+    let recent_token = connection
+        .query_row(
+            "SELECT tokens.key
+             FROM logs
+             JOIN tokens ON tokens.name = logs.token_name
+             WHERE tokens.status = 1
+               AND tokens.key IS NOT NULL
+               AND tokens.key != ''
+               AND (tokens.unlimited_quota = 1 OR tokens.remain_quota > 0)
+               AND logs.model_name = ?1
+             ORDER BY logs.created_at DESC
+             LIMIT 1",
+            [model],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    let token = if let Some(token) = recent_token.filter(|value| !value.trim().is_empty()) {
+        token
+    } else {
+        connection
+            .query_row(
+                "SELECT key FROM tokens
+                 WHERE status = 1
+                   AND key IS NOT NULL
+                   AND key != ''
+                   AND (unlimited_quota = 1 OR remain_quota > 0)
+                 ORDER BY
+                   CASE
+                     WHEN name LIKE 'agentd-%' THEN 0
+                     WHEN name IN ('default', 'Dev') THEN 2
+                     ELSE 1
+                   END ASC,
+                   CASE WHEN unlimited_quota = 1 THEN 0 ELSE 1 END ASC,
+                   remain_quota DESC,
+                   id DESC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("no usable local one-api runtime token found")?
+    };
+
+    Ok(Some((DEFAULT_LOCAL_ONE_API_BASE_URL.to_string(), token)))
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct DiscoveryRecord {
@@ -640,6 +707,7 @@ async fn run_builtin_lite(
         "agentctl-builtin-lite-result-{}.json",
         uuid::Uuid::new_v4()
     ));
+    let runtime_config = resolve_local_one_api_runtime_config(model)?;
     let args = vec![
         "run".to_string(),
         "--project".to_string(),
@@ -658,6 +726,13 @@ async fn run_builtin_lite(
         "--result-path".to_string(),
         result_path.to_string_lossy().to_string(),
     ];
+    let mut args = args;
+    if let Some((base_url, api_key)) = runtime_config {
+        args.push("--base-url".to_string());
+        args.push(base_url);
+        args.push("--api-key".to_string());
+        args.push(api_key);
+    }
 
     let started = call_rpc(
         socket_path,
