@@ -343,7 +343,7 @@ export default function SettingsPage() {
               />
             </div>
           </div>
-          <Button type="submit" disabled={agentSubmitting}>
+          <Button type="submit" disabled={agentSubmitting || !agentName.trim() || !agentModel.trim()}>
             {agentSubmitting ? (
               <Loader2 className="mr-1 size-4 animate-spin" />
             ) : (
@@ -407,7 +407,7 @@ export default function SettingsPage() {
               placeholder={'["-y", "@modelcontextprotocol/server-figma"]'}
             />
           </div>
-          <Button type="submit" disabled={submitting}>
+          <Button type="submit" disabled={submitting || !name.trim() || !command.trim()}>
             {submitting ? (
               <Loader2 className="mr-1 size-4 animate-spin" />
             ) : (
