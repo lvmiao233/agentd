@@ -6320,7 +6320,7 @@ async fn drive_a2a_task_lifecycle(
         .await;
 
     let delegated_execution = if task_kind == "generic" {
-        let delegate_agent_id = match resolve_a2a_delegate_agent_id(&store, task.agent_id).await {
+    let delegate_agent_id = match resolve_a2a_delegate_agent_id(&store, task.agent_id, &one_api_config).await {
             Ok(agent_id) => agent_id,
             Err(err) => {
                 transition_a2a_task_to_failed(
@@ -7073,7 +7073,7 @@ mod tests {
         assert!(
             agents[0]["runnable_reason"]
                 .as_str()
-                .is_some_and(|value| value.contains("one-api access token unavailable")),
+                .is_some_and(|value| value.contains("one-api runtime token unavailable")),
             "expected runnable_reason to explain missing token: {:?}",
             agents[0]
         );
@@ -8427,6 +8427,249 @@ mod tests {
                 .expect("approvals should be array")
                 .is_empty(),
             "approval queue should be empty after resolve"
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn resolved_tool_hides_stale_pending_approvals() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let profile = AgentProfile::new(
+            "stale-approval-agent".to_string(),
+            ModelConfig {
+                provider: "agent-lite".to_string(),
+                model_name: "gpt-5.3-codex".to_string(),
+                max_tokens: None,
+                temperature: None,
+            },
+        );
+        let created = store
+            .create_agent(profile)
+            .await
+            .expect("create stale approval test agent");
+        let agent_id = created.id;
+
+        let mut first_pending = AuditEvent::new(
+            agent_id,
+            EventType::ToolInvoked,
+            EventPayload {
+                tool_name: Some("builtin.lite.echo".to_string()),
+                message: Some("policy.ask".to_string()),
+                metadata: json!({"reason": "policy.ask"}),
+            },
+            EventResult::Pending,
+        );
+        first_pending.timestamp = Utc::now();
+        store
+            .append_audit_event(first_pending.clone())
+            .await
+            .expect("persist first pending approval");
+
+        let mut second_pending = AuditEvent::new(
+            agent_id,
+            EventType::ToolInvoked,
+            EventPayload {
+                tool_name: Some("builtin.lite.echo".to_string()),
+                message: Some("policy.ask".to_string()),
+                metadata: json!({"reason": "policy.ask"}),
+            },
+            EventResult::Pending,
+        );
+        second_pending.timestamp = first_pending.timestamp + chrono::Duration::seconds(1);
+        store
+            .append_audit_event(second_pending.clone())
+            .await
+            .expect("persist second pending approval");
+
+        let mut approved = AuditEvent::new(
+            agent_id,
+            EventType::ToolApproved,
+            EventPayload {
+                tool_name: Some("builtin.lite.echo".to_string()),
+                message: Some("approval.approve".to_string()),
+                metadata: json!({"approval_id": second_pending.id.to_string()}),
+            },
+            EventResult::Success,
+        );
+        approved.timestamp = second_pending.timestamp + chrono::Duration::seconds(1);
+        store
+            .append_audit_event(approved)
+            .await
+            .expect("persist approval resolution");
+
+        let events = store
+            .get_audit_events(agent_id)
+            .await
+            .expect("load approval events");
+        let approvals = pending_approval_items(&events);
+        assert!(
+            approvals.is_empty(),
+            "stale pending approvals should be hidden after tool resolution: {approvals:?}"
+        );
+
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn approved_tool_request_updates_agent_policy() {
+        let db_path = test_db_path();
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = RuntimeState::new("disabled");
+
+        let create = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9911),
+                "CreateAgent",
+                json!({
+                    "name": "approval-consume-agent",
+                    "model": "claude-4-sonnet",
+                    "permission_policy": "ask",
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(create.error.is_none(), "create should succeed: {create:?}");
+        let agent_id = create
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .get("id")
+            .expect("id field should exist")
+            .as_str()
+            .expect("agent id should be string")
+            .to_string();
+
+        let first_ask = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9912),
+                "AuthorizeTool",
+                json!({
+                    "agent_id": agent_id,
+                    "tool": "builtin.lite.echo",
+                    "global_rules": [],
+                    "profile_rules": [],
+                    "session_overrides": {
+                        "allow_tools": [],
+                        "ask_tools": [],
+                        "deny_tools": [],
+                    }
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(first_ask.error.is_none(), "first authorize should return ask: {first_ask:?}");
+        assert_eq!(
+            first_ask.result.as_ref().expect("ask result should exist")["decision"],
+            json!("ask")
+        );
+
+        let approvals = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9913),
+                "ListApprovalQueue",
+                json!({"agent_id": agent_id}),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        let approval_id = approvals.result.expect("approval list result should exist")["approvals"]
+            .as_array()
+            .expect("approvals should be array")[0]["id"]
+            .as_str()
+            .expect("approval id should be string")
+            .to_string();
+
+        let approve = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9914),
+                "ResolveApproval",
+                json!({
+                    "agent_id": agent_id,
+                    "approval_id": approval_id,
+                    "decision": "approve",
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(approve.error.is_none(), "approve should succeed: {approve:?}");
+
+        let first_allow = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9915),
+                "AuthorizeTool",
+                json!({
+                    "agent_id": agent_id,
+                    "tool": "builtin.lite.echo",
+                    "global_rules": [],
+                    "profile_rules": [],
+                    "session_overrides": {
+                        "allow_tools": [],
+                        "ask_tools": [],
+                        "deny_tools": [],
+                    }
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            first_allow.error.is_none(),
+            "approved retry should be allowed after profile update: {first_allow:?}"
+        );
+        let first_allow_result = first_allow.result.expect("allow result should exist");
+        assert_eq!(first_allow_result["decision"], json!("allow"));
+        assert_eq!(first_allow_result["source_layer"], json!("agent_profile"));
+        assert!(
+            first_allow_result["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("policy.allow")),
+            "expected policy.allow reason: {first_allow_result:?}"
+        );
+
+        let second_allow = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(9916),
+                "AuthorizeTool",
+                json!({
+                    "agent_id": agent_id,
+                    "tool": "builtin.lite.echo",
+                    "global_rules": [],
+                    "profile_rules": [],
+                    "session_overrides": {
+                        "allow_tools": [],
+                        "ask_tools": [],
+                        "deny_tools": [],
+                    }
+                }),
+            ),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            second_allow.error.is_none(),
+            "subsequent authorize should stay allowed after approval writeback: {second_allow:?}"
+        );
+        assert_eq!(
+            second_allow.result.expect("second allow result should exist")["decision"],
+            json!("allow")
         );
 
         cleanup_sqlite_files(&db_path);
@@ -10190,6 +10433,7 @@ fn is_approval_resolution_event(event: &AuditEvent) -> bool {
 
 fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
     let mut resolved_ids = HashSet::new();
+    let mut resolved_tools = HashMap::<String, chrono::DateTime<Utc>>::new();
     for event in events {
         if is_approval_resolution_event(event) {
             if let Some(approval_id) = event
@@ -10199,6 +10443,12 @@ fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
                 .and_then(Value::as_str)
             {
                 resolved_ids.insert(approval_id.to_string());
+            }
+            if let Some(tool_name) = event.payload.tool_name.as_ref() {
+                let existing = resolved_tools.get(tool_name);
+                if existing.is_none_or(|timestamp| *timestamp < event.timestamp) {
+                    resolved_tools.insert(tool_name.clone(), event.timestamp);
+                }
             }
         }
     }
@@ -10213,6 +10463,14 @@ fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
         let approval_id = event.id.to_string();
         if resolved_ids.contains(&approval_id) || seen.contains(&approval_id) {
             continue;
+        }
+        if let Some(tool_name) = event.payload.tool_name.as_ref() {
+            if resolved_tools
+                .get(tool_name)
+                .is_some_and(|resolved_at| event.timestamp <= *resolved_at)
+            {
+                continue;
+            }
         }
         seen.insert(approval_id.clone());
 
@@ -10231,6 +10489,43 @@ fn pending_approval_items(events: &[AuditEvent]) -> Vec<Value> {
     }
 
     approvals
+}
+
+async fn apply_approval_decision_to_agent_profile(
+    store: &Arc<SqliteStore>,
+    agent_id: uuid::Uuid,
+    tool_name: &str,
+    decision: &str,
+) -> Result<(), AgentError> {
+    let mut profile = store.get_agent(agent_id).await?;
+    let normalized_tool = tool_name.trim();
+    if normalized_tool.is_empty() {
+        return Ok(());
+    }
+
+    profile
+        .permissions
+        .allowed_tools
+        .retain(|entry| entry != normalized_tool);
+    profile
+        .permissions
+        .denied_tools
+        .retain(|entry| entry != normalized_tool);
+
+    match decision {
+        "approve" => profile
+            .permissions
+            .allowed_tools
+            .push(normalized_tool.to_string()),
+        "deny" => profile
+            .permissions
+            .denied_tools
+            .push(normalized_tool.to_string()),
+        _ => {}
+    }
+
+    store.update_agent(profile).await?;
+    Ok(())
 }
 
 fn canonical_mcp_tool_name(tool: &str) -> Result<String, AgentError> {
@@ -10673,6 +10968,88 @@ fn resolve_one_api_management_api_key(config: &OneApiConfig) -> Result<Option<St
                 "query one-api management token failed {}: {err}",
                 db_path.display()
             ))
+    })?;
+    Ok(token.filter(|value| !value.trim().is_empty()))
+}
+
+fn resolve_one_api_runtime_api_key(
+    config: &OneApiConfig,
+    model_name: Option<&str>,
+) -> Result<Option<String>, AgentError> {
+    let management_url = reqwest::Url::parse(&config.management_base_url)
+        .map_err(|err| AgentError::Config(format!("invalid one_api management_base_url: {err}")))?;
+    let is_loopback = matches!(management_url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
+    if !is_loopback {
+        return Ok(None);
+    }
+
+    let db_path = Path::new(&config.management_db_path);
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let connection = Connection::open(db_path).map_err(|err| {
+        AgentError::Runtime(format!(
+            "open one-api runtime db failed {}: {err}",
+            db_path.display()
+        ))
+    })?;
+    let recent_success_token = if let Some(model_name) = model_name.filter(|value| !value.trim().is_empty()) {
+        connection
+            .query_row(
+                "SELECT tokens.key
+                 FROM logs
+                 JOIN tokens ON tokens.name = logs.token_name
+                 WHERE tokens.status = 1
+                   AND tokens.key IS NOT NULL
+                   AND tokens.key != ''
+                   AND (tokens.unlimited_quota = 1 OR tokens.remain_quota > 0)
+                   AND logs.model_name = ?1
+                 ORDER BY logs.created_at DESC
+                 LIMIT 1",
+                [model_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| {
+                AgentError::Runtime(format!(
+                    "query one-api runtime log token failed {}: {err}",
+                    db_path.display()
+                ))
+            })?
+    } else {
+        None
+    };
+    if let Some(token) = recent_success_token.filter(|value| !value.trim().is_empty()) {
+        return Ok(Some(token));
+    }
+
+    let token = connection
+        .query_row(
+            "SELECT key FROM tokens
+             WHERE status = 1
+               AND key IS NOT NULL
+               AND key != ''
+               AND (unlimited_quota = 1 OR remain_quota > 0)
+             ORDER BY
+               CASE
+                 WHEN name LIKE 'agentd-%' THEN 0
+                 WHEN name IN ('default', 'Dev') THEN 2
+                 ELSE 1
+               END ASC,
+               CASE WHEN unlimited_quota = 1 THEN 0 ELSE 1 END ASC,
+               remain_quota DESC,
+               id DESC
+             LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| {
+            AgentError::Runtime(format!(
+                "query one-api runtime token failed {}: {err}",
+                db_path.display()
+            ))
         })?;
     Ok(token.filter(|value| !value.trim().is_empty()))
 }
@@ -10871,6 +11248,7 @@ async fn resolve_run_agent_profile(
 async fn resolve_run_agent_access_token(
     store: &SqliteStore,
     profile: &AgentProfile,
+    one_api_config: &OneApiConfig,
 ) -> Result<Option<String>, AgentError> {
     let idempotency_key = format!(
         "{}:{}:{}",
@@ -10879,7 +11257,11 @@ async fn resolve_run_agent_access_token(
     let mapping = store
         .get_mapping_by_idempotency_key(&idempotency_key)
         .await?;
-    Ok(mapping.map(|entry| entry.one_api_access_token))
+    if let Some(mapping) = mapping {
+        return Ok(Some(mapping.one_api_access_token));
+    }
+
+    resolve_one_api_runtime_api_key(one_api_config, Some(profile.model.model_name.as_str()))
 }
 
 async fn maybe_inject_managed_one_api_env(
@@ -10897,7 +11279,7 @@ async fn maybe_inject_managed_one_api_env(
         .is_some_and(|value| !value.trim().is_empty());
 
     if !has_token {
-        if let Some(access_token) = resolve_run_agent_access_token(store, profile).await? {
+        if let Some(access_token) = resolve_run_agent_access_token(store, profile, one_api_config).await? {
             managed_env
                 .entry("ONE_API_TOKEN".to_string())
                 .or_insert(access_token);
@@ -10920,21 +11302,19 @@ async fn maybe_inject_managed_one_api_env(
 async fn is_runnable_delegate_agent(
     store: &SqliteStore,
     profile: &AgentProfile,
+    one_api_config: &OneApiConfig,
 ) -> Result<bool, AgentError> {
     if profile.status != AgentLifecycleState::Ready {
         return Ok(false);
     }
 
-    if profile.model.provider != "one-api" {
-        return Ok(true);
-    }
-
-    Ok(resolve_run_agent_access_token(store, profile).await?.is_some())
+    Ok(resolve_run_agent_access_token(store, profile, one_api_config).await?.is_some())
 }
 
 async fn summarize_agent_runnability(
     store: &SqliteStore,
     profile: &AgentProfile,
+    one_api_config: &OneApiConfig,
 ) -> Result<(bool, Option<String>), AgentError> {
     if profile.status != AgentLifecycleState::Ready {
         return Ok((
@@ -10946,18 +11326,14 @@ async fn summarize_agent_runnability(
         ));
     }
 
-    if profile.model.provider != "one-api" {
-        return Ok((true, None));
-    }
-
-    if resolve_run_agent_access_token(store, profile).await?.is_some() {
+    if resolve_run_agent_access_token(store, profile, one_api_config).await?.is_some() {
         return Ok((true, None));
     }
 
     Ok((
         false,
         Some(format!(
-            "one-api access token unavailable for agent {} ({})",
+            "one-api runtime token unavailable for agent {} ({})",
             profile.id, profile.name
         )),
     ))
@@ -10966,8 +11342,9 @@ async fn summarize_agent_runnability(
 async fn serialize_agent_profile_with_runnability(
     store: &SqliteStore,
     profile: &AgentProfile,
+    one_api_config: &OneApiConfig,
 ) -> Result<Value, AgentError> {
-    let (runnable, runnable_reason) = summarize_agent_runnability(store, profile).await?;
+    let (runnable, runnable_reason) = summarize_agent_runnability(store, profile, one_api_config).await?;
     let mut value = serde_json::to_value(profile)
         .map_err(|err| AgentError::Runtime(format!("serialize agent profile failed: {err}")))?;
     if let Some(object) = value.as_object_mut() {
@@ -10981,6 +11358,7 @@ async fn resolve_runnable_orchestrator_agent_ids(
     store: &SqliteStore,
     explicit_agents: &[String],
     parent_agent_id: Option<uuid::Uuid>,
+    one_api_config: &OneApiConfig,
 ) -> Result<Vec<String>, AgentError> {
     let trimmed_explicit = explicit_agents
         .iter()
@@ -10997,7 +11375,7 @@ async fn resolve_runnable_orchestrator_agent_ids(
                 ))
             })?;
             let profile = store.get_agent(agent_id).await?;
-            if !is_runnable_delegate_agent(store, &profile).await? {
+    if !is_runnable_delegate_agent(store, &profile, one_api_config).await? {
                 return Err(AgentError::InvalidInput(format!(
                     "delegate agent {} ({}) is not runnable; ensure it is ready and has required one-api credentials",
                     profile.id, profile.name
@@ -11011,7 +11389,7 @@ async fn resolve_runnable_orchestrator_agent_ids(
     let local_profiles = store.list_agents().await?;
     let mut runnable_profiles = Vec::new();
     for profile in local_profiles {
-        if is_runnable_delegate_agent(store, &profile).await? {
+        if is_runnable_delegate_agent(store, &profile, one_api_config).await? {
             runnable_profiles.push(profile);
         }
     }
@@ -11026,7 +11404,7 @@ async fn resolve_runnable_orchestrator_agent_ids(
 
     if let Some(parent_agent_id) = parent_agent_id {
         let parent_profile = store.get_agent(parent_agent_id).await?;
-        if is_runnable_delegate_agent(store, &parent_profile).await? {
+        if is_runnable_delegate_agent(store, &parent_profile, one_api_config).await? {
             return Ok(vec![parent_agent_id.to_string()]);
         }
     }
@@ -11039,6 +11417,7 @@ async fn resolve_runnable_orchestrator_agent_ids(
 async fn resolve_a2a_delegate_agent_id(
     store: &Arc<SqliteStore>,
     preferred_agent_id: Option<uuid::Uuid>,
+    one_api_config: &OneApiConfig,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
     if preferred_agent_id.is_some() {
         return Ok(preferred_agent_id);
@@ -11055,7 +11434,7 @@ async fn resolve_a2a_delegate_agent_id(
             return Ok(Some(agent.id));
         }
 
-        if resolve_run_agent_access_token(store, &agent).await?.is_some() {
+    if resolve_run_agent_access_token(store, &agent, one_api_config).await?.is_some() {
             return Ok(Some(agent.id));
         }
     }
@@ -11079,7 +11458,7 @@ async fn resolve_run_agent_context(
     let base_url = derive_one_api_base_url(one_api_config)?;
     let endpoint = derive_one_api_chat_url(one_api_config)?;
     let access_token = if let Some(profile) = profile.as_ref() {
-        resolve_run_agent_access_token(store, profile).await?
+        resolve_run_agent_access_token(store, profile, one_api_config).await?
     } else {
         None
     };
@@ -13087,6 +13466,7 @@ async fn handle_rpc_request(
                 store.as_ref(),
                 &params.delegate_agent_ids,
                 parent_agent_id,
+                &one_api_config,
             )
             .await
             {
@@ -13723,6 +14103,19 @@ async fn handle_rpc_request(
                 _ => unreachable!("decision validated above"),
             };
 
+            if let Some(tool_name) = pending.payload.tool_name.as_deref() {
+                if let Err(err) =
+                    apply_approval_decision_to_agent_profile(&store, agent_id, tool_name, decision.as_str())
+                        .await
+                {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32019,
+                        format!("persist approval decision failed: {err}"),
+                    );
+                }
+            }
+
             record_audit_event(
                 &store,
                 &audit_context,
@@ -13737,6 +14130,7 @@ async fn handle_rpc_request(
                         "requested_trace_id": pending.trace_id,
                         "requested_event_id": pending.id,
                         "requested_reason": pending.payload.metadata.get("reason").cloned().unwrap_or(json!("policy.ask")),
+                        "persisted_profile_decision": decision,
                     }),
                 },
             )
@@ -13804,7 +14198,7 @@ async fn handle_rpc_request(
                 }
             };
 
-            let profile_json = match serialize_agent_profile_with_runnability(&store, &profile).await {
+            let profile_json = match serialize_agent_profile_with_runnability(&store, &profile, &one_api_config).await {
                 Ok(profile_json) => profile_json,
                 Err(err) => {
                     return JsonRpcResponse::error(
@@ -13912,7 +14306,7 @@ async fn handle_rpc_request(
             Ok(agents) => {
                 let mut serialized = Vec::with_capacity(agents.len());
                 for agent in &agents {
-                    match serialize_agent_profile_with_runnability(&store, agent).await {
+                        match serialize_agent_profile_with_runnability(&store, agent, &one_api_config).await {
                         Ok(value) => serialized.push(value),
                         Err(err) => {
                             return JsonRpcResponse::error(
