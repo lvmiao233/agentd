@@ -487,6 +487,7 @@ struct RuntimeState {
     one_api_status: Arc<RwLock<String>>,
     create_agent_lock: Arc<Mutex<()>>,
     lifecycle_manager: LifecycleManager,
+    socket_path: Arc<String>,
     agent_card_root: Arc<PathBuf>,
     mcp_servers_dir: Arc<PathBuf>,
     mcp_host: Arc<Mutex<McpHost>>,
@@ -512,6 +513,7 @@ impl RuntimeState {
         Self::with_lifecycle_and_agent_card_root(
             initial_status,
             lifecycle_manager,
+            default_socket_path(),
             PathBuf::from(default_agent_card_root()),
         )
     }
@@ -520,11 +522,13 @@ impl RuntimeState {
     fn with_lifecycle_and_agent_card_root(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
+        socket_path: String,
         agent_card_root: PathBuf,
     ) -> Self {
         Self::with_lifecycle_and_agent_card_root_and_mcp(
             initial_status,
             lifecycle_manager,
+            socket_path,
             agent_card_root,
             Arc::new(Mutex::new(McpHost::new())),
         )
@@ -534,12 +538,14 @@ impl RuntimeState {
     fn with_lifecycle_and_agent_card_root_and_mcp(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
+        socket_path: String,
         agent_card_root: PathBuf,
         mcp_host: Arc<Mutex<McpHost>>,
     ) -> Self {
         Self::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
             initial_status,
             lifecycle_manager,
+            socket_path,
             agent_card_root,
             mcp_host,
             None,
@@ -549,6 +555,7 @@ impl RuntimeState {
     fn with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
+        socket_path: String,
         agent_card_root: PathBuf,
         mcp_host: Arc<Mutex<McpHost>>,
         firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
@@ -556,6 +563,7 @@ impl RuntimeState {
         Self::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
             initial_status,
             lifecycle_manager,
+            socket_path,
             agent_card_root,
             mcp_host,
             firecracker_executor,
@@ -566,6 +574,7 @@ impl RuntimeState {
     fn with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
         initial_status: &str,
         lifecycle_manager: LifecycleManager,
+        socket_path: String,
         agent_card_root: PathBuf,
         mcp_host: Arc<Mutex<McpHost>>,
         firecracker_executor: Option<Arc<firecracker::FirecrackerExecutor>>,
@@ -576,6 +585,7 @@ impl RuntimeState {
             one_api_status: Arc::new(RwLock::new(initial_status.to_string())),
             create_agent_lock: Arc::new(Mutex::new(())),
             lifecycle_manager,
+            socket_path: Arc::new(socket_path),
             agent_card_root: Arc::new(agent_card_root),
             mcp_servers_dir: Arc::new(mcp_servers_dir),
             mcp_host,
@@ -599,6 +609,10 @@ impl RuntimeState {
 
     fn lifecycle(&self) -> LifecycleManager {
         self.lifecycle_manager.clone()
+    }
+
+    fn socket_path(&self) -> Arc<String> {
+        self.socket_path.clone()
     }
 
     fn mcp_host(&self) -> Arc<Mutex<McpHost>> {
@@ -2146,6 +2160,7 @@ async fn list_available_tools_filters_by_policy() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
     );
@@ -2251,6 +2266,7 @@ async fn onboard_mcp_server_registers_server_for_settings_management() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker_and_mcp_dir(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
         None,
@@ -2372,6 +2388,7 @@ async fn onboard_third_party_mcp_handshake_failure_isolated() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
     );
@@ -2537,6 +2554,7 @@ async fn invoke_skill_allow_executes_downstream_mcp_call() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
     );
@@ -2632,6 +2650,7 @@ async fn invoke_skill_denied_writes_audit() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp(
         "disabled",
         LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(host)),
     );
@@ -2852,6 +2871,7 @@ async fn untrusted_agent_uses_firecracker_runtime() {
     let state = RuntimeState::with_lifecycle_and_agent_card_root_and_mcp_and_firecracker(
         "disabled",
         LifecycleManager::new(CgroupManager::new(&cgroup_root, "agentd")),
+        default_socket_path(),
         PathBuf::from(default_agent_card_root()),
         Arc::new(Mutex::new(McpHost::new())),
         Some(firecracker_executor),
@@ -4048,12 +4068,15 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
     stream_run_agent_over_uds(
         &mut write_stream,
         store,
+        RuntimeState::new("disabled"),
         one_api_config,
         RunAgentParams {
             input: "stream this".to_string(),
             model: Some("gpt-4.1-mini".to_string()),
             agent_id: None,
             stream: Some(true),
+            runtime: None,
+            session_id: None,
         },
         AuditContext::default(),
     )
@@ -4233,12 +4256,15 @@ async fn run_agent_stream_marks_usage_unavailable_when_provider_omits_usage() {
     stream_run_agent_over_uds(
         &mut write_stream,
         store,
+        RuntimeState::new("disabled"),
         one_api_config,
         RunAgentParams {
             input: "stream this".to_string(),
             model: Some("gpt-4.1-mini".to_string()),
             agent_id: None,
             stream: Some(true),
+            runtime: None,
+            session_id: None,
         },
         AuditContext::default(),
     )
@@ -4619,12 +4645,15 @@ async fn run_agent_stream_surfaces_provider_error_events() {
     stream_run_agent_over_uds(
         &mut write_stream,
         store,
+        RuntimeState::new("disabled"),
         one_api_config,
         RunAgentParams {
             input: "trigger provider error".to_string(),
             model: Some("gpt-4.1-mini".to_string()),
             agent_id: None,
             stream: Some(true),
+            runtime: None,
+            session_id: None,
         },
         AuditContext::default(),
     )
@@ -5955,6 +5984,7 @@ async fn health_server(
                                         stream_run_agent_over_uds(
                                             &mut stream,
                                             store.clone(),
+                                            state.clone(),
                                             one_api_config.clone(),
                                             params,
                                             build_audit_context(&rpc_request.id),
@@ -6313,12 +6343,15 @@ async fn drive_a2a_task_lifecycle(
         if let (Some(agent_id), Some(summary)) = (delegate_agent_id, input_summary.clone()) {
             match execute_run_agent(
                 store.clone(),
+                &state,
                 &one_api_config,
                 RunAgentParams {
                     input: summary,
                     model: None,
                     agent_id: Some(agent_id.to_string()),
                     stream: Some(false),
+                    runtime: None,
+                    session_id: None,
                 },
             )
             .await
@@ -6590,6 +6623,7 @@ mod tests {
         RuntimeState::with_lifecycle_and_agent_card_root(
             "disabled",
             LifecycleManager::new(CgroupManager::new(root, "agentd")),
+            default_socket_path(),
             root.join("agent-cards"),
         )
     }
@@ -6630,6 +6664,7 @@ mod tests {
         let state = RuntimeState::with_lifecycle_and_agent_card_root(
             "disabled",
             LifecycleManager::new(CgroupManager::new("/tmp/agentd-cgroup", "agentd")),
+            default_socket_path(),
             card_root.clone(),
         );
 
@@ -8984,6 +9019,10 @@ pub(crate) struct RunAgentParams {
     agent_id: Option<String>,
     #[serde(default)]
     stream: Option<bool>,
+    #[serde(default)]
+    runtime: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -10419,12 +10458,16 @@ struct RunAgentExecution {
     input_tokens: u64,
     output_tokens: u64,
     usage_available: bool,
+    usage_source: String,
+    tool_calls: Vec<Value>,
+    session: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
 struct RunAgentResolvedContext {
     profile: Option<AgentProfile>,
     model_name: String,
+    base_url: String,
     endpoint: String,
     access_token: Option<String>,
 }
@@ -11032,6 +11075,7 @@ async fn resolve_run_agent_context(
         .or_else(|| profile.as_ref().map(|agent| agent.model.model_name.clone()))
         .unwrap_or_else(|| "gpt-4.1-mini".to_string());
 
+    let base_url = derive_one_api_base_url(one_api_config)?;
     let endpoint = derive_one_api_chat_url(one_api_config)?;
     let access_token = if let Some(profile) = profile.as_ref() {
         resolve_run_agent_access_token(store, profile).await?
@@ -11051,13 +11095,272 @@ async fn resolve_run_agent_context(
     Ok(RunAgentResolvedContext {
         profile,
         model_name,
+        base_url,
         endpoint,
         access_token,
     })
 }
 
+const DEFAULT_AGENT_LITE_MAX_CONTEXT_TOKENS: u32 = 32_000;
+const DEFAULT_RUN_AGENT_TIMEOUT_SECS: u64 = 120;
+
+fn run_agent_runtime(params: &RunAgentParams) -> &str {
+    params
+        .runtime
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("one-api")
+}
+
+fn run_agent_uses_agent_lite(params: &RunAgentParams) -> bool {
+    run_agent_runtime(params) == "agent-lite"
+}
+
+fn validate_run_agent_runtime(params: &RunAgentParams) -> Result<(), AgentError> {
+    match run_agent_runtime(params) {
+        "one-api" | "agent-lite" => Ok(()),
+        other => Err(AgentError::InvalidInput(format!(
+            "invalid runtime `{other}` (expected one-api|agent-lite)"
+        ))),
+    }
+}
+
+fn sanitize_session_component(raw: &str) -> String {
+    let mut sanitized = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "session".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn agent_lite_repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn agent_lite_project_dir() -> PathBuf {
+    agent_lite_repo_root().join("python/agentd-agent-lite")
+}
+
+fn agent_lite_session_file(agent_id: uuid::Uuid, session_id: &str) -> PathBuf {
+    let repo_root = agent_lite_repo_root();
+    repo_root
+        .join("data/agent-lite/sessions")
+        .join(agent_id.to_string())
+        .join(format!("{}.jsonl", sanitize_session_component(session_id)))
+}
+
+async fn run_agent_via_agent_lite(
+    state: &RuntimeState,
+    _one_api_config: &OneApiConfig,
+    context: &RunAgentResolvedContext,
+    params: &RunAgentParams,
+) -> Result<RunAgentExecution, AgentError> {
+    let profile = context.profile.as_ref().ok_or_else(|| {
+        AgentError::InvalidInput(
+            "session-backed RunAgent requires a concrete agent_id or auto-selected agent"
+                .to_string(),
+        )
+    })?;
+
+    let requested_session_id = params
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentError::InvalidInput("session_id must be non-empty".to_string()))?;
+    let session_file = agent_lite_session_file(profile.id, requested_session_id);
+    if let Some(parent) = session_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            AgentError::Runtime(format!(
+                "create agent-lite session directory failed: path={} error={err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let result_path = std::env::temp_dir().join(format!(
+        "agentd-run-agent-lite-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let repo_root = agent_lite_repo_root();
+    let project_dir = agent_lite_project_dir();
+    let socket_path = state.socket_path();
+
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("--project")
+        .arg(&project_dir)
+        .arg("agentd-agent-lite")
+        .arg("--socket-path")
+        .arg(socket_path.as_str())
+        .arg("--agent-id")
+        .arg(profile.id.to_string())
+        .arg("--prompt")
+        .arg(params.input.as_str())
+        .arg("--model")
+        .arg(context.model_name.as_str())
+        .arg("--base-url")
+        .arg(context.base_url.as_str())
+        .arg("--timeout")
+        .arg(DEFAULT_RUN_AGENT_TIMEOUT_SECS.to_string())
+        .arg("--max-context-tokens")
+        .arg(DEFAULT_AGENT_LITE_MAX_CONTEXT_TOKENS.to_string())
+        .arg("--session-save")
+        .arg(&session_file)
+        .arg("--result-path")
+        .arg(&result_path)
+        .current_dir(&repo_root)
+        .env("NO_PROXY", "127.0.0.1,localhost,::1")
+        .env("no_proxy", "127.0.0.1,localhost,::1")
+        .env_remove("HTTP_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if session_file.exists() {
+        command.arg("--session-load").arg(&session_file);
+    }
+    command
+        .arg("--api-key")
+        .arg(context.access_token.as_deref().unwrap_or("agentd-local"));
+
+    let mut child = command.spawn().map_err(|err| {
+        AgentError::Runtime(format!(
+            "spawn agent-lite runtime failed: project={} error={err}",
+            project_dir.display()
+        ))
+    })?;
+
+    let status = match timeout(
+        Duration::from_secs(DEFAULT_RUN_AGENT_TIMEOUT_SECS),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(wait_result) => wait_result.map_err(|err| {
+            AgentError::Runtime(format!("wait for agent-lite runtime failed: {err}"))
+        })?,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(AgentError::Runtime(format!(
+                "agent-lite runtime timed out after {}s",
+                DEFAULT_RUN_AGENT_TIMEOUT_SECS
+            )));
+        }
+    };
+
+    let stderr_text = if let Some(mut stderr) = child.stderr.take() {
+        let mut stderr_bytes = Vec::new();
+        stderr.read_to_end(&mut stderr_bytes).await.map_err(|err| {
+            AgentError::Runtime(format!("read agent-lite stderr failed: {err}"))
+        })?;
+        String::from_utf8_lossy(&stderr_bytes).trim().to_string()
+    } else {
+        String::new()
+    };
+
+    let result_text = std::fs::read_to_string(&result_path).map_err(|err| {
+        AgentError::Runtime(format!(
+            "read agent-lite result payload failed: path={} error={err} stderr={stderr_text}",
+            result_path.display()
+        ))
+    })?;
+    let _ = std::fs::remove_file(&result_path);
+
+    let result_value: Value = serde_json::from_str(&result_text).map_err(|err| {
+        AgentError::Runtime(format!(
+            "parse agent-lite result payload failed: path={} error={err} body={} stderr={stderr_text}",
+            result_path.display(),
+            result_text
+        ))
+    })?;
+
+    if !status.success() {
+        let message = extract_string_value(&result_value, &["message", "error"])
+            .unwrap_or_else(|| {
+                format!(
+                    "agent-lite runtime exited with status {status}{}",
+                    if stderr_text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" stderr={stderr_text}")
+                    }
+                )
+            });
+        return Err(AgentError::Runtime(message));
+    }
+
+    let model_name = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("provider_model"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| context.model_name.clone());
+    let output = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("output"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let input_tokens = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let usage_source = result_value
+        .get("llm")
+        .and_then(|llm| llm.get("usage_source"))
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable")
+        .to_string();
+    let tool_calls = result_value
+        .get("tool")
+        .and_then(|tool| tool.get("calls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let session = result_value.get("session").cloned();
+
+    Ok(RunAgentExecution {
+        agent_id: Some(profile.id),
+        model_name,
+        output,
+        input_tokens,
+        output_tokens,
+        usage_available: usage_source != "unavailable",
+        usage_source,
+        tool_calls,
+        session,
+    })
+}
+
 async fn execute_run_agent(
     store: Arc<SqliteStore>,
+    state: &RuntimeState,
     one_api_config: &OneApiConfig,
     params: RunAgentParams,
 ) -> Result<RunAgentExecution, AgentError> {
@@ -11066,8 +11369,12 @@ async fn execute_run_agent(
             "input must be non-empty".to_string(),
         ));
     }
+    validate_run_agent_runtime(&params)?;
 
     let context = resolve_run_agent_context(&store, one_api_config, &params).await?;
+    if run_agent_uses_agent_lite(&params) {
+        return run_agent_via_agent_lite(state, one_api_config, &context, &params).await;
+    }
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -11134,12 +11441,20 @@ async fn execute_run_agent(
         input_tokens,
         output_tokens,
         usage_available,
+        usage_source: if usage_available {
+            "provider".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        tool_calls: Vec::new(),
+        session: None,
     })
 }
 
 async fn execute_run_agent_streaming<W>(
     stream: &mut W,
     store: Arc<SqliteStore>,
+    state: &RuntimeState,
     one_api_config: &OneApiConfig,
     params: RunAgentParams,
 ) -> Result<RunAgentExecution, AgentError>
@@ -11151,8 +11466,43 @@ where
             "input must be non-empty".to_string(),
         ));
     }
+    validate_run_agent_runtime(&params)?;
 
     let context = resolve_run_agent_context(&store, one_api_config, &params).await?;
+    if run_agent_uses_agent_lite(&params) {
+        let execution = run_agent_via_agent_lite(state, one_api_config, &context, &params).await?;
+        if !execution.tool_calls.is_empty() {
+            write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "result": {
+                        "status": "working",
+                        "tool": {
+                            "calls": execution.tool_calls,
+                        }
+                    }
+                }),
+            )
+            .await?;
+        }
+        if !execution.output.trim().is_empty() {
+            write_run_agent_stream_frame(
+                stream,
+                &json!({
+                    "result": {
+                        "status": "working",
+                        "llm": {
+                            "output": execution.output,
+                        },
+                        "model": execution.model_name,
+                        "agent_id": execution.agent_id,
+                    }
+                }),
+            )
+            .await?;
+        }
+        return Ok(execution);
+    }
     let model_name = context.model_name.clone();
     let mut request = reqwest::Client::builder()
         .no_proxy()
@@ -11370,6 +11720,13 @@ where
         input_tokens,
         output_tokens,
         usage_available,
+        usage_source: if usage_available {
+            "provider".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        tool_calls: Vec::new(),
+        session: None,
     })
 }
 
@@ -11393,6 +11750,7 @@ where
 pub(crate) async fn stream_run_agent_over_uds<W>(
     stream: &mut W,
     store: Arc<SqliteStore>,
+    state: RuntimeState,
     one_api_config: OneApiConfig,
     params: RunAgentParams,
     audit_context: AuditContext,
@@ -11404,7 +11762,7 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
         .as_deref()
         .and_then(|raw| uuid::Uuid::parse_str(raw).ok());
     let _ = write_run_agent_stream_frame(stream, &json!({"result": {"status": "working"}})).await;
-    match execute_run_agent_streaming(stream, store.clone(), &one_api_config, params).await {
+    match execute_run_agent_streaming(stream, store.clone(), &state, &one_api_config, params).await {
         Ok(execution) => {
             let usage_payload = if execution.usage_available {
                 json!({
@@ -11414,11 +11772,7 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
             } else {
                 Value::Null
             };
-            let usage_source = if execution.usage_available {
-                "provider"
-            } else {
-                "unavailable"
-            };
+            let usage_source = execution.usage_source.clone();
             if let Some(agent_id) = execution.agent_id.or(requested_agent_id) {
                 record_audit_event(
                     &store,
@@ -11448,6 +11802,7 @@ pub(crate) async fn stream_run_agent_over_uds<W>(
                         "type": "done",
                         "usage": usage_payload,
                         "usage_source": usage_source,
+                        "session": execution.session,
                     }
                 }),
             )
@@ -12004,7 +12359,7 @@ async fn handle_rpc_request(
                 .as_deref()
                 .and_then(|raw| uuid::Uuid::parse_str(raw).ok());
 
-            match execute_run_agent(store.clone(), &one_api_config, params.clone()).await {
+            match execute_run_agent(store.clone(), &state, &one_api_config, params.clone()).await {
                 Ok(execution) => {
                     let usage_payload = if execution.usage_available {
                         json!({
@@ -12014,11 +12369,7 @@ async fn handle_rpc_request(
                     } else {
                         Value::Null
                     };
-                    let usage_source = if execution.usage_available {
-                        "provider"
-                    } else {
-                        "unavailable"
-                    };
+                    let usage_source = execution.usage_source.clone();
 
                      if let Some(agent_id) = execution.agent_id.or(requested_agent_id) {
                         record_audit_event(
@@ -12035,6 +12386,8 @@ async fn handle_rpc_request(
                                     "output": execution.output,
                                     "usage_source": usage_source,
                                     "stream": params.stream.unwrap_or(false),
+                                    "runtime": run_agent_runtime(&params),
+                                    "session": execution.session.clone(),
                                     "usage": usage_payload,
                                 }),
                             },
@@ -12051,6 +12404,8 @@ async fn handle_rpc_request(
                             "usage": usage_payload,
                             "usage_source": usage_source,
                             "stream": params.stream.unwrap_or(false),
+                            "runtime": run_agent_runtime(&params),
+                            "session": execution.session,
                         }),
                     )
                 }
@@ -12335,6 +12690,7 @@ async fn handle_rpc_request(
                 params,
                 |agent_id, child_input, child_index, attempt| {
                     let store = store.clone();
+                    let state = state.clone();
                     let one_api_config = one_api_config.clone();
                     let agent_id = agent_id.to_string();
                     let child_input = child_input.clone();
@@ -12348,12 +12704,15 @@ async fn handle_rpc_request(
 
                         let execution = execute_run_agent(
                             store,
+                            &state,
                             &one_api_config,
                             RunAgentParams {
                                 input: prompt.clone(),
                                 model: None,
                                 agent_id: Some(agent_id.clone()),
                                 stream: Some(false),
+                                runtime: None,
+                                session_id: None,
                             },
                         )
                         .await?;
@@ -13755,17 +14114,22 @@ async fn protocol_server(
             }
             accepted = listener.accept() => {
                 let (mut stream, _) = accepted?;
-                if let Err(err) = handle_protocol_connection(
-                    &mut stream,
-                    store.clone(),
-                    state.clone(),
-                    one_api_config.clone(),
-                )
-                .await
-                {
-                    warn!(%err, "UDS JSON-RPC connection failed");
-                }
-                let _ = stream.shutdown().await;
+                let store = store.clone();
+                let state = state.clone();
+                let one_api_config = one_api_config.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_protocol_connection(
+                        &mut stream,
+                        store,
+                        state,
+                        one_api_config,
+                    )
+                    .await
+                    {
+                        warn!(%err, "UDS JSON-RPC connection failed");
+                    }
+                    let _ = stream.shutdown().await;
+                });
             }
         }
     }
@@ -13802,6 +14166,7 @@ async fn handle_protocol_connection(
                         stream_run_agent_over_uds(
                             stream,
                             store,
+                            state,
                             one_api_config,
                             params,
                             build_audit_context(&request.id),
@@ -14166,6 +14531,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "disabled"
         },
         lifecycle_manager,
+        config.daemon.socket_path.clone(),
         PathBuf::from(config.daemon.agent_card_root.clone()),
         mcp_host.clone(),
         firecracker_executor,

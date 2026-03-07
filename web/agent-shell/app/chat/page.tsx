@@ -118,6 +118,10 @@ function extractToolCalls(payload: any): Array<{ id: string; name: string; input
     });
 }
 
+function agentLiteSessionId(agentId: string): string {
+  return `web-${agentId}`;
+}
+
 export default function ChatPage() {
   const [input, setInput] = useState('');
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
@@ -430,6 +434,8 @@ export default function ChatPage() {
       input: text,
       agent_id: selectedAgent.agent_id,
       stream: true,
+      runtime: 'agent-lite',
+      session_id: agentLiteSessionId(selectedAgent.agent_id),
     });
     return true;
   };

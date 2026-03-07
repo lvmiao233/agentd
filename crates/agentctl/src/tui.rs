@@ -956,6 +956,10 @@ where
     Ok(extract_agent_model_name(&profile))
 }
 
+fn agent_lite_session_id(agent_id: &str) -> String {
+    format!("tui-{agent_id}")
+}
+
 fn bootstrap_shell_context_with_rpc<F>(
     agent_id: Option<&str>,
     model: Option<&str>,
@@ -1127,6 +1131,8 @@ async fn stream_chat_rpc_over_uds(
             "model": model,
             "agent_id": agent_id,
             "stream": true,
+            "runtime": if agent_id.is_some() { Some("agent-lite") } else { None },
+            "session_id": agent_id.as_deref().map(agent_lite_session_id),
         }),
     );
     let payload =

@@ -126,7 +126,7 @@ async fn handle_text_message(
             .and_then(Value::as_bool)
             .unwrap_or(false)
     {
-        handle_run_agent_stream_over_ws(ws, request, store, one_api_config).await?;
+        handle_run_agent_stream_over_ws(ws, request, store, state, one_api_config).await?;
         return Ok(());
     }
 
@@ -139,6 +139,7 @@ async fn handle_run_agent_stream_over_ws(
     ws: &mut WebSocketStream<TcpStream>,
     request: JsonRpcRequest,
     store: Arc<SqliteStore>,
+    state: RuntimeState,
     one_api_config: OneApiConfig,
 ) -> Result<(), DynError> {
     let params = match serde_json::from_value::<RunAgentParams>(request.params.clone()) {
@@ -162,7 +163,8 @@ async fn handle_run_agent_stream_over_ws(
 
     let mut writer = WsTextBridgeWriter::new(ws);
     let audit_context = build_audit_context(&request_id);
-    stream_run_agent_over_uds(&mut writer, store, one_api_config, params, audit_context).await;
+    stream_run_agent_over_uds(&mut writer, store, state, one_api_config, params, audit_context)
+        .await;
     writer.flush_pending().await?;
     Ok(())
 }
