@@ -1,0 +1,38 @@
+iteration=7
+feature=chat_artifact_preview
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. curl --noproxy '*' -sS -N -X POST http://127.0.0.1:4181/api/chat
+   result=PASS
+   evidence=chat-artifact-preview-iteration7-raw.txt
+   contains=```html,```svg
+
+4. playwright_mcp real chat replay against http://127.0.0.1:4181/chat
+   daemon_mock=http://127.0.0.1:7081/rpc
+   result=PASS
+   artifactCards=2
+   previewIframes=2
+   codeToggle=PASS
+   htmlFrameText="Artifact preview\n\nPreview tab should render this card."
+   console=chat-artifact-preview-iteration7-console.txt
+   snapshot=chat-artifact-preview-iteration7-snapshot.md
+   screenshot=chat-artifact-preview-iteration7.png
+
+[scope]
+- web/agent-shell/components/ai-elements/artifact.tsx
+- web/agent-shell/components/ai-elements/message.tsx
+- web/agent-shell/lib/chat-artifacts.js
+- web/agent-shell/lib/chat-artifacts.d.ts
+- web/agent-shell/tests/chat-artifacts.spec.ts
+- web/agent-shell/app/chat/page.tsx
+
+[summary]
+Assistant markdown fenced as `html` or `svg` now renders as inline artifact cards with sandboxed preview and a code view toggle. The chat page also aliases `svg` to `xml` for Streamdown/Shiki highlighting so the browser replay finishes without console highlight errors.

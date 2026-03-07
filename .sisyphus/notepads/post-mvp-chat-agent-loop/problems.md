@@ -14,3 +14,5 @@
 - 2026-03-08 (Iteration 5): 目前 follow-up suggestions 还是启发式生成，并没有读取模型原生的 suggested-reply chunk；如果后续接入更标准的 suggestion part，应优先接入流式数据而不是继续手写更多 heuristics。
 - 2026-03-08 (Iteration 6): regenerate 旧行为会直接抹掉前一版 assistant 回复，导致用户无法比较 alternative answer / plan / patch direction；这和 coding-agent 的探索式工作流不匹配。
 - 2026-03-08 (Iteration 6): 当前 branch history 只在前端内存里保留；刷新页面或切 agent 后会丢失。若后续要做真正的会话级 branch 持久化，需要在 daemon/session 层增加相应存储或 metadata 通道。
+- 2026-03-08 (Iteration 7): 当前 artifact preview 仍然是从 assistant markdown 正文里做 regex 抽取，而不是第一类 stream part；这意味着 tool output、结构化文件产物、以及非 text assistant part 还无法被统一纳入 preview 管道。
+- 2026-03-08 (Iteration 7): 由于 artifact 目前只是“从正文中提取再额外渲染”，原始 markdown code block 仍会继续出现在消息正文里，形成“preview card + code block”双份信息；后续若后端提供 artifact part，应考虑 suppress duplicate fence render。

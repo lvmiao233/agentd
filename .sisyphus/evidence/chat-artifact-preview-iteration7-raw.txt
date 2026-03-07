@@ -1,0 +1,20 @@
+data: {"type":"start","messageId":"KiOtweFcuAOLnsla"}
+
+data: {"type":"start-step"}
+
+data: {"type":"text-start","id":"text-1772909864225"}
+
+data: {"type":"text-delta","id":"text-1772909864225","delta":"Here is a live preview.\n\n```html\n<div style=\"font-family: Inter, sans-serif; padding: 16px; border: 1px solid #d4d4d8; b"}
+
+data: {"type":"text-delta","id":"text-1772909864225","delta":"order-radius: 16px;\">\n  <h1 style=\"margin: 0 0 8px; font-size: 20px;\">Artifact preview</h1>\n  <p style=\"margin: 0; color: #52525b;\">Preview "}
+
+data: {"type":"text-delta","id":"text-1772909864225","delta":"tab should render this card.</p>\n</div>\n```\n\nAnd an icon preview too.\n\n```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 120\" width=\"120\" height=\"120\"><rect width=\"120\" height=\"120\" rx=\"24\" fill=\"#111827\"/><circle cx=\"60\" cy=\"60\" r=\"28\" fill=\"#60a5fa\"/></svg>\n```"}
+
+data: {"type":"text-end","id":"text-1772909864225"}
+
+data: {"type":"finish-step"}
+
+data: {"type":"finish","finishReason":"stop"}
+
+data: [DONE]
+

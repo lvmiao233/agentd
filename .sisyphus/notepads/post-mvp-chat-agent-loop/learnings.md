@@ -21,3 +21,6 @@
 - 2026-03-08 (Iteration 5): 将 suggestion 生成逻辑独立到 `buildFollowUpSuggestions` 后，可以按状态（ready/error/streaming）、是否有工具、是否有 pending approval 持续演进，而不用反复污染 `page.tsx`。
 - 2026-03-08 (Iteration 6): ai-elements `MessageBranch` 非常适合接 regenerate history：只要把旧 assistant 版本在 regenerate 前存档，再把“旧版本 + 当前版本”作为 children 交给 `MessageBranchContent`，就能立刻获得 prev/next/page 控件。
 - 2026-03-08 (Iteration 6): 在真实页面里，branch selector 与现有 regenerate/copy actions 可以并存；这比单独做一个“历史记录弹窗”更贴近 OpenCode/OpenClaw 的 inline 工作流。
+- 2026-03-08 (Iteration 7): `useChat` / `createUIMessageStream` 只要收到原样 `text-delta`，前端就能保留 fenced markdown；因此在后端还没产出结构化 artifact part 之前，可以先做 message-text 级 preview 提取闭环。
+- 2026-03-08 (Iteration 7): 对 chat UI 做 deterministic 浏览器回放时，用“真实 `next start` + mock daemon `/rpc`”比直接在浏览器里拦截 `/api/chat` 更稳，因为可以同时覆盖 `/api/agents`、`/api/approvals` 与 route 层的 streaming 适配。
+- 2026-03-08 (Iteration 7): `@streamdown/code` 的 Shiki 插件虽然暴露了标准 highlighter 接口，但不认识 `svg` fence；在消息层包一层 alias plugin 是低成本兼容现有生态的好办法。

@@ -21,3 +21,6 @@
 - 2026-03-08 (Iteration 5): suggestion chip 点击后直接复用现有 `submitPrompt` 流程，而不是只填充输入框；目标是降低继续 coding 的动作成本，让用户一击推进下一步。
 - 2026-03-08 (Iteration 6): regenerate 不再视为“覆盖当前 assistant 回复”，而是视为“为同一 user turn 生成另一个候选分支”；因此 branch key 绑定到最近的 user message，而不是 assistant message 自己。
 - 2026-03-08 (Iteration 6): branch history 先保存在前端本地 state，而不侵入 AI SDK 内部 message 结构；这样能最小代价用上现有 `MessageBranch`，同时为后续持久化/服务端同步保留空间。
+- 2026-03-08 (Iteration 7): artifact preview 先基于 assistant markdown 中的 fenced code block 做启发式抽取，只支持 `html` / `svg` 两类高价值可视产物；原因是后端尚无标准 artifact chunk，但用户已经能立即从 preview 中获益。
+- 2026-03-08 (Iteration 7): Artifact 卡片放在 assistant prose 之前渲染，并跟随 regenerate branch 版本号补 title 后缀；这样用户会先看到“可操作/可预览产物”，再看解释文字，更贴近 coding-agent 的工作流。
+- 2026-03-08 (Iteration 7): 对 markdown code renderer 不额外 fork streamdown，而是在本地包一层 `svg -> xml` alias；这样既消除了浏览器 console 噪音，也避免为了一个语言兼容问题重写整套消息渲染链路。

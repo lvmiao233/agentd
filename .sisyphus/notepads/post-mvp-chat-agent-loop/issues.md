@@ -10,3 +10,6 @@
 - 2026-03-08 (Iteration 5): Playwright 的 `browser_run_code` 直接操作受控 textarea 不稳定，`browser_type` / 真实 click 路径更可靠；后续浏览器回放优先使用 snapshot ref + 原生交互工具。
 - 2026-03-08 (Iteration 5): `next start` 在当前环境下仍存在 `vendor-chunks/mermaid` 缺失问题，不适合作为本轮浏览器验证入口；新开的干净 `next dev` 端口 `4176` 更稳定。
 - 2026-03-08 (Iteration 6): 旧的 dev 端口在新增 branching 代码后出现一次 HMR/require 级 500，不代表业务逻辑错误；重新起干净的 `4177` 实例后验证通过。后续重大 UI 迭代最好继续用新端口隔离验证。
+- 2026-03-08 (Iteration 7): 新增 `chat-artifacts.spec.ts` 初版因原始模板字符串里混入 fenced code / 逃逸字符而在自定义 spec runner 下触发 `SyntaxError`; 已改为数组拼接 `join('\n')`，规避 runner 直接复制 `.ts -> .mjs` 的语法脆弱点。
+- 2026-03-08 (Iteration 7): 首次真实浏览器回放卡在 streaming 态，不是业务代码错误，而是本地 mock daemon 提前在 request close 时清掉了 stream timer；改成监听 `response.close` 后恢复正常。
+- 2026-03-08 (Iteration 7): 第二次回放里 assistant 文本缺失 fenced artifact 内容，根因是 shell 启动 mock 时未转义三反引号，Bash command substitution 把 code fence 吃掉了；改用 `String.fromCharCode(96).repeat(3)` 生成 fence 后恢复真实 payload。

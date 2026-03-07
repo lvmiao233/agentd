@@ -1,0 +1,118 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - heading "Agent Chat" [level=1] [ref=e38]
+            - paragraph [ref=e39]: 选择一个 agent 后发起实时对话，回复会逐步流式显示
+          - combobox "Active agent selector" [ref=e41]:
+            - generic: Artifact Agent · gpt-5.3-codex · idle
+            - img
+        - log [ref=e42]:
+          - generic [ref=e44]:
+            - paragraph [ref=e48]: Show me an HTML and SVG artifact preview for this UI.
+            - generic [ref=e49]:
+              - generic [ref=e50]:
+                - generic [ref=e51]:
+                  - img [ref=e52]
+                  - text: HTML preview
+                - generic [ref=e57]:
+                  - button "Preview" [ref=e58]:
+                    - img
+                    - text: Preview
+                  - button "Code" [ref=e59]:
+                    - img
+                    - text: Code
+              - iframe [ref=e61]:
+                - generic [ref=f1e2]:
+                  - heading "Artifact preview" [level=1] [ref=f1e3]
+                  - paragraph [ref=f1e4]: Preview tab should render this card.
+            - generic [ref=e62]:
+              - generic [ref=e63]:
+                - generic [ref=e64]:
+                  - img [ref=e65]
+                  - text: SVG preview
+                - generic [ref=e70]:
+                  - button "Preview" [ref=e71]:
+                    - img
+                    - text: Preview
+                  - button "Code" [ref=e72]:
+                    - img
+                    - text: Code
+              - iframe [ref=e74]:
+                - img [ref=f2e2]
+            - generic [ref=e77]:
+              - paragraph [ref=e78]: Here is a live preview.
+              - generic [ref=e79]:
+                - generic [ref=e81]: html
+                - generic:
+                  - generic:
+                    - button "Download file":
+                      - img
+                    - button "Copy Code":
+                      - img
+                - code [ref=e84]:
+                  - generic [ref=e85]: "<div style=\"font-family: Inter, sans-serif; padding: 16px; border: 1px solid #d4d4d8; border-radius: 16px;\">"
+                  - generic [ref=e86]: "<h1 style=\"margin: 0 0 8px; font-size: 20px;\">Artifact preview</h1>"
+                  - generic [ref=e87]: "<p style=\"margin: 0; color: #52525b;\">Preview tab should render this card.</p>"
+                  - generic [ref=e88]: </div>
+              - paragraph [ref=e89]: And an icon preview too.
+              - generic [ref=e90]:
+                - generic [ref=e92]: svg
+                - generic:
+                  - generic:
+                    - button "Download file":
+                      - img
+                    - button "Copy Code":
+                      - img
+                - code [ref=e95]:
+                  - generic [ref=e96]: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120"><rect width="120" height="120" rx="24" fill="#111827"/><circle cx="60" cy="60" r="28" fill="#60a5fa"/></svg>
+            - generic [ref=e97]:
+              - button "Summarize what changed and what still remains." [ref=e98]
+              - button "Show the next highest-impact step and execute it." [ref=e99]
+            - generic [ref=e100]:
+              - button "重新生成" [ref=e101]:
+                - img
+                - generic [ref=e102]: 重新生成
+              - button "复制" [ref=e103]:
+                - img
+                - generic [ref=e104]: 复制
+        - group [ref=e106]:
+          - textbox "Ask the agent…" [ref=e108]
+          - group [ref=e109]:
+            - button "Submit" [disabled]:
+              - img
+  - alert [ref=e110]
