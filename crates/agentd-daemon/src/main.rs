@@ -5613,6 +5613,76 @@ async fn migration_failure_rolls_back_source_session() {
     cleanup_sqlite_files(&source_db_path);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn protocol_server_survives_empty_client_disconnect() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-protocol-empty-client-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+    let socket_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-protocol-empty-client-test-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    let socket_path_text = socket_path.to_string_lossy().to_string();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(protocol_server(
+        socket_path_text.clone(),
+        store,
+        state,
+        OneApiConfig::default(),
+        shutdown_rx,
+    ));
+
+    let started = tokio::time::Instant::now();
+    while !socket_path.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "protocol server should create test socket"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let empty_client = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .expect("connect empty protocol client");
+    drop(empty_client);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut conn = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .expect("protocol server should still accept valid clients");
+    let request = JsonRpcRequest::new(json!(77001), "GetHealth", json!({}));
+    let payload = serde_json::to_vec(&request).expect("encode rpc request");
+    conn.write_all(&payload).await.expect("write rpc request");
+    conn.shutdown().await.expect("shutdown write half");
+
+    let mut response_bytes = Vec::new();
+    conn.read_to_end(&mut response_bytes)
+        .await
+        .expect("read rpc response");
+    let response: JsonRpcResponse =
+        serde_json::from_slice(&response_bytes).expect("decode rpc response");
+    assert!(
+        response.error.is_none(),
+        "GetHealth should succeed after empty disconnect: {response:?}"
+    );
+    assert_eq!(
+        response
+            .result
+            .expect("health response result should exist")["status"],
+        json!("ok")
+    );
+
+    let _ = shutdown_tx.send(true);
+    let join = server_task.await.expect("protocol server join should succeed");
+    assert!(join.is_ok(), "protocol server should not exit with error: {join:?}");
+
+    cleanup_sqlite_files(&db_path);
+}
+
 async fn health_server(
     listener: TcpListener,
     bind_addr: SocketAddr,
@@ -13300,59 +13370,16 @@ async fn protocol_server(
             }
             accepted = listener.accept() => {
                 let (mut stream, _) = accepted?;
-                let mut request_bytes = Vec::new();
-                stream.read_to_end(&mut request_bytes).await?;
-
-                let request: Result<JsonRpcRequest, _> = serde_json::from_slice(&request_bytes);
-                let response = match request {
-                    Ok(request) if request.jsonrpc == "2.0" => {
-                        let stream_requested = request.method == "RunAgent"
-                            && request
-                                .params
-                                .get("stream")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false);
-
-                        if stream_requested {
-                            match serde_json::from_value::<RunAgentParams>(request.params.clone()) {
-                                Ok(params) => {
-                                    stream_run_agent_over_uds(
-                                        &mut stream,
-                                        store.clone(),
-                                        one_api_config.clone(),
-                                        params,
-                                        build_audit_context(&request.id),
-                                    )
-                                    .await;
-                                }
-                                Err(err) => {
-                                    let _ = write_run_agent_stream_frame(
-                                        &mut stream,
-                                        &json!({
-                                            "error": {
-                                                "message": format!("invalid run agent params: {err}"),
-                                            },
-                                            "status": "failed",
-                                        }),
-                                    )
-                                    .await;
-                                }
-                            }
-                            let _ = stream.shutdown().await;
-                            continue;
-                        }
-
-                        handle_rpc_request(request, store.clone(), state.clone(), one_api_config.clone()).await
-                    }
-                    Ok(request) => JsonRpcResponse::error(request.id, -32600, "invalid jsonrpc version"),
-                    Err(err) => {
-                        warn!(%err, "Invalid JSON-RPC request payload");
-                        JsonRpcResponse::error(json!(null), -32700, "parse error")
-                    }
-                };
-
-                let payload = serde_json::to_vec(&response)?;
-                stream.write_all(&payload).await?;
+                if let Err(err) = handle_protocol_connection(
+                    &mut stream,
+                    store.clone(),
+                    state.clone(),
+                    one_api_config.clone(),
+                )
+                .await
+                {
+                    warn!(%err, "UDS JSON-RPC connection failed");
+                }
                 let _ = stream.shutdown().await;
             }
         }
@@ -13362,6 +13389,67 @@ async fn protocol_server(
         std::fs::remove_file(&socket_path)?;
     }
 
+    Ok(())
+}
+
+async fn handle_protocol_connection(
+    stream: &mut tokio::net::UnixStream,
+    store: Arc<SqliteStore>,
+    state: RuntimeState,
+    one_api_config: OneApiConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut request_bytes = Vec::new();
+    stream.read_to_end(&mut request_bytes).await?;
+
+    let request: Result<JsonRpcRequest, _> = serde_json::from_slice(&request_bytes);
+    let response = match request {
+        Ok(request) if request.jsonrpc == "2.0" => {
+            let stream_requested = request.method == "RunAgent"
+                && request
+                    .params
+                    .get("stream")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+
+            if stream_requested {
+                match serde_json::from_value::<RunAgentParams>(request.params.clone()) {
+                    Ok(params) => {
+                        stream_run_agent_over_uds(
+                            stream,
+                            store,
+                            one_api_config,
+                            params,
+                            build_audit_context(&request.id),
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        let _ = write_run_agent_stream_frame(
+                            stream,
+                            &json!({
+                                "error": {
+                                    "message": format!("invalid run agent params: {err}"),
+                                },
+                                "status": "failed",
+                            }),
+                        )
+                        .await;
+                    }
+                }
+                return Ok(());
+            }
+
+            handle_rpc_request(request, store, state, one_api_config).await
+        }
+        Ok(request) => JsonRpcResponse::error(request.id, -32600, "invalid jsonrpc version"),
+        Err(err) => {
+            warn!(%err, "Invalid JSON-RPC request payload");
+            JsonRpcResponse::error(json!(null), -32700, "parse error")
+        }
+    };
+
+    let payload = serde_json::to_vec(&response)?;
+    stream.write_all(&payload).await?;
     Ok(())
 }
 
