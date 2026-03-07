@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Fragment, useEffect, useRef } from 'react';
+import { useState, Fragment, useEffect, useRef, type ReactNode } from 'react';
 import { useChat } from '@ai-sdk/react';
 import {
   DefaultChatTransport,
@@ -411,74 +411,80 @@ export default function ChatPage() {
               />
             ) : (
               messages.map((message, messageIndex) => {
-                const textParts = message.parts.filter(
-                  (part) =>
-                    part.type === 'text' ||
-                    part.type === 'reasoning' ||
-                    part.type === 'source-url' ||
-                    part.type === 'source-document',
-                );
-                const toolParts = message.parts.filter((part) => isToolUIPart(part));
+                const renderedSegments: ReactNode[] = [];
+                const contentParts: Array<{
+                  part: UIMessage['parts'][number];
+                  partIndex: number;
+                }> = [];
 
-                return (
-                  <Fragment key={message.id}>
-                    {textParts.length > 0 && (
-                      <Message from={message.role}>
-                        <MessageContent>
-                          {textParts.map((part, partIndex) => {
-                            if (part.type === 'text') {
-                              return (
-                                <MessageResponse key={`${message.id}-text-${partIndex}`}>
-                                  {part.text}
-                                </MessageResponse>
-                              );
-                            }
+                const flushContentParts = () => {
+                  if (contentParts.length === 0) {
+                    return;
+                  }
 
-                            if (part.type === 'reasoning') {
-                              return (
-                                <pre
-                                  key={`${message.id}-reasoning-${partIndex}`}
-                                  className="overflow-x-auto rounded-md border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground"
-                                >
-                                  {part.text}
-                                </pre>
-                              );
-                            }
+                  const contentKey = `${message.id}-content-${contentParts[0]?.partIndex ?? 0}`;
+                  renderedSegments.push(
+                    <Message key={contentKey} from={message.role}>
+                      <MessageContent>
+                        {contentParts.map(({ part, partIndex }) => {
+                          if (part.type === 'text') {
+                            return (
+                              <MessageResponse key={`${message.id}-text-${partIndex}`}>
+                                {part.text}
+                              </MessageResponse>
+                            );
+                          }
 
-                            if (part.type === 'source-url') {
-                              return (
-                                <a
-                                  key={`${message.id}-source-url-${partIndex}`}
-                                  href={part.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs text-sky-400 underline-offset-2 hover:underline"
-                                >
-                                  [{part.title ?? part.url}]
-                                </a>
-                              );
-                            }
+                          if (part.type === 'reasoning') {
+                            return (
+                              <pre
+                                key={`${message.id}-reasoning-${partIndex}`}
+                                className="overflow-x-auto rounded-md border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground"
+                              >
+                                {part.text}
+                              </pre>
+                            );
+                          }
 
-                            if (part.type === 'source-document') {
-                              return (
-                                <div
-                                  key={`${message.id}-source-doc-${partIndex}`}
-                                  className="text-xs text-muted-foreground"
-                                >
-                                  [Document: {part.title}]
-                                </div>
-                              );
-                            }
+                          if (part.type === 'source-url') {
+                            return (
+                              <a
+                                key={`${message.id}-source-url-${partIndex}`}
+                                href={part.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-sky-400 underline-offset-2 hover:underline"
+                              >
+                                [{part.title ?? part.url}]
+                              </a>
+                            );
+                          }
 
-                            return null;
-                          })}
-                        </MessageContent>
-                      </Message>
-                    )}
+                          if (part.type === 'source-document') {
+                            return (
+                              <div
+                                key={`${message.id}-source-doc-${partIndex}`}
+                                className="text-xs text-muted-foreground"
+                              >
+                                [Document: {part.title}]
+                              </div>
+                            );
+                          }
 
-                    {toolParts.map((part, toolIndex) => (
+                          return null;
+                        })}
+                      </MessageContent>
+                    </Message>,
+                  );
+                  contentParts.length = 0;
+                };
+
+                for (const [partIndex, part] of message.parts.entries()) {
+                  if (isToolUIPart(part)) {
+                    flushContentParts();
+                    renderedSegments.push(
                       <Tool
-                        key={`${message.id}-tool-${toolIndex}`}
+                        key={`${message.id}-tool-${partIndex}`}
                         defaultOpen={
                           part.state === 'output-available' || part.state === 'output-error'
                         }
@@ -496,8 +502,19 @@ export default function ChatPage() {
                           <ToolInput input={part.input} />
                           <ToolOutput output={part.output} errorText={part.errorText} />
                         </ToolContent>
-                      </Tool>
-                    ))}
+                      </Tool>,
+                    );
+                    continue;
+                  }
+
+                  contentParts.push({ part, partIndex });
+                }
+
+                flushContentParts();
+
+                return (
+                  <Fragment key={message.id}>
+                    {renderedSegments}
 
                     {message.role === 'assistant' &&
                       messageIndex === messages.length - 1 &&

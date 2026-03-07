@@ -242,6 +242,57 @@ export async function run() {
   assert.equal(successPayloads[7].finishReason, 'stop', '[DONE] should yield stop finish reason');
   assert.equal(successEvents.at(-1), '[DONE]', 'UI response should terminate with [DONE]');
 
+  const toolFirstResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-tool-first',
+            role: 'user',
+            parts: [{ type: 'text', text: 'read README and answer' }],
+          },
+        ],
+        model: 'gpt-test-model',
+        agentId: 'agent-42',
+        sessionId: 'web-agent-42',
+        runtime: 'agent-lite',
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async () =>
+        new Response(
+          createReadableStream([
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_tool_first","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}\n\n',
+            'data: {"result":{"llm":{"output":"agentd"}}}\n\n',
+            'data: [DONE]\n\n',
+          ]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          }
+        ),
+    }
+  );
+  const toolFirstEvents = await readResponseEvents(toolFirstResponse);
+  const toolFirstPayloads = toolFirstEvents.filter((event) => event !== '[DONE]');
+  assert.deepEqual(
+    toolFirstPayloads.map((event) => event.type),
+    [
+      'start',
+      'start-step',
+      'tool-input-available',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish-step',
+      'finish',
+    ],
+    'tool-first daemon frames should preserve tool ordering before assistant text starts'
+  );
+
   const remoteDefaultFetchCalls = [];
   await handleChatPost(
     new Request('https://shell.example/api/chat', {
@@ -302,6 +353,37 @@ export async function run() {
     localDefaultFetchCalls[0],
     'http://127.0.0.1:7000/rpc',
     'loopback requests should preserve the local daemon default when daemonUrl is not provided'
+  );
+
+  const zeroHostFetchCalls = [];
+  await handleChatPost(
+    new Request('http://0.0.0.0:4173/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-origin-3',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查 0.0.0.0 默认 origin' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async (url) => {
+        zeroHostFetchCalls.push(url);
+        return new Response(createReadableStream(['data: [DONE]\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }
+  );
+  assert.equal(
+    zeroHostFetchCalls[0],
+    'http://127.0.0.1:7000/rpc',
+    '0.0.0.0 shell requests should also resolve to the local daemon default'
   );
 
   const failedResponse = await handleChatPost(

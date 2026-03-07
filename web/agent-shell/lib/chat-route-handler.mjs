@@ -7,7 +7,7 @@ import { consumeRunAgentStream } from './run-agent-stream-reader.mjs';
 const LOCAL_DAEMON_URL = 'http://127.0.0.1:7000';
 
 function isLoopbackHostname(hostname) {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '::1';
 }
 
 function resolveDaemonUrl(req, daemonUrlOverride) {
@@ -161,17 +161,31 @@ export async function handleChatPost(
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       const textId = `text-${Date.now()}`;
+      let textStarted = false;
       writer.write({ type: 'start' });
       writer.write({ type: 'start-step' });
-      writer.write({ type: 'text-start', id: textId });
+
+      const streamingWriter = {
+        write(chunk) {
+          if (chunk?.type === 'text-delta' && !textStarted) {
+            writer.write({ type: 'text-start', id: textId });
+            textStarted = true;
+          }
+          writer.write(chunk);
+        },
+      };
 
       const { emitted, finishReason } = await consumeRunAgentStream({
         responseBody,
         textId,
-        writer,
+        writer: streamingWriter,
       });
 
       if (!emitted) {
+        if (!textStarted) {
+          writer.write({ type: 'text-start', id: textId });
+          textStarted = true;
+        }
         writer.write({
           type: 'text-delta',
           id: textId,
@@ -179,7 +193,9 @@ export async function handleChatPost(
         });
       }
 
-      writer.write({ type: 'text-end', id: textId });
+      if (textStarted) {
+        writer.write({ type: 'text-end', id: textId });
+      }
       writer.write({ type: 'finish-step' });
       writer.write({ type: 'finish', finishReason: finishReason ?? 'stop' });
     },
