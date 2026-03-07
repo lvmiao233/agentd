@@ -21,6 +21,14 @@ import {
   MessageAction,
 } from '@/components/ai-elements/message';
 import {
+  Confirmation,
+  ConfirmationAccepted,
+  ConfirmationAction,
+  ConfirmationActions,
+  ConfirmationRejected,
+  ConfirmationRequest,
+} from '@/components/ai-elements/confirmation';
+import {
   PromptInput,
   PromptInputBody,
   PromptInputTextarea,
@@ -36,7 +44,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
 import {
   Tool,
   ToolHeader,
@@ -44,13 +51,18 @@ import {
   ToolInput,
   ToolOutput,
 } from '@/components/ai-elements/tool';
-import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
+import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
   buildChatAgentUnavailableMessage,
   choosePreferredAgent,
   isAgentRunnable,
 } from '@/lib/chat-agent-readiness.js';
+import {
+  approvalDecisionLabel,
+  buildApprovalFeed,
+  type ResolvedApprovalItem,
+} from '@/lib/chat-approval-feed.js';
 
 type ChatAgentOption = {
   agent_id: string;
@@ -93,6 +105,7 @@ export default function ChatPage() {
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const [resolvedApprovals, setResolvedApprovals] = useState<ResolvedApprovalItem[]>([]);
   const previousAgentIdRef = useRef<string | null>(null);
 
   const {
@@ -211,6 +224,7 @@ export default function ChatPage() {
     clearError();
     setMessages([]);
     setInput('');
+    setResolvedApprovals([]);
     setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
   }, [agentId, clearError, messages.length, setMessages]);
 
@@ -241,6 +255,17 @@ export default function ChatPage() {
       }
 
       setChatNotice(`Approval resolved: ${decision} (${approvalId})`);
+      const resolvedApproval = approvalQueue.find((approval) => approval.id === approvalId);
+      if (resolvedApproval) {
+        setResolvedApprovals((current) => [
+          {
+            ...resolvedApproval,
+            decision,
+            resolvedAt: new Date().toISOString(),
+          },
+          ...current.filter((approval) => approval.id !== approvalId),
+        ].slice(0, 6));
+      }
       await refreshApprovalQueue(agentId);
     } catch (approvalError) {
       const message =
@@ -290,6 +315,7 @@ export default function ChatPage() {
 
   const selectedAgent = availableAgents.find((candidate) => candidate.agent_id === agentId);
   const selectedAgentRunnable = selectedAgent ? isAgentRunnable(selectedAgent) : false;
+  const approvalFeed = buildApprovalFeed({ pending: approvalQueue, resolved: resolvedApprovals });
 
   const lastAssistantMessage = [...messages]
     .reverse()
@@ -362,48 +388,9 @@ export default function ChatPage() {
           </div>
         )}
 
-        {approvalQueue.length > 0 && (
-          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
-            <div className="mb-2 font-medium">Pending approvals</div>
-            <div className="space-y-2">
-              {approvalQueue.map((approval) => (
-                <div
-                  key={approval.id}
-                  className="rounded-md border border-amber-500/30 bg-background/30 p-3"
-                >
-                  <div className="font-medium text-foreground">{approval.tool}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    reason: {approval.reason}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    requested: {approval.requested_at}
-                  </div>
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => void handleApprovalDecision(approval.id, 'approve')}
-                      disabled={approvalBusyId === approval.id}
-                    >
-                      Approve
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handleApprovalDecision(approval.id, 'deny')}
-                      disabled={approvalBusyId === approval.id}
-                    >
-                      Deny
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         <Conversation>
           <ConversationContent>
-            {messages.length === 0 ? (
+            {messages.length === 0 && approvalFeed.length === 0 ? (
               <ConversationEmptyState
                 icon={<MessageSquare className="size-12" />}
                 title="Agent Chat"
@@ -535,6 +522,84 @@ export default function ChatPage() {
                   </Fragment>
                 );
               })
+            )}
+
+            {approvalFeed.length > 0 && (
+              <Message from="assistant" className="max-w-full">
+                <MessageContent className="w-full max-w-full gap-3">
+                  <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                    <ShieldAlert className="size-4" />
+                    Approval inbox
+                  </div>
+
+                  <div className="space-y-3">
+                    {approvalFeed.map((item) => {
+                      if (item.kind === 'pending') {
+                        const approval = item.approval;
+                        return (
+                          <Confirmation key={approval.id} state="approval-requested">
+                            <ConfirmationRequest>
+                              <div className="font-medium">{approval.tool}</div>
+                              <div className="text-muted-foreground text-sm">{approval.reason}</div>
+                              <div className="text-muted-foreground text-xs">
+                                Requested at {approval.requested_at}
+                              </div>
+                            </ConfirmationRequest>
+                            <ConfirmationActions>
+                              <ConfirmationAction
+                                onClick={() => void handleApprovalDecision(approval.id, 'approve')}
+                                disabled={approvalBusyId === approval.id}
+                              >
+                                Approve
+                              </ConfirmationAction>
+                              <ConfirmationAction
+                                variant="outline"
+                                onClick={() => void handleApprovalDecision(approval.id, 'deny')}
+                                disabled={approvalBusyId === approval.id}
+                              >
+                                Deny
+                              </ConfirmationAction>
+                            </ConfirmationActions>
+                          </Confirmation>
+                        );
+                      }
+
+                      const approval = item.approval;
+                      const resolvedState = approval.decision === 'approve' ? 'approved' : 'rejected';
+
+                      return (
+                        <Confirmation key={approval.id} state={resolvedState}>
+                          {approval.decision === 'approve' ? (
+                            <ConfirmationAccepted>
+                              <CheckIcon className="mt-0.5 size-4" />
+                              <div>
+                                <div className="font-medium">
+                                  {approvalDecisionLabel(approval.decision)} {approval.tool}
+                                </div>
+                                <div className="text-muted-foreground text-xs">
+                                  Resolved at {approval.resolvedAt}
+                                </div>
+                              </div>
+                            </ConfirmationAccepted>
+                          ) : (
+                            <ConfirmationRejected>
+                              <XIcon className="mt-0.5 size-4" />
+                              <div>
+                                <div className="font-medium">
+                                  {approvalDecisionLabel(approval.decision)} {approval.tool}
+                                </div>
+                                <div className="text-muted-foreground text-xs">
+                                  Resolved at {approval.resolvedAt}
+                                </div>
+                              </div>
+                            </ConfirmationRejected>
+                          )}
+                        </Confirmation>
+                      );
+                    })}
+                  </div>
+                </MessageContent>
+              </Message>
             )}
           </ConversationContent>
           <ConversationScrollButton />
