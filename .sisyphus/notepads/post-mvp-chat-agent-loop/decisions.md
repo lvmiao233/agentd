@@ -12,3 +12,6 @@
 - 2026-03-08 (Iteration 2): approval UX 先不做全局横幅/管理面板增强，而是把审批入口塞回会话流本身；因为对持续 coding 场景来说，“正在等你批准什么”必须和聊天上下文处在同一滚动区域。
 - 2026-03-08 (Iteration 2): 当前仓库未收录 ai-elements 官方 `confirmation` 组件，因此本轮按官方模式补入本地 `components/ai-elements/confirmation.tsx`，优先复用已有 Button / Message / Conversation 体系，避免再造一套独立审批 UI。
 - 2026-03-08 (Iteration 2): 已批准/已拒绝状态需要在会话里短暂保留，而不是点击后直接消失；因此引入 `resolvedApprovals` 本地历史，让用户能看到 agent 流因自己决策而继续推进。
+- 2026-03-08 (Iteration 3): reasoning / sources 先做成 message 级 disclosure，而不是继续散落在 `page.tsx` 里用 `<pre>` 和裸链接拼装；因为这类元信息需要“可折叠但不抢正文”。
+- 2026-03-08 (Iteration 3): 当前仓库未收录 ai-elements 官方 `reasoning` / `sources` 组件，因此本轮参照官方结构补入本地组件，保持与现有 `message` / `conversation` 体系一致。
+- 2026-03-08 (Iteration 3): `source-url` 与 `source-document` 统一通过 `collectSourceParts` 预处理，再交给 Sources 面板渲染，避免在主页面循环里堆更多类型分支。

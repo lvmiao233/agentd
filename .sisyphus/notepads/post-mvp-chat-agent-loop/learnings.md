@@ -12,3 +12,6 @@
 - 2026-03-08 (Iteration 1): `tool-input-start` 对应的 `input` 可能是 `undefined`，所以任何 ToolInput/CodeBlock 组件都不能假设“只要是工具块就必有参数 JSON”。
 - 2026-03-08 (Iteration 2): 即使后端审批机制还不是 AI SDK 原生 `approval-requested` tool part，只要已有独立 approval queue，也可以先通过 feed 合并与会话内渲染把体验拉近到 ai-elements confirmation 模式。
 - 2026-03-08 (Iteration 2): 浏览器侧用接口拦截验证 approval flow 非常高性价比：既能真实点按钮，又不依赖 daemon 当下有没有恰好挂起的审批任务。
+- 2026-03-08 (Iteration 3): ai-elements 官方 reasoning 模式不是把每个 reasoning part 单独丢进消息流，而是把 reasoning 汇总到一个 disclosure 里，再把正文作为主要内容显示；这比裸 `<pre>` 更符合聊天阅读节奏。
+- 2026-03-08 (Iteration 3): sources 适合放在 assistant message 之前或同级的 disclosure 区，而不是和正文混在同一段落里；这样既能保留引用，又不会破坏正文可读性。
+- 2026-03-08 (Iteration 3): Playwright 做 chat SSE 回放时，必须返回真正的 SSE 帧分隔（`data: ...\n\n`）；只有单换行时，`useChat` 不会稳定消费 assistant parts。

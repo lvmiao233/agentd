@@ -1,0 +1,30 @@
+iteration=3
+feature=chat_reasoning_sources
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs chat-message-parts.spec.ts chat-approval-feed.spec.ts chat-route-streaming.spec.ts chat-ui-stream.spec.ts run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. playwright_mcp reasoning/sources interaction against http://127.0.0.1:4174/chat?fresh=reasoning2
+   mocked_endpoints=/api/agents,/api/approvals,/api/chat
+   result=PASS
+   reasoningVisible=true
+   sourceVisible=true
+   answerVisible=true
+   screenshot=reasoning-sources-iteration3.png
+
+[scope]
+- web/agent-shell/components/ai-elements/reasoning.tsx
+- web/agent-shell/components/ai-elements/sources.tsx
+- web/agent-shell/lib/chat-message-parts.js
+- web/agent-shell/lib/chat-message-parts.d.ts
+- web/agent-shell/app/chat/page.tsx
+- web/agent-shell/tests/chat-message-parts.spec.ts
+
+[summary]
+Reasoning and source parts now render through ai-elements-style disclosure components instead of raw preformatted text and loose links. Assistant responses can show a collapsible reasoning block and a structured sources panel while preserving the existing message/tool flow.
