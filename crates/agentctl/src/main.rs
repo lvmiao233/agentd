@@ -151,7 +151,7 @@ enum AgentCommands {
         agent_id: Option<String>,
         #[arg(long)]
         command: Option<String>,
-        #[arg(long, value_delimiter = ' ')]
+        #[arg(long)]
         args: Vec<String>,
         #[arg(long)]
         restart_max_attempts: Option<u32>,
@@ -1497,6 +1497,38 @@ async fn builtin_lite_create_agent_allows_requested_tool() {
         .expect("builtin lite command should succeed");
     server.await.expect("rpc server should finish");
     let _ = std::fs::remove_file(socket_path);
+}
+
+#[cfg(test)]
+#[test]
+fn agent_run_args_preserve_spaces_per_flag() {
+    let cli = Cli::try_parse_from([
+        "agentctl",
+        "agent",
+        "run",
+        "--agent-id",
+        "123e4567-e89b-12d3-a456-426614174000",
+        "--command",
+        "/usr/bin/python3",
+        "--args=-c",
+        "--args=from pathlib import Path; Path('/tmp/demo').write_text('ok')",
+    ])
+    .expect("agent run args should parse");
+
+    let Commands::Agent { command } = cli.command else {
+        panic!("expected agent command");
+    };
+    let AgentCommands::Run { args, .. } = *command else {
+        panic!("expected agent run subcommand");
+    };
+
+    assert_eq!(
+        args,
+        vec![
+            "-c".to_string(),
+            "from pathlib import Path; Path('/tmp/demo').write_text('ok')".to_string(),
+        ]
+    );
 }
 
 #[cfg(test)]
