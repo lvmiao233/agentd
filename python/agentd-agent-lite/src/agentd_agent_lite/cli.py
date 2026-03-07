@@ -767,8 +767,12 @@ def discover_openai_tools(
     fallback_tool_name: str,
     session: AgentSession,
 ) -> list[dict[str, Any]]:
-    fallback_tools = _build_tool_schema(fallback_tool_name)
-    session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
+    fallback_tools, fallback_provider_map = _prepare_provider_tools(
+        _build_tool_schema(fallback_tool_name)
+    )
+    session.provider_tool_name_map = fallback_provider_map or {
+        fallback_tool_name: fallback_tool_name
+    }
     try:
         result = call_rpc(
             socket_path,
@@ -796,7 +800,9 @@ def discover_openai_tools(
     if not isinstance(tools_value, list) or not tools_value:
         session.discovered_tools = []
         session.discovered_signature = ""
-        session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
+        session.provider_tool_name_map = fallback_provider_map or {
+            fallback_tool_name: fallback_tool_name
+        }
         return fallback_tools
 
     raw_tools = [item for item in tools_value if isinstance(item, dict)]
@@ -823,10 +829,14 @@ def discover_openai_tools(
         if provider_tool_name_map:
             session.provider_tool_name_map = provider_tool_name_map
         else:
-            session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
+            session.provider_tool_name_map = fallback_provider_map or {
+                fallback_tool_name: fallback_tool_name
+            }
 
     if not session.discovered_tools:
-        session.provider_tool_name_map = {fallback_tool_name: fallback_tool_name}
+        session.provider_tool_name_map = fallback_provider_map or {
+            fallback_tool_name: fallback_tool_name
+        }
         return fallback_tools
 
     return [
@@ -1228,7 +1238,20 @@ def _provider_messages_from_session(session: AgentSession) -> list[dict[str, Any
         }
         tool_calls = item.get("tool_calls")
         if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
-            normalized["tool_calls"] = tool_calls
+            serialized_tool_calls: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                serialized_call = dict(tool_call)
+                function = serialized_call.get("function")
+                if isinstance(function, dict):
+                    serialized_function = dict(function)
+                    raw_name = serialized_function.get("name")
+                    if isinstance(raw_name, str) and raw_name:
+                        serialized_function["name"] = _provider_safe_tool_name(raw_name)
+                    serialized_call["function"] = serialized_function
+                serialized_tool_calls.append(serialized_call)
+            normalized["tool_calls"] = serialized_tool_calls
         tool_call_id = item.get("tool_call_id")
         if role == "tool" and isinstance(tool_call_id, str) and tool_call_id:
             normalized["tool_call_id"] = tool_call_id

@@ -86,6 +86,27 @@ def test_tool_calling_loop_returns_final_answer(monkeypatch, capsys) -> None:
     assert payload["tool"]["calls"][0]["output"] == "HELLO"
 
 
+def test_provider_messages_sanitize_assistant_tool_call_names() -> None:
+    session = _CLI_MODULE.AgentSession("agent-tool-provider-serialization")
+    assistant = session._append_message("assistant", "")
+    assistant["tool_calls"] = [
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": "builtin.lite.upper",
+                "arguments": '{"prompt":"hello"}',
+            },
+        }
+    ]
+
+    provider_messages = _CLI_MODULE._provider_messages_from_session(session)
+    assert (
+        provider_messages[0]["tool_calls"][0]["function"]["name"]
+        == "builtin_lite_upper"
+    )
+
+
 def test_max_iterations_reached_returns_stable_error(monkeypatch, capsys) -> None:
     args = _make_args()
     args.max_iterations = 1

@@ -185,3 +185,19 @@ def test_discovery_failure_reuses_cached_tools(monkeypatch) -> None:
 
     assert [item["function"]["name"] for item in first] == ["mcp.fs.read_file"]
     assert [item["function"]["name"] for item in second] == ["mcp.fs.read_file"]
+
+
+def test_fallback_tool_schema_uses_provider_safe_name() -> None:
+    session = _CLI_MODULE.AgentSession("agent-fallback-tool")
+
+    schemas = _CLI_MODULE.discover_openai_tools(
+        socket_path="/tmp/agentd.sock",
+        agent_id="agent-fallback-tool",
+        fallback_tool_name="builtin.lite.upper",
+        session=session,
+    )
+
+    assert [item["function"]["name"] for item in schemas] == ["builtin_lite_upper"]
+    assert session.provider_tool_name_map == {
+        "builtin_lite_upper": "builtin.lite.upper"
+    }
