@@ -870,11 +870,11 @@ fn wildcard_pattern_to_regex(pattern: &str) -> String {
 }
 
 fn has_higher_precedence(candidate: &TranspiledRule, current: &TranspiledRule) -> bool {
-    let candidate_decision = decision_precedence_rank(candidate.decision);
-    let current_decision = decision_precedence_rank(current.decision);
-
-    if candidate_decision != current_decision {
-        return candidate_decision < current_decision;
+    if candidate.decision == PolicyDecision::Deny && current.decision != PolicyDecision::Deny {
+        return true;
+    }
+    if current.decision == PolicyDecision::Deny && candidate.decision != PolicyDecision::Deny {
+        return false;
     }
 
     if candidate.layer_index != current.layer_index {
@@ -883,6 +883,12 @@ fn has_higher_precedence(candidate: &TranspiledRule, current: &TranspiledRule) -
 
     if candidate.specificity != current.specificity {
         return candidate.specificity > current.specificity;
+    }
+
+    let candidate_decision = decision_precedence_rank(candidate.decision);
+    let current_decision = decision_precedence_rank(current.decision);
+    if candidate_decision != current_decision {
+        return candidate_decision < current_decision;
     }
 
     candidate.rule_index < current.rule_index
@@ -946,26 +952,21 @@ impl PolicyLayer {
 }
 
 fn pick_winner(matches: &[RuleMatch]) -> Option<RuleMatch> {
-    for decision in [
-        PolicyDecision::Deny,
-        PolicyDecision::Allow,
-        PolicyDecision::Ask,
-    ] {
-        let mut candidates: Vec<&RuleMatch> =
-            matches.iter().filter(|m| m.decision == decision).collect();
-        if candidates.is_empty() {
-            continue;
-        }
+    let mut candidates = matches.to_vec();
+    candidates.sort_by(|a, b| {
+        let a_is_deny = a.decision == PolicyDecision::Deny;
+        let b_is_deny = b.decision == PolicyDecision::Deny;
 
-        candidates.sort_by(|a, b| {
-            b.layer_index
-                .cmp(&a.layer_index)
-                .then_with(|| b.specificity.cmp(&a.specificity))
-                .then_with(|| a.rule_index.cmp(&b.rule_index))
-        });
-        return candidates.first().map(|m| (*m).clone());
-    }
-    None
+        b_is_deny
+            .cmp(&a_is_deny)
+            .then_with(|| b.layer_index.cmp(&a.layer_index))
+            .then_with(|| b.specificity.cmp(&a.specificity))
+            .then_with(|| {
+                decision_precedence_rank(a.decision).cmp(&decision_precedence_rank(b.decision))
+            })
+            .then_with(|| a.rule_index.cmp(&b.rule_index))
+    });
+    candidates.into_iter().next()
 }
 
 fn wildcard_matches(pattern: &str, text: &str) -> bool {
@@ -1115,6 +1116,35 @@ mod tests {
         assert!(gateway.reason.contains("policy.deny"));
         assert!(gateway.reason.contains("matched_rule=mcp.fs.*"));
         assert!(gateway.reason.contains("source_layer=agent_profile"));
+    }
+
+    #[test]
+    fn session_override_ask_outranks_lower_layer_allow() {
+        let global = PolicyLayer {
+            name: "global".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "bash:*".to_string(),
+                decision: PolicyDecision::Allow,
+            }],
+        };
+        let profile = PolicyLayer {
+            name: "profile".to_string(),
+            rules: vec![PolicyRule {
+                pattern: "bash:rm".to_string(),
+                decision: PolicyDecision::Ask,
+            }],
+        };
+        let session = SessionPolicyOverrides {
+            allow_tools: vec![],
+            ask_tools: vec!["bash:rm".to_string()],
+            deny_tools: vec![],
+        }
+        .into_layer();
+
+        let evaluation = PolicyLayer::evaluate_tool(&global, &profile, &session, "bash:rm");
+        assert_eq!(evaluation.decision, PolicyDecision::Ask);
+        assert_eq!(evaluation.matched_rule.as_deref(), Some("bash:rm"));
+        assert_eq!(evaluation.source_layer.as_deref(), Some("session_override"));
     }
 
     #[test]
