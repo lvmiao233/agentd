@@ -1435,10 +1435,21 @@ fn tui_multi_agent_panel_updates_on_events() {
 #[cfg(test)]
 pub(crate) fn multi_agent_panel_updates_on_events_probe() -> bool {
     let mut app = AgentShellApp::new();
+    app.active_agent_id = Some("agent-a".to_string());
 
     let mut rpc = |method: &str, _params: Value| -> Result<Value, String> {
         match method {
-            "ListLifecycleEvents" => Ok(json!({
+            "ListAuditEvents" => Ok(json!({
+                "events": [
+                    {
+                        "event_type": "tool_invoked",
+                        "payload": {
+                            "message": "run agent completed"
+                        }
+                    }
+                ]
+            })),
+            "ListA2AEvents" => Ok(json!({
                 "events": [
                     {
                         "event_type": "orchestrator",
