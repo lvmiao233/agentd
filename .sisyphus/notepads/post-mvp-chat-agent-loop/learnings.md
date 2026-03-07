@@ -17,3 +17,5 @@
 - 2026-03-08 (Iteration 3): Playwright 做 chat SSE 回放时，必须返回真正的 SSE 帧分隔（`data: ...\n\n`）；只有单换行时，`useChat` 不会稳定消费 assistant parts。
 - 2026-03-08 (Iteration 4): AI SDK 官方审批模式是 `approval-requested` state 直接挂在 tool part 上，但当前 agentd daemon 暂时只暴露 approval queue；因此前端需要一个“尽量正确、可回退”的 tool-name 分配层。
 - 2026-03-08 (Iteration 4): `mcp.fs.read_file`、`fs.read_file`、`read_file` 这类 alias 足以覆盖很多真实场景；但只靠 name matching 天然会在“同名工具多次调用”时出现歧义，因此后续仍需后端补 call-level correlation。
+- 2026-03-08 (Iteration 5): ai-elements suggestion 模式的关键价值不是视觉上的 chip，而是“把下一步 prompt 变成低摩擦动作”；对 coding-agent 来说，这比单纯的 regenerate 更能推动多轮执行。
+- 2026-03-08 (Iteration 5): 将 suggestion 生成逻辑独立到 `buildFollowUpSuggestions` 后，可以按状态（ready/error/streaming）、是否有工具、是否有 pending approval 持续演进，而不用反复污染 `page.tsx`。

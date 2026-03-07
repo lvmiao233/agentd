@@ -7,3 +7,5 @@
 - 2026-03-08 (Iteration 2): 仓库自定义 web spec runner 只是把 `*.spec.ts` 复制为 `.compiled.mjs`，不会转译 TypeScript 类型语法；因此测试辅助库需采用 `js/mjs + d.ts` 模式，不能直接在 spec 中引入带类型语法的 `.ts` 实现。
 - 2026-03-08 (Iteration 3): Playwright MCP 在同一浏览器上下文中会保留旧的 Next.js chunk URL 缓存；为避免 `ChunkLoadError` 干扰验证，本轮改用新的 dev 端口 `4174` 进行真实回放。
 - 2026-03-08 (Iteration 4): Playwright 在 Next.js dev server 上仍会伴随一些 RSC/static asset 400 噪音，但不影响本轮 chat submit 与 inline approval 验证；后续若要做更稳定的浏览器回放，最好固定独立端口与干净浏览器上下文。
+- 2026-03-08 (Iteration 5): Playwright 的 `browser_run_code` 直接操作受控 textarea 不稳定，`browser_type` / 真实 click 路径更可靠；后续浏览器回放优先使用 snapshot ref + 原生交互工具。
+- 2026-03-08 (Iteration 5): `next start` 在当前环境下仍存在 `vendor-chunks/mermaid` 缺失问题，不适合作为本轮浏览器验证入口；新开的干净 `next dev` 端口 `4176` 更稳定。

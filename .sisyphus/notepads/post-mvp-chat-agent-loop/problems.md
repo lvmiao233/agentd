@@ -10,3 +10,5 @@
 - 2026-03-08 (Iteration 3): 当前 sources 仍然是 message 级 disclosure，而不是 inline citation；若后续需要 OpenCode/OpenClaw 那种更强的引用体验，应继续补 `inline-citation` 或 message-level source anchoring，而不是退回手写链接列表。
 - 2026-03-08 (Iteration 4): approval inbox 虽然已经在会话内，但如果不贴回具体 Tool，用户仍然要自己猜“这一条审批到底对应哪个调用”；这对持续 coding 场景是认知负担。
 - 2026-03-08 (Iteration 4): 当前 inline approval 仍受限于 fuzzy matching：一旦同名工具在单轮消息里多次出现，前端无法 100% 判断审批属于哪个 call。真正的根治方案仍是 daemon/stream 层补 `toolCallId` 或等价关联字段到 approval payload。
+- 2026-03-08 (Iteration 5): 当前 chat 即使已有 regenerate/copy，也仍然缺少“顺着上一条回复继续推进任务”的低摩擦入口；用户必须自己重新组织提示词，会打断持续 coding 的节奏。
+- 2026-03-08 (Iteration 5): 目前 follow-up suggestions 还是启发式生成，并没有读取模型原生的 suggested-reply chunk；如果后续接入更标准的 suggestion part，应优先接入流式数据而不是继续手写更多 heuristics。

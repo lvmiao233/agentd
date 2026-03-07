@@ -1,0 +1,29 @@
+iteration=5
+feature=chat_follow_up_suggestions
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs chat-follow-up-suggestions.spec.ts chat-tool-approvals.spec.ts chat-message-parts.spec.ts chat-approval-feed.spec.ts chat-route-streaming.spec.ts chat-ui-stream.spec.ts run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. playwright_mcp follow-up suggestion interaction against http://127.0.0.1:4176/chat?fresh=suggestions-input-debug
+   result=PASS
+   observedSuggestionButtons=true
+   clickedSuggestion="Show the next highest-impact step and execute it."
+   observedFollowUpUserMessage=true
+   screenshot=follow-up-suggestions-iteration5.png
+   note=the backing RunAgent request failed in this environment, but the UI-level suggestion dispatch and conversation append were verified on the real page
+
+[scope]
+- web/agent-shell/components/ai-elements/suggestion.tsx
+- web/agent-shell/lib/chat-follow-up-suggestions.js
+- web/agent-shell/lib/chat-follow-up-suggestions.d.ts
+- web/agent-shell/tests/chat-follow-up-suggestions.spec.ts
+- web/agent-shell/app/chat/page.tsx
+
+[summary]
+The chat now shows ai-elements-style follow-up suggestion chips below the latest assistant response when the conversation is ready or errored. Clicking a suggestion reuses the existing submit path, so the next instruction is sent as a normal chat turn instead of requiring the user to retype it.

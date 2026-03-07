@@ -17,3 +17,5 @@
 - 2026-03-08 (Iteration 3): `source-url` 与 `source-document` 统一通过 `collectSourceParts` 预处理，再交给 Sources 面板渲染，避免在主页面循环里堆更多类型分支。
 - 2026-03-08 (Iteration 4): 在后端尚未提供 `toolCallId -> approval` 的稳定映射前，先把 pending approval 通过 canonical tool-name heuristic 贴到 Tool 卡片；无法安全匹配的审批继续保留在 conversation-level inbox。
 - 2026-03-08 (Iteration 4): 为避免 UI 双份噪音，已成功分配到 Tool 节点的 pending approval 不再重复显示在 approval inbox；inbox 只承担 fallback 角色。
+- 2026-03-08 (Iteration 5): follow-up suggestions 放在“最后一条 assistant 回复”的 actions 区上方，而不是放到输入框上方做全局 chips；这样建议始终贴着刚刚的上下文，阅读和继续行动在同一位置完成。
+- 2026-03-08 (Iteration 5): suggestion chip 点击后直接复用现有 `submitPrompt` 流程，而不是只填充输入框；目标是降低继续 coding 的动作成本，让用户一击推进下一步。
