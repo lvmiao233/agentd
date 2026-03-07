@@ -43,6 +43,34 @@ export function buildConversationInput(messages) {
   return normalized.join('\n\n').trim();
 }
 
+export function normalizeChatMessages(messages, trigger, messageId) {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  if (trigger !== 'regenerate-message') {
+    return messages;
+  }
+
+  if (typeof messageId === 'string' && messageId.trim()) {
+    const messageIndex = messages.findIndex((message) => message.id === messageId);
+    if (messageIndex >= 0) {
+      return messages.slice(0, messageIndex);
+    }
+  }
+
+  const lastAssistantIndex = [...messages]
+    .map((message, index) => ({ index, role: message?.role }))
+    .reverse()
+    .find((message) => message.role === 'assistant')?.index;
+
+  if (typeof lastAssistantIndex === 'number') {
+    return messages.slice(0, lastAssistantIndex);
+  }
+
+  return messages;
+}
+
 export function buildSingleTextStreamResponse(text) {
   const stream = createUIMessageStream({
     execute: ({ writer }) => {
@@ -75,7 +103,10 @@ export async function handleChatPost(
   { fetchImpl = fetch, daemonUrl } = {}
 ) {
   const {
+    id,
     messages,
+    trigger,
+    messageId,
     model: modelId,
     agentId,
     sessionId,
@@ -83,7 +114,16 @@ export async function handleChatPost(
   } = await req.json();
 
   const selectedModel = modelId ?? 'gpt-5.3-codex';
-  const input = buildConversationInput(messages);
+  const normalizedMessages = normalizeChatMessages(messages, trigger, messageId);
+  const resolvedSessionId =
+    typeof sessionId === 'string' && sessionId.trim()
+      ? sessionId
+      : typeof id === 'string' && id.trim()
+        ? id
+        : typeof agentId === 'string' && agentId.trim()
+          ? `web-${agentId}`
+          : undefined;
+  const input = buildConversationInput(normalizedMessages);
   const resolvedDaemonUrl = resolveDaemonUrl(req, daemonUrl);
   if (!input) {
     return buildSingleTextStreamResponse('Please provide a message to run.');
@@ -102,7 +142,7 @@ export async function handleChatPost(
           input,
           model: selectedModel,
           ...(agentId ? { agent_id: agentId } : {}),
-          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(resolvedSessionId ? { session_id: resolvedSessionId } : {}),
           ...(runtime ? { runtime } : {}),
           stream: true,
         },

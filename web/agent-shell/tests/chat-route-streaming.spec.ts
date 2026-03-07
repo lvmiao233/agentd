@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildConversationInput,
   handleChatPost,
+  normalizeChatMessages,
 } from '../lib/chat-route-handler.mjs';
 
 function createReadableStream(chunks) {
@@ -52,6 +53,45 @@ export async function run() {
     ]),
     '[user]\n分析 main.rs\n\n[assistant]\n好的',
     'conversation input should match route formatting'
+  );
+
+  const regenerateMessages = [
+    {
+      id: 'msg-a',
+      role: 'user',
+      parts: [{ type: 'text', text: 'first prompt' }],
+    },
+    {
+      id: 'msg-b',
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'first answer' }],
+    },
+    {
+      id: 'msg-c',
+      role: 'user',
+      parts: [{ type: 'text', text: 'follow up' }],
+    },
+    {
+      id: 'msg-d',
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'second answer' }],
+    },
+  ];
+
+  assert.deepEqual(
+    normalizeChatMessages(regenerateMessages, 'regenerate-message', 'msg-d').map(
+      (message) => message.id,
+    ),
+    ['msg-a', 'msg-b', 'msg-c'],
+    'regenerate should trim the selected assistant message from the request context'
+  );
+
+  assert.deepEqual(
+    normalizeChatMessages(regenerateMessages, 'regenerate-message').map(
+      (message) => message.id,
+    ),
+    ['msg-a', 'msg-b', 'msg-c'],
+    'regenerate without a message id should trim the last assistant response'
   );
 
   const fetchCalls = [];
@@ -111,6 +151,70 @@ export async function run() {
     runtime: 'agent-lite',
     stream: true,
   });
+
+  const fallbackSessionFetchCalls = [];
+  await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'chat-fallback-1',
+        messages: [
+          {
+            id: 'msg-session-1',
+            role: 'user',
+            parts: [{ type: 'text', text: 'session fallback' }],
+          },
+        ],
+        agentId: 'agent-fallback',
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async (_url, init) => {
+        fallbackSessionFetchCalls.push(JSON.parse(init.body));
+        return new Response(createReadableStream(['data: [DONE]\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }
+  );
+
+  assert.equal(
+    fallbackSessionFetchCalls[0].params.session_id,
+    'chat-fallback-1',
+    'route should fall back to chat id when sessionId is omitted'
+  );
+
+  const regenerateFetchCalls = [];
+  await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: regenerateMessages,
+        trigger: 'regenerate-message',
+        messageId: 'msg-d',
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async (_url, init) => {
+        regenerateFetchCalls.push(JSON.parse(init.body));
+        return new Response(createReadableStream(['data: [DONE]\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }
+  );
+
+  assert.equal(
+    regenerateFetchCalls[0].params.input,
+    '[user]\nfirst prompt\n\n[assistant]\nfirst answer\n\n[user]\nfollow up',
+    'regenerate requests should exclude the assistant message being regenerated'
+  );
 
   const successEvents = await readResponseEvents(successResponse);
   const successPayloads = successEvents.filter((event) => event !== '[DONE]');
