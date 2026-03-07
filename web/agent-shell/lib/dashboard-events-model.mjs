@@ -7,7 +7,9 @@ function normalizeToolName(rawTool) {
 
 export function summarizeDashboardState({ agents = [], events = [] } = {}) {
   const runningCount = agents.filter((agent) => agent.status === 'running').length;
-  const degradedCount = agents.filter((agent) => agent.status === 'degraded').length;
+  const degradedCount = agents.filter(
+    (agent) => agent.status === 'degraded' || agent.runnable === false
+  ).length;
 
   return {
     agentCount: agents.length,

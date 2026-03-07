@@ -11,12 +11,18 @@ export async function run() {
       { id: 'agent-dev-01', status: 'running' },
       { id: 'agent-review-02', status: 'running' },
       { id: 'agent-search-03', status: 'degraded' },
+      { id: 'agent-codex-04', status: 'ready', runnable: false },
     ],
     events: [{ type: 'ToolInvoked' }],
   });
 
-  assert.equal(dashboard.agentCount, 3, 'agent-count-card should show numeric value');
+  assert.equal(dashboard.agentCount, 4, 'agent-count-card should show numeric value');
   assert.equal(dashboard.runningCount, 2, 'running agent count should be tracked');
+  assert.equal(
+    dashboard.degradedCount,
+    2,
+    'degraded agent count should include unrunnable agents even when lifecycle status is ready'
+  );
   assert.equal(dashboard.latestEventType, 'ToolInvoked', 'latest event should be visible');
 
   const bars = buildUsageBars([640, 720, 690, 810, 760, 880, 830]);
