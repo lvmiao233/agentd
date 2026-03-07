@@ -15,10 +15,17 @@ import {
 } from '@/components/ai-elements/conversation';
 import {
   Message,
+  MessageBranch,
+  MessageBranchContent,
+  MessageBranchNext,
+  MessageBranchPage,
+  MessageBranchPrevious,
+  MessageBranchSelector,
   MessageContent,
   MessageResponse,
   MessageActions,
   MessageAction,
+  MessageToolbar,
 } from '@/components/ai-elements/message';
 import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
 import {
@@ -77,6 +84,11 @@ import {
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
 import { buildFollowUpSuggestions } from '@/lib/chat-follow-up-suggestions.js';
+import {
+  appendMessageBranch,
+  getAssistantBranchKey,
+  mergeMessageBranches,
+} from '@/lib/chat-message-branches.js';
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 
@@ -122,6 +134,7 @@ export default function ChatPage() {
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [resolvedApprovals, setResolvedApprovals] = useState<ResolvedApprovalItem[]>([]);
+  const [messageBranchHistory, setMessageBranchHistory] = useState<Record<string, UIMessage[]>>({});
   const previousAgentIdRef = useRef<string | null>(null);
 
   const {
@@ -241,6 +254,7 @@ export default function ChatPage() {
     setMessages([]);
     setInput('');
     setResolvedApprovals([]);
+    setMessageBranchHistory({});
     setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
   }, [agentId, clearError, messages.length, setMessages]);
 
@@ -377,6 +391,15 @@ export default function ChatPage() {
       return;
     }
 
+    if (lastAssistantMessage) {
+      const branchKey = getAssistantBranchKey(messages, lastAssistantMessage.id);
+      if (branchKey) {
+        setMessageBranchHistory((current) =>
+          appendMessageBranch(current, branchKey, lastAssistantMessage),
+        );
+      }
+    }
+
     setChatNotice(null);
     if (error) {
       clearError();
@@ -447,10 +470,179 @@ export default function ChatPage() {
               messages.map((message, messageIndex) => {
                 const renderedSegments: ReactNode[] = [];
                 const sourceParts = collectSourceParts(message.parts);
+                const assistantBranchKey =
+                  message.role === 'assistant'
+                    ? getAssistantBranchKey(messages, message.id)
+                    : null;
+                const branchMessages =
+                  message.role === 'assistant' && assistantBranchKey
+                    ? mergeMessageBranches(messageBranchHistory[assistantBranchKey] ?? [], message)
+                    : [message];
                 const contentParts: Array<{
                   part: UIMessage['parts'][number];
                   partIndex: number;
                 }> = [];
+
+                const renderMessageVariant = (
+                  targetMessage: UIMessage,
+                  variantKey: string,
+                  allowLinkedApprovals: boolean,
+                ) => {
+                  const variantSegments: ReactNode[] = [];
+                  const variantSourceParts = collectSourceParts(targetMessage.parts);
+                  const variantContentParts: Array<{
+                    part: UIMessage['parts'][number];
+                    partIndex: number;
+                  }> = [];
+
+                  const flushVariantContentParts = () => {
+                    if (variantContentParts.length === 0) {
+                      return;
+                    }
+
+                    const contentKey = `${variantKey}-content-${variantContentParts[0]?.partIndex ?? 0}`;
+                    variantSegments.push(
+                      <Message key={contentKey} from={targetMessage.role}>
+                        <MessageContent>
+                          {variantContentParts.map(({ part, partIndex }) => {
+                            if (part.type === 'text') {
+                              return (
+                                <MessageResponse key={`${variantKey}-text-${partIndex}`}>
+                                  {part.text}
+                                </MessageResponse>
+                              );
+                            }
+
+                            if (part.type === 'reasoning') {
+                              return (
+                                <Reasoning
+                                  key={`${variantKey}-reasoning-${partIndex}`}
+                                  className="w-full"
+                                  isStreaming={
+                                    status === 'streaming' &&
+                                    messageIndex === messages.length - 1 &&
+                                    partIndex === targetMessage.parts.length - 1
+                                  }
+                                >
+                                  <ReasoningTrigger />
+                                  <ReasoningContent>{part.text}</ReasoningContent>
+                                </Reasoning>
+                              );
+                            }
+
+                            if (part.type === 'source-url' || part.type === 'source-document') {
+                              return null;
+                            }
+
+                            return null;
+                          })}
+                        </MessageContent>
+                      </Message>,
+                    );
+                    variantContentParts.length = 0;
+                  };
+
+                  for (const [partIndex, part] of targetMessage.parts.entries()) {
+                    if (isToolUIPart(part)) {
+                      flushVariantContentParts();
+                      const toolKey = `${variantKey}-tool-${partIndex}`;
+                      const linkedApproval = allowLinkedApprovals
+                        ? toolApprovalAssignments.get(`${message.id}-tool-${partIndex}`)
+                        : undefined;
+                      variantSegments.push(
+                        <Tool
+                          key={toolKey}
+                          defaultOpen={
+                            part.state === 'output-available' ||
+                            part.state === 'output-error' ||
+                            linkedApproval !== undefined
+                          }
+                        >
+                          {part.type === 'dynamic-tool' ? (
+                            <ToolHeader type="dynamic-tool" state={part.state} toolName={part.toolName} />
+                          ) : (
+                            <ToolHeader type={part.type} state={part.state} />
+                          )}
+                          <ToolContent>
+                            {linkedApproval && (
+                              <Confirmation state="approval-requested">
+                                <ConfirmationRequest>
+                                  <div className="font-medium">Approval required for {linkedApproval.tool}</div>
+                                  <div className="text-muted-foreground text-sm">
+                                    {linkedApproval.reason}
+                                  </div>
+                                  <div className="text-muted-foreground text-xs">
+                                    Requested at {linkedApproval.requested_at}
+                                  </div>
+                                </ConfirmationRequest>
+                                <ConfirmationActions>
+                                  <ConfirmationAction
+                                    onClick={() => void handleApprovalDecision(linkedApproval.id, 'approve')}
+                                    disabled={approvalBusyId === linkedApproval.id}
+                                  >
+                                    Approve
+                                  </ConfirmationAction>
+                                  <ConfirmationAction
+                                    variant="outline"
+                                    onClick={() => void handleApprovalDecision(linkedApproval.id, 'deny')}
+                                    disabled={approvalBusyId === linkedApproval.id}
+                                  >
+                                    Deny
+                                  </ConfirmationAction>
+                                </ConfirmationActions>
+                              </Confirmation>
+                            )}
+                            <ToolInput input={part.input} />
+                            <ToolOutput output={part.output} errorText={part.errorText} />
+                          </ToolContent>
+                        </Tool>,
+                      );
+                      continue;
+                    }
+
+                    variantContentParts.push({ part, partIndex });
+                  }
+
+                  flushVariantContentParts();
+
+                  return (
+                    <div key={variantKey} className="space-y-4">
+                      {targetMessage.role === 'assistant' && variantSourceParts.length > 0 && (
+                        <Sources open>
+                          <SourcesTrigger count={variantSourceParts.length} />
+                          <SourcesContent className="space-y-1">
+                            {variantSourceParts.map(({ part, index }) => {
+                              if (part.type === 'source-url') {
+                                return (
+                                  <Source
+                                    key={`${variantKey}-source-${index}`}
+                                    href={part.url}
+                                    title={part.title ?? part.url}
+                                    kind="url"
+                                  />
+                                );
+                              }
+
+                              if (part.type === 'source-document') {
+                                return (
+                                  <Source
+                                    key={`${variantKey}-source-${index}`}
+                                    title={part.title ?? 'Document source'}
+                                    kind="document"
+                                  />
+                                );
+                              }
+
+                              return null;
+                            })}
+                          </SourcesContent>
+                        </Sources>
+                      )}
+
+                      {variantSegments}
+                    </div>
+                  );
+                };
 
                 const flushContentParts = () => {
                   if (contentParts.length === 0) {
@@ -566,39 +758,62 @@ export default function ChatPage() {
 
                 return (
                   <Fragment key={message.id}>
-                    {message.role === 'assistant' && sourceParts.length > 0 && (
-                      <Sources open>
-                        <SourcesTrigger count={sourceParts.length} />
-                        <SourcesContent className="space-y-1">
-                          {sourceParts.map(({ part, index }) => {
-                            if (part.type === 'source-url') {
-                              return (
-                                <Source
-                                  key={`${message.id}-source-${index}`}
-                                  href={part.url}
-                                  title={part.title ?? part.url}
-                                  kind="url"
-                                />
-                              );
-                            }
+                    {message.role === 'assistant' && branchMessages.length > 1 ? (
+                      <MessageBranch defaultBranch={branchMessages.length - 1}>
+                        <MessageBranchContent>
+                          {branchMessages.map((branchMessage, branchIndex) =>
+                            renderMessageVariant(
+                              branchMessage,
+                              `${message.id}-branch-${branchIndex}`,
+                              branchIndex === branchMessages.length - 1,
+                            ),
+                          )}
+                        </MessageBranchContent>
+                        <MessageToolbar>
+                          <MessageBranchSelector>
+                            <MessageBranchPrevious />
+                            <MessageBranchPage />
+                            <MessageBranchNext />
+                          </MessageBranchSelector>
+                        </MessageToolbar>
+                      </MessageBranch>
+                    ) : (
+                      <>
+                        {message.role === 'assistant' && sourceParts.length > 0 && (
+                          <Sources open>
+                            <SourcesTrigger count={sourceParts.length} />
+                            <SourcesContent className="space-y-1">
+                              {sourceParts.map(({ part, index }) => {
+                                if (part.type === 'source-url') {
+                                  return (
+                                    <Source
+                                      key={`${message.id}-source-${index}`}
+                                      href={part.url}
+                                      title={part.title ?? part.url}
+                                      kind="url"
+                                    />
+                                  );
+                                }
 
-                            if (part.type === 'source-document') {
-                              return (
-                                <Source
-                                  key={`${message.id}-source-${index}`}
-                                  title={part.title ?? 'Document source'}
-                                  kind="document"
-                                />
-                              );
-                            }
+                                if (part.type === 'source-document') {
+                                  return (
+                                    <Source
+                                      key={`${message.id}-source-${index}`}
+                                      title={part.title ?? 'Document source'}
+                                      kind="document"
+                                    />
+                                  );
+                                }
 
-                            return null;
-                          })}
-                        </SourcesContent>
-                      </Sources>
+                                return null;
+                              })}
+                            </SourcesContent>
+                          </Sources>
+                        )}
+
+                        {renderedSegments}
+                      </>
                     )}
-
-                    {renderedSegments}
 
                     {message.role === 'assistant' &&
                       messageIndex === messages.length - 1 &&
