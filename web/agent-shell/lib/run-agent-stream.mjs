@@ -81,6 +81,13 @@ function extractStreamToolCalls(frame) {
         id,
         name,
         argumentsText,
+        output: call.output,
+        errorText:
+          typeof call.error === 'string'
+            ? call.error
+            : typeof call.error?.message === 'string'
+              ? call.error.message
+              : undefined,
       };
     })
     .filter((entry) => entry !== null);
@@ -159,6 +166,14 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
         toolName: toolCall.name,
         input: parseToolCallInput(toolCall.argumentsText),
       });
+      if (toolCall.output !== undefined || toolCall.errorText !== undefined) {
+        writer.write({
+          type: 'tool-output-available',
+          toolCallId: toolCall.id,
+          output: toolCall.output,
+          errorText: toolCall.errorText,
+        });
+      }
     }
     emitted = true;
   }

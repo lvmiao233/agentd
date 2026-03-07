@@ -274,6 +274,10 @@ export default function ChatPage() {
           chatModelRef.current.appendToolCall(toolName, input, toolCallId);
           syncChatModel();
         },
+        onToolOutput: ({ toolCallId, output, errorText }) => {
+          chatModelRef.current.appendToolResult(toolCallId ?? nextMessageId(), output, errorText);
+          syncChatModel();
+        },
       });
 
       setStatus('ready');

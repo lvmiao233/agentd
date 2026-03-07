@@ -74,6 +74,27 @@ export class WebAgentChatModel {
     return id;
   }
 
+  appendToolResult(id, output = undefined, errorText = undefined) {
+    const existing = this.messages.find((message) => message.role === 'tool' && message.id === id);
+    if (existing) {
+      existing.output = output;
+      existing.errorText = errorText;
+      return id;
+    }
+
+    this.messages.push({
+      id,
+      role: 'tool',
+      toolName: 'unknown_tool',
+      input: {},
+      tool: 'unknown_tool',
+      args: {},
+      output,
+      errorText,
+    });
+    return id;
+  }
+
   handleDisconnect() {
     this.connected = false;
     this.showReconnectBanner = true;

@@ -16,6 +16,7 @@ function createReadableStream(chunks) {
 export async function run() {
   const deltas = [];
   const tools = [];
+  const toolOutputs = [];
   const finishes = [];
 
   await consumeChatUiStream(
@@ -25,12 +26,14 @@ export async function run() {
         'data: {"type":"text-delta","delta":"Hel"}\n',
         'data: {"type":"text-delta","delta":"lo"}\n',
         'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"lookup","input":{"path":"README.md"}}\n',
+        'data: {"type":"tool-output-available","toolCallId":"call-1","output":{"content":"done"}}\n',
         'data: {"type":"finish","finishReason":"stop"}\n',
       ]),
     ),
     {
       onAssistantDelta: (delta) => deltas.push(delta),
       onToolInput: (event) => tools.push(event),
+      onToolOutput: (event) => toolOutputs.push(event),
       onFinish: (finishReason) => finishes.push(finishReason),
     },
   );
@@ -41,6 +44,13 @@ export async function run() {
       toolCallId: 'call-1',
       toolName: 'lookup',
       input: { path: 'README.md' },
+    },
+  ]);
+  assert.deepEqual(toolOutputs, [
+    {
+      toolCallId: 'call-1',
+      output: { content: 'done' },
+      errorText: undefined,
     },
   ]);
   assert.deepEqual(finishes, ['stop']);

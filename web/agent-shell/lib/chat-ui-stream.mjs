@@ -26,6 +26,7 @@ export async function consumeChatUiStream(response, handlers) {
 
   const onAssistantDelta = handlers?.onAssistantDelta ?? (() => {});
   const onToolInput = handlers?.onToolInput ?? (() => {});
+  const onToolOutput = handlers?.onToolOutput ?? (() => {});
   const onFinish = handlers?.onFinish ?? (() => {});
 
   const processBuffer = () => {
@@ -55,6 +56,18 @@ export async function consumeChatUiStream(response, handlers) {
               ? event.toolName
               : 'unknown_tool',
           input: event.input,
+        });
+      } else if (event.type === 'tool-output-available') {
+        onToolOutput({
+          toolCallId:
+            typeof event.toolCallId === 'string' && event.toolCallId.trim()
+              ? event.toolCallId
+              : undefined,
+          output: event.output,
+          errorText:
+            typeof event.errorText === 'string' && event.errorText.trim()
+              ? event.errorText
+              : undefined,
         });
       } else if (event.type === 'finish') {
         onFinish(event.finishReason ?? 'stop');

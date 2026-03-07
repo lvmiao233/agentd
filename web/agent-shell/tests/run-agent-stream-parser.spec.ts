@@ -48,6 +48,28 @@ export async function run() {
   });
 
   writes.length = 0;
+  const toolOutputOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_3","type":"function","function":{"name":"lookup","arguments":"{\\"path\\":\\"/tmp/out.txt\\"}"},"output":{"text":"done"}}]}}}',
+    textId: 'text-2b',
+    writer,
+  });
+
+  assert.equal(toolOutputOutcome.emitted, true, 'tool output frame should emit chunks');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-available',
+    toolCallId: 'call_3',
+    toolName: 'lookup',
+    input: { path: '/tmp/out.txt' },
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-output-available',
+    toolCallId: 'call_3',
+    output: { text: 'done' },
+    errorText: undefined,
+  });
+
+  writes.length = 0;
   const failedOutcome = emitRunAgentStreamLine({
     lineRaw: 'data: {"error":{"message":"upstream overloaded"},"status":"failed"}',
     textId: 'text-3',

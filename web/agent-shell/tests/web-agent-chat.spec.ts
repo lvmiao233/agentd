@@ -11,6 +11,7 @@ export async function run() {
     'call-1',
     { downstream: { content: 'hello' } },
   );
+  model.appendToolResult('call-1', { downstream: { content: 'updated' } });
 
   const snapshot = model.snapshot();
   assert.equal(snapshot.messages.length, 1, 'same tool call id should update existing tool row');
@@ -21,7 +22,7 @@ export async function run() {
     input: { path: 'README.md' },
     tool: 'mcp.fs.read_file',
     args: { path: 'README.md' },
-    output: { downstream: { content: 'hello' } },
+    output: { downstream: { content: 'updated' } },
     errorText: undefined,
   });
 }

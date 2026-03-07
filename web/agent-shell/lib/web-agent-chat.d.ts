@@ -32,6 +32,7 @@ export declare class WebAgentChatModel {
     output?: unknown,
     errorText?: string,
   ): string;
+  appendToolResult(id: string, output?: unknown, errorText?: string): string;
   handleDisconnect(): void;
   handleReconnect(): void;
   applyBridgeEvent(event: unknown): void;
