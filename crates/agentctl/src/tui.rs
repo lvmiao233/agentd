@@ -654,7 +654,7 @@ impl AgentShellApp {
                                 ));
                                 Ok(())
                             }
-                            Err(err) => Err(err),
+                            Err(err) => Err(normalize_session_command_error(err, "compact")),
                         }
                     }
                     Err(err) => Err(err),
@@ -747,7 +747,7 @@ impl AgentShellApp {
                                     ));
                                     Ok(())
                                 }
-                                Err(err) => Err(err),
+                                Err(err) => Err(normalize_session_command_error(err, "save")),
                             }
                         }
                         Err(err) => Err(err),
@@ -788,7 +788,7 @@ impl AgentShellApp {
                                         Ok(())
                                     }
                                 }
-                                Err(err) => Err(err),
+                                Err(err) => Err(normalize_session_command_error(err, "load")),
                             }
                         }
                         Err(err) => Err(err),
@@ -1065,6 +1065,29 @@ fn extract_agent_model_name(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
+}
+
+fn normalize_session_command_error(err: String, action: &str) -> String {
+    if err.contains("agent session not found")
+        || err.contains("session load failed")
+        || err.contains("No such file or directory")
+        || err.contains("[Errno 2]")
+    {
+        return match action {
+            "compact" => {
+                "no active persisted session yet; send a message before running /compact"
+                    .to_string()
+            }
+            "save" => {
+                "no active persisted session yet; send a message before running /session save"
+                    .to_string()
+            }
+            "load" => "saved session not found for this agent".to_string(),
+            _ => "agent session unavailable".to_string(),
+        };
+    }
+
+    err
 }
 
 fn fetch_agent_model_name<F>(agent_id: &str, rpc: &mut F) -> Result<Option<String>, String>
