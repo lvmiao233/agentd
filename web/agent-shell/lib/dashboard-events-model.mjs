@@ -21,8 +21,11 @@ export function summarizeDashboardState({ agents = [], events = [] } = {}) {
 
 export function buildUsageBars(tokensByWindow = []) {
   const safeSeries = tokensByWindow
-    .map((value) => (typeof value === 'number' && value > 0 ? value : 1))
+    .map((value) => (typeof value === 'number' && value > 0 ? value : 0))
     .slice(0, 12);
+  if (safeSeries.every((value) => value === 0)) {
+    return [];
+  }
   const max = Math.max(...safeSeries, 1);
   return safeSeries.map((value) => ({
     value,

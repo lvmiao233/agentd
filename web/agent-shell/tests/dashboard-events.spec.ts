@@ -32,6 +32,13 @@ export async function run() {
     'token-chart bar heights should be normalized between 1 and 100'
   );
 
+  const zeroBars = buildUsageBars([0, 0, 0]);
+  assert.deepEqual(
+    zeroBars,
+    [],
+    'token-chart should stay empty when filtered usage totals are all zero'
+  );
+
   const failure = evaluateThirdPartyOnboarding({
     onboardingError: 'initialize handshake failed for mcp-figma',
     currentTools: [
