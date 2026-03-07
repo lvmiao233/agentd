@@ -7434,6 +7434,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_api_supervisor_marks_status_degraded_when_health_drops() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind one-api supervisor listener");
+        let addr = listener
+            .local_addr()
+            .expect("resolve one-api supervisor listener address");
+        let unhealthy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let unhealthy_for_server = unhealthy.clone();
+        let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
+
+        let server = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = server_shutdown_rx.changed() => {
+                        if changed.is_err() || *server_shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    accepted = listener.accept() => {
+                        let (mut socket, _) = accepted.expect("accept one-api supervisor request");
+                        let mut request_bytes = Vec::new();
+                        let mut buf = [0_u8; 4096];
+                        loop {
+                            let read = socket
+                                .read(&mut buf)
+                                .await
+                                .expect("read one-api supervisor request bytes");
+                            if read == 0 {
+                                break;
+                            }
+                            request_bytes.extend_from_slice(&buf[..read]);
+                            if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+
+                        let request_text = String::from_utf8(request_bytes)
+                            .expect("one-api supervisor request should be utf8");
+                        let path = request_text
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_whitespace().nth(1))
+                            .unwrap_or("/");
+
+                        let response_body = if path == "/api/status" && !unhealthy_for_server.load(std::sync::atomic::Ordering::SeqCst) {
+                            json!({"data": {"status": true, "version": "1.0.0"}}).to_string()
+                        } else {
+                            "<!doctype html><html><body>broken</body></html>".to_string()
+                        };
+                        let content_type = if path == "/api/status" && !unhealthy_for_server.load(std::sync::atomic::Ordering::SeqCst) {
+                            "application/json"
+                        } else {
+                            "text/html"
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            content_type,
+                            response_body.len(),
+                            response_body
+                        );
+                        socket
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("write one-api supervisor response");
+                        let _ = socket.shutdown().await;
+                    }
+                }
+            }
+        });
+
+        let state = RuntimeState::new("starting");
+        let config = OneApiConfig {
+            enabled: true,
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 30".to_string()],
+            health_url: format!("http://{addr}/health"),
+            startup_timeout_secs: 2,
+            restart_max_attempts: 0,
+            restart_backoff_secs: 1,
+            ..OneApiConfig::default()
+        };
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let supervisor = tokio::spawn(one_api_supervisor(config, state.clone(), shutdown_rx));
+
+        let ready_started = tokio::time::Instant::now();
+        while state.one_api_status().await != "ready" {
+            assert!(
+                ready_started.elapsed() < Duration::from_secs(4),
+                "one-api supervisor should become ready before degradation"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        unhealthy.store(true, std::sync::atomic::Ordering::SeqCst);
+        let degraded_started = tokio::time::Instant::now();
+        while state.one_api_status().await != "degraded" {
+            assert!(
+                degraded_started.elapsed() < Duration::from_secs(5),
+                "one-api supervisor should mark status degraded after health loss"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let _ = shutdown_tx.send(true);
+        let join = supervisor.await.expect("one-api supervisor join should succeed");
+        assert!(join.is_ok(), "one-api supervisor should exit cleanly: {join:?}");
+
+        let _ = server_shutdown_tx.send(true);
+        server.await.expect("one-api supervisor server should finish");
+    }
+
+    #[tokio::test]
     async fn usage_query_and_quota_enforcement_work() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
@@ -13881,6 +13994,8 @@ async fn one_api_supervisor(
         .build()?;
 
     let mut child = start_one_api_until_ready(&config, &client, &state).await?;
+    let mut health_interval = tokio::time::interval(Duration::from_secs(2));
+    health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -13891,6 +14006,14 @@ async fn one_api_supervisor(
                     stop_one_api_child(&mut child).await;
                     state.set_one_api_status("stopped").await;
                     break;
+                }
+            }
+            _ = health_interval.tick() => {
+                if probe_one_api_health(&client, &config.health_url, Duration::from_secs(2)).await {
+                    state.set_one_api_status("ready").await;
+                } else {
+                    warn!(health_url = %config.health_url, "Managed One-API health re-probe failed while process is still running");
+                    state.set_one_api_status("degraded").await;
                 }
             }
             exit_status = child.wait() => {
