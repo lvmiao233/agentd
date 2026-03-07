@@ -439,7 +439,7 @@ fn default_one_api_command() -> String {
 }
 
 fn default_one_api_health_url() -> String {
-    "http://127.0.0.1:3000/health".to_string()
+    "http://127.0.0.1:3000/api/status".to_string()
 }
 
 fn default_one_api_startup_timeout_secs() -> u64 {
@@ -7235,6 +7235,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_api_health_probe_rejects_html_health_page() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind one-api health listener");
+        let addr = listener
+            .local_addr()
+            .expect("resolve one-api health listener address");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("accept one-api health request");
+
+            let mut request_bytes = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let read = socket
+                    .read(&mut buf)
+                    .await
+                    .expect("read one-api health request bytes");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buf[..read]);
+                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text =
+                String::from_utf8(request_bytes).expect("one-api health request should be utf8");
+            assert!(
+                request_text.starts_with("GET /health HTTP/1.1"),
+                "unexpected health probe request: {request_text}"
+            );
+
+            let response_body = "<!doctype html><html><body>one-api ui</body></html>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write one-api health response");
+            let _ = socket.shutdown().await;
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build one-api health probe client");
+        let ready = probe_one_api_health(
+            &client,
+            &format!("http://{addr}/health"),
+            Duration::from_millis(600),
+        )
+        .await;
+        assert!(!ready, "html health page should not be treated as one-api ready");
+
+        server.await.expect("health server should finish");
+    }
+
+    #[tokio::test]
+    async fn one_api_health_probe_falls_back_to_api_status() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind one-api health listener");
+        let addr = listener
+            .local_addr()
+            .expect("resolve one-api health listener address");
+
+        let server = tokio::spawn(async move {
+            for expected_path in ["/health", "/api/status"] {
+                let (mut socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("accept one-api readiness request");
+
+                let mut request_bytes = Vec::new();
+                let mut buf = [0_u8; 4096];
+                loop {
+                    let read = socket
+                        .read(&mut buf)
+                        .await
+                        .expect("read one-api readiness request bytes");
+                    if read == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buf[..read]);
+                    if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                let request_text = String::from_utf8(request_bytes)
+                    .expect("one-api readiness request should be utf8");
+                assert!(
+                    request_text.starts_with(&format!("GET {expected_path} HTTP/1.1")),
+                    "unexpected readiness request for {expected_path}: {request_text}"
+                );
+
+                let (content_type, response_body) = if expected_path == "/health" {
+                    ("text/html", "<!doctype html><html><body>one-api ui</body></html>".to_string())
+                } else {
+                    (
+                        "application/json",
+                        json!({
+                            "data": {
+                                "status": true,
+                                "version": "1.0.0"
+                            }
+                        })
+                        .to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    content_type,
+                    response_body.len(),
+                    response_body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write one-api readiness response");
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build one-api readiness probe client");
+        let ready = probe_one_api_health(
+            &client,
+            &format!("http://{addr}/health"),
+            Duration::from_millis(600),
+        )
+        .await;
+        assert!(ready, "api/status fallback should mark one-api as ready");
+
+        server.await.expect("readiness server should finish");
+    }
+
+    #[tokio::test]
     async fn usage_query_and_quota_enforcement_work() {
         let db_path = test_db_path();
         let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
@@ -13461,21 +13609,94 @@ async fn probe_one_api_health(
 ) -> bool {
     let check_interval = Duration::from_millis(500);
     let started = tokio::time::Instant::now();
+    let candidate_urls = one_api_health_probe_urls(health_url);
 
     while started.elapsed() < startup_timeout {
-        match client.get(health_url).send().await {
-            Ok(resp) if resp.status().is_success() => return true,
-            Ok(resp) => {
-                warn!(status = %resp.status(), health_url, "One-API health probe returned non-success status");
-            }
-            Err(err) => {
-                warn!(%err, health_url, "One-API health probe failed");
+        for candidate_url in &candidate_urls {
+            match client.get(candidate_url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .map(|value| value.to_string());
+                    let body = match resp.text().await {
+                        Ok(body) => body,
+                        Err(err) => {
+                            warn!(%err, health_url = %candidate_url, "One-API health probe failed reading response body");
+                            continue;
+                        }
+                    };
+
+                    if one_api_health_response_is_ready(status, content_type.as_deref(), &body) {
+                        return true;
+                    }
+
+                    warn!(
+                        status = %status,
+                        health_url = %candidate_url,
+                        "One-API health probe returned non-ready response"
+                    );
+                }
+                Err(err) => {
+                    warn!(%err, health_url = %candidate_url, "One-API health probe failed");
+                }
             }
         }
         tokio::time::sleep(check_interval).await;
     }
 
     false
+}
+
+fn one_api_health_probe_urls(health_url: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    urls.push(health_url.to_string());
+
+    if let Ok(parsed) = reqwest::Url::parse(health_url) {
+        let path = parsed.path().trim_end_matches('/');
+        if path == "/health" {
+            let mut status_url = parsed;
+            status_url.set_path("/api/status");
+            status_url.set_query(None);
+            status_url.set_fragment(None);
+            let status_url = status_url.to_string();
+            if !urls.iter().any(|existing| existing == &status_url) {
+                urls.push(status_url);
+            }
+        }
+    }
+
+    urls
+}
+
+fn one_api_health_response_is_ready(
+    status: reqwest::StatusCode,
+    content_type: Option<&str>,
+    body: &str,
+) -> bool {
+    if !status.is_success() {
+        return false;
+    }
+
+    let trimmed = body.trim();
+    if trimmed.is_empty() || trimmed.starts_with('<') {
+        return false;
+    }
+
+    let looks_json = content_type
+        .map(|value| value.to_ascii_lowercase().contains("json"))
+        .unwrap_or(false)
+        || trimmed.starts_with('{')
+        || trimmed.starts_with('[');
+    if !looks_json {
+        return false;
+    }
+
+    serde_json::from_str::<Value>(trimmed)
+        .map(|parsed| parsed.get("error").is_none())
+        .unwrap_or(false)
 }
 
 fn spawn_one_api(config: &OneApiConfig) -> Result<Child, std::io::Error> {

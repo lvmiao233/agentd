@@ -113,6 +113,23 @@ health_body="$TMP_DIR/health.body"
 status_body="$TMP_DIR/status.body"
 models_body="$TMP_DIR/models.body"
 
+is_ready_json_body() {
+    local body_path="$1"
+    python3 - "$body_path" <<'PY'
+import json
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").strip()
+if not text or text.startswith("<"):
+    raise SystemExit(1)
+
+payload = json.loads(text)
+if isinstance(payload, dict) and "error" in payload:
+    raise SystemExit(1)
+PY
+}
+
 write_failure_evidence() {
     mkdir -p "$(dirname "$ERROR_EVIDENCE")"
     {
@@ -168,15 +185,15 @@ fi
 
 trimmed_base_url="${BASE_URL%/}"
 
-health_http_code="$(curl --noproxy '*' -sS --max-time "$TIMEOUT_SECS" -o "$health_body" -w '%{http_code}' "${trimmed_base_url}/health" 2>/dev/null || echo 000)"
-if [[ "$health_http_code" == "200" ]]; then
+status_http_code="$(curl --noproxy '*' -sS --max-time "$TIMEOUT_SECS" -o "$status_body" -w '%{http_code}' "${trimmed_base_url}/api/status" 2>/dev/null || echo 000)"
+if [[ "$status_http_code" == "200" ]] && is_ready_json_body "$status_body"; then
     HEALTH=true
-    HEALTH_ENDPOINT="/health"
+    HEALTH_ENDPOINT="/api/status"
 else
-    status_http_code="$(curl --noproxy '*' -sS --max-time "$TIMEOUT_SECS" -o "$status_body" -w '%{http_code}' "${trimmed_base_url}/api/status" 2>/dev/null || echo 000)"
-    if [[ "$status_http_code" == "200" ]]; then
+    health_http_code="$(curl --noproxy '*' -sS --max-time "$TIMEOUT_SECS" -o "$health_body" -w '%{http_code}' "${trimmed_base_url}/health" 2>/dev/null || echo 000)"
+    if [[ "$health_http_code" == "200" ]] && is_ready_json_body "$health_body"; then
         HEALTH=true
-        HEALTH_ENDPOINT="/api/status"
+        HEALTH_ENDPOINT="/health"
     fi
 fi
 
