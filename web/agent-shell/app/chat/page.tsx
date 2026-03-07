@@ -47,17 +47,22 @@ import {
   WebAgentChatModel,
   type WebAgentChatMessage,
 } from '@/lib/web-agent-chat';
+import {
+  buildChatAgentUnavailableMessage,
+  choosePreferredAgent,
+  isAgentRunnable,
+} from '@/lib/chat-agent-readiness.js';
 
-type ChatStatus = 'ready' | 'streaming' | 'error';
-
-type ChatMessage = WebAgentChatMessage;
-
-type AgentOption = {
+type ChatAgentOption = {
   agent_id: string;
   name: string;
   model: string;
   status: string;
 };
+
+type ChatStatus = 'ready' | 'streaming' | 'error';
+
+type ChatMessage = WebAgentChatMessage;
 
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
@@ -117,7 +122,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('ready');
   const [agentId, setAgentId] = useState<string | null>(null);
-  const [availableAgents, setAvailableAgents] = useState<AgentOption[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -138,8 +143,8 @@ export default function ChatPage() {
     if (!response.ok) {
       throw new Error('load agents failed');
     }
-    const payload = (await response.json()) as {
-      agents?: AgentOption[];
+      const payload = (await response.json()) as {
+      agents?: ChatAgentOption[];
     };
     const agents = payload.agents ?? [];
     setAvailableAgents(agents);
@@ -147,10 +152,11 @@ export default function ChatPage() {
       setAgentId(null);
       return null;
     }
-    const preferred =
-      agents.find(
-        (agent) => agent.status === 'ready' && agent.model === 'gpt-5.3-codex',
-      ) ?? agents.find((agent) => agent.status === 'ready') ?? agents[0];
+    const preferred = choosePreferredAgent(agents);
+    if (!preferred) {
+      setAgentId(null);
+      return null;
+    }
     setAgentId((current) =>
       current && agents.some((agent) => agent.agent_id === current)
         ? current
@@ -385,18 +391,28 @@ export default function ChatPage() {
     }
   };
 
-  const submitPrompt = async (raw: string) => {
+  const submitPrompt = async (raw: string): Promise<boolean> => {
     const text = raw.trim();
-    if (!text) return;
-    chatModelRef.current.appendUserMessage(text, nextMessageId());
-    syncChatModel();
-    lastSubmittedInputRef.current = text;
-    setStatus('streaming');
+    if (!text) return false;
 
     const resolvedAgentId = agentId ?? (await loadAgents().catch(() => null));
     const selectedAgent = availableAgents.find(
       (candidate) => candidate.agent_id === resolvedAgentId,
     );
+
+    if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
+      chatModelRef.current.appendAssistantMessage(
+        buildChatAgentUnavailableMessage(selectedAgent),
+      );
+      syncChatModel();
+      setStatus('error');
+      return false;
+    }
+
+    chatModelRef.current.appendUserMessage(text, nextMessageId());
+    syncChatModel();
+    lastSubmittedInputRef.current = text;
+    setStatus('streaming');
 
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -405,20 +421,23 @@ export default function ChatPage() {
       );
       syncChatModel();
       setStatus('error');
-      return;
+      return false;
     }
 
     activeRequestIdRef.current = sendWsRpc(ws, 'RunAgent', {
       input: text,
-      ...(resolvedAgentId ? { agent_id: resolvedAgentId } : {}),
-      ...(!selectedAgent ? { model: 'gpt-5.3-codex' } : {}),
+      agent_id: selectedAgent.agent_id,
       stream: true,
     });
+    return true;
   };
 
   const handleSubmit = () => {
-    void submitPrompt(input);
-    setInput('');
+    void submitPrompt(input).then((submitted) => {
+      if (submitted) {
+        setInput('');
+      }
+    });
   };
 
   const handleRegenerate = () => {
@@ -443,7 +462,11 @@ export default function ChatPage() {
               </SelectTrigger>
               <SelectContent>
                 {availableAgents.map((agent) => (
-                  <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                  <SelectItem
+                    key={agent.agent_id}
+                    value={agent.agent_id}
+                    disabled={!isAgentRunnable(agent)}
+                  >
                     {agent.name} · {agent.model} · {agent.status}
                   </SelectItem>
                 ))}
