@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
+import { code, type CodeHighlighterPlugin } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -322,7 +322,30 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const streamdownCodePlugin: CodeHighlighterPlugin = {
+  ...code,
+  supportsLanguage(language) {
+    return String(language).trim().toLowerCase() === "svg"
+      ? true
+      : code.supportsLanguage(language);
+  },
+  highlight(options, callback) {
+    const normalizedLanguage =
+      String(options.language).trim().toLowerCase() === "svg"
+        ? "xml"
+        : options.language;
+
+    return code.highlight(
+      {
+        ...options,
+        language: normalizedLanguage,
+      },
+      callback
+    );
+  },
+};
+
+const streamdownPlugins = { cjk, code: streamdownCodePlugin, math, mermaid };
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (

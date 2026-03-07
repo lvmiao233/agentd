@@ -14,6 +14,9 @@ import {
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation';
 import {
+  Artifact,
+} from '@/components/ai-elements/artifact';
+import {
   Message,
   MessageBranch,
   MessageBranchContent,
@@ -84,6 +87,7 @@ import {
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
 import { buildFollowUpSuggestions } from '@/lib/chat-follow-up-suggestions.js';
+import { extractPreviewArtifacts } from '@/lib/chat-artifacts.js';
 import {
   appendMessageBranch,
   getAssistantBranchKey,
@@ -124,6 +128,20 @@ function extractMessageText(message: UIMessage): string {
     .map((part) => part.text)
     .join('')
     .trim();
+}
+
+function artifactTitleForMessage(params: {
+  baseTitle: string;
+  branchIndex?: number;
+  branchCount?: number;
+}) {
+  const { baseTitle, branchIndex, branchCount } = params;
+
+  if (typeof branchIndex === 'number' && typeof branchCount === 'number' && branchCount > 1) {
+    return `${baseTitle} · version ${branchIndex + 1}`;
+  }
+
+  return baseTitle;
 }
 
 export default function ChatPage() {
@@ -470,6 +488,7 @@ export default function ChatPage() {
               messages.map((message, messageIndex) => {
                 const renderedSegments: ReactNode[] = [];
                 const sourceParts = collectSourceParts(message.parts);
+                const previewArtifacts = extractPreviewArtifacts(extractMessageText(message));
                 const assistantBranchKey =
                   message.role === 'assistant'
                     ? getAssistantBranchKey(messages, message.id)
@@ -487,9 +506,12 @@ export default function ChatPage() {
                   targetMessage: UIMessage,
                   variantKey: string,
                   allowLinkedApprovals: boolean,
+                  branchIndex?: number,
+                  branchCount?: number,
                 ) => {
                   const variantSegments: ReactNode[] = [];
                   const variantSourceParts = collectSourceParts(targetMessage.parts);
+                  const previewArtifacts = extractPreviewArtifacts(extractMessageText(targetMessage));
                   const variantContentParts: Array<{
                     part: UIMessage['parts'][number];
                     partIndex: number;
@@ -607,6 +629,19 @@ export default function ChatPage() {
 
                   return (
                     <div key={variantKey} className="space-y-4">
+                          {previewArtifacts.map((artifact, artifactIndex) => (
+                        <Artifact
+                          key={`${variantKey}-artifact-${artifactIndex}`}
+                          code={artifact.code}
+                          language={artifact.language}
+                          title={artifactTitleForMessage({
+                            baseTitle: artifact.title,
+                            branchIndex,
+                            branchCount,
+                          })}
+                        />
+                      ))}
+
                       {targetMessage.role === 'assistant' && variantSourceParts.length > 0 && (
                         <Sources open>
                           <SourcesTrigger count={variantSourceParts.length} />
@@ -766,6 +801,8 @@ export default function ChatPage() {
                               branchMessage,
                               `${message.id}-branch-${branchIndex}`,
                               branchIndex === branchMessages.length - 1,
+                              branchIndex,
+                              branchMessages.length,
                             ),
                           )}
                         </MessageBranchContent>
@@ -779,6 +816,16 @@ export default function ChatPage() {
                       </MessageBranch>
                     ) : (
                       <>
+                        {message.role === 'assistant' &&
+                          previewArtifacts.map((artifact, artifactIndex) => (
+                            <Artifact
+                              key={`${message.id}-artifact-${artifactIndex}`}
+                              code={artifact.code}
+                              language={artifact.language}
+                              title={artifact.title}
+                            />
+                          ))}
+
                         {message.role === 'assistant' && sourceParts.length > 0 && (
                           <Sources open>
                             <SourcesTrigger count={sourceParts.length} />
