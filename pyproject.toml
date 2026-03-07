@@ -3,7 +3,13 @@ name = "agentd"
 version = "0.1.0"
 description = "System-level AI Agent runtime"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "agentd-agent-lite",
+    "agentd-mcp-fs",
+    "agentd-mcp-shell",
+    "agentd-mcp-search",
+    "agentd-mcp-git",
+]
 
 [dependency-groups]
 dev = [
@@ -12,6 +18,13 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+agentd-agent-lite = { workspace = true }
+agentd-mcp-fs = { workspace = true }
+agentd-mcp-shell = { workspace = true }
+agentd-mcp-search = { workspace = true }
+agentd-mcp-git = { workspace = true }
 
 [tool.uv.workspace]
 members = [

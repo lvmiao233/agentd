@@ -16,6 +16,13 @@ members = [
 name = "agentd"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "agentd-agent-lite" },
+    { name = "agentd-mcp-fs" },
+    { name = "agentd-mcp-git" },
+    { name = "agentd-mcp-search" },
+    { name = "agentd-mcp-shell" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -23,6 +30,13 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "agentd-agent-lite", editable = "python/agentd-agent-lite" },
+    { name = "agentd-mcp-fs", editable = "python/agentd-mcp-fs" },
+    { name = "agentd-mcp-git", editable = "python/agentd-mcp-git" },
+    { name = "agentd-mcp-search", editable = "python/agentd-mcp-search" },
+    { name = "agentd-mcp-shell", editable = "python/agentd-mcp-shell" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.4.0" }]
