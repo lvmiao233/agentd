@@ -18,6 +18,8 @@ type AgentSummary = {
   name: string;
   model: string;
   status: string;
+  runnable?: boolean;
+  runnable_reason?: string;
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost_usd: number;
@@ -185,6 +187,9 @@ export default function DashboardPage() {
                     <Badge variant={statusVariant(agent.status)}>
                       {agent.status}
                     </Badge>
+                    {agent.runnable === false && (
+                      <Badge variant="destructive">unrunnable</Badge>
+                    )}
                   </div>
                   <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
                     <span>{agent.model}</span>
@@ -197,6 +202,11 @@ export default function DashboardPage() {
                     </span>
                     <span>Sessions: {agent.session_count}</span>
                   </div>
+                  {agent.runnable === false && agent.runnable_reason && (
+                    <div className="mt-2 text-xs text-amber-300">
+                      {agent.runnable_reason}
+                    </div>
+                  )}
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {agent.agent_id.slice(0, 8)}…
