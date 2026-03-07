@@ -4132,6 +4132,41 @@ async fn run_agent_stream_forwards_provider_token_deltas() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn forward_agent_lite_stream_event_serializes_input_start_phase() {
+    let event = json!({
+        "agentd_stream": {
+            "type": "tool-input-start",
+            "toolCallId": "call-start-1",
+            "toolName": "mcp.fs.read_file"
+        }
+    });
+
+    let (mut read_stream, mut write_stream) = tokio::io::duplex(4096);
+    let forwarded = forward_agent_lite_stream_event(&mut write_stream, &event)
+        .await
+        .expect("forwarding should succeed");
+    assert!(forwarded, "tool-input-start event should be forwarded");
+    drop(write_stream);
+
+    let mut captured = Vec::new();
+    read_stream
+        .read_to_end(&mut captured)
+        .await
+        .expect("read forwarded stream frame");
+    let captured_text = String::from_utf8(captured).expect("forwarded frame should be utf8");
+
+    assert!(
+        captured_text.contains("\"phase\":\"input-start\""),
+        "expected input-start phase in forwarded frame: {captured_text}"
+    );
+    assert!(
+        captured_text.contains("\"name\":\"mcp.fs.read_file\""),
+        "expected tool name in forwarded frame: {captured_text}"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn run_agent_rejects_profile_without_one_api_token_mapping() {
     let db_path = std::env::temp_dir().join(format!(
         "agentd-daemon-run-agent-missing-token-test-{}.sqlite",
@@ -11797,7 +11832,7 @@ where
             }
             Ok(true)
         }
-        "tool-input-available" | "tool-output-available" => {
+        "tool-input-start" | "tool-input-available" | "tool-output-available" => {
             let call_id = payload
                 .get("toolCallId")
                 .and_then(Value::as_str)
@@ -11805,7 +11840,15 @@ where
                 .unwrap_or("call-0");
             let mut call = json!({ "id": call_id });
 
-            if event_type == "tool-input-available" {
+            if event_type == "tool-input-start" {
+                let tool_name = payload
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("unknown_tool");
+                call["name"] = Value::String(tool_name.to_string());
+                call["phase"] = Value::String("input-start".to_string());
+            } else if event_type == "tool-input-available" {
                 let tool_name = payload
                     .get("toolName")
                     .and_then(Value::as_str)

@@ -413,3 +413,93 @@ def test_tool_level_authorize_rpc_error_is_structured(monkeypatch, capsys) -> No
     assert payload["stage"] == "authorize"
     assert payload["tool"] == "builtin.lite.upper"
     assert payload["code"] == -32008
+
+
+def test_tool_loop_emits_stream_lifecycle_before_tool_output(monkeypatch) -> None:
+    state = {"attempt": 0}
+    events: list[dict[str, Any]] = []
+
+    def fake_invoke_with_retry(**_: Any) -> dict[str, Any]:
+        state["attempt"] += 1
+        if state["attempt"] == 1:
+            return {
+                "output": "",
+                "input_tokens": 6,
+                "output_tokens": 2,
+                "total_tokens": 8,
+                "provider_request_id": "req-stream-1",
+                "request_id_source": "response._request_id",
+                "provider_model": "gpt-4o-mini",
+                "usage_source": "provider",
+                "transport_mode": "real",
+                "tool_calls": [
+                    {
+                        "id": "call-stream-1",
+                        "name": "builtin.lite.upper",
+                        "arguments": '{"prompt":"hello"}',
+                    }
+                ],
+            }
+        return {
+            "output": "HELLO",
+            "input_tokens": 4,
+            "output_tokens": 2,
+            "total_tokens": 6,
+            "provider_request_id": "req-stream-2",
+            "request_id_source": "response._request_id",
+            "provider_model": "gpt-4o-mini",
+            "usage_source": "provider",
+            "transport_mode": "real",
+            "tool_calls": [],
+        }
+
+    def fake_call_rpc(_: str, method: str, __: dict[str, Any]) -> dict[str, Any]:
+        if method == "ListAvailableTools":
+            return {"tools": []}
+        if method == "AuthorizeTool":
+            return {"decision": "allow"}
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(_CLI_MODULE, "_invoke_real_with_retry", fake_invoke_with_retry)
+    monkeypatch.setattr(_CLI_MODULE, "call_rpc", fake_call_rpc)
+
+    result = _CLI_MODULE.run_chat(
+        args=_make_args(),
+        llm_config=argparse.Namespace(
+            base_url="http://localhost:3000/v1",
+            api_key="token-123",
+            model="gpt-4o-mini",
+            timeout=15,
+        ),
+        session=_CLI_MODULE.AgentSession("agent-stream-order"),
+        user_input="make hello uppercase",
+        max_iterations=5,
+        max_retries=1,
+        stream_handler=events.append,
+    )
+
+    assert result["output"] == "HELLO"
+    assert [event["type"] for event in events] == [
+        "tool-input-start",
+        "tool-input-available",
+        "tool-output-available",
+    ]
+    assert events[0] == {
+        "type": "tool-input-start",
+        "toolCallId": "call-stream-1",
+        "toolName": "builtin.lite.upper",
+    }
+    assert events[1] == {
+        "type": "tool-input-available",
+        "toolCallId": "call-stream-1",
+        "toolName": "builtin.lite.upper",
+        "input": {"prompt": "hello"},
+    }
+    assert events[2] == {
+        "type": "tool-output-available",
+        "toolCallId": "call-stream-1",
+        "toolName": "builtin.lite.upper",
+        "input": {"prompt": "hello"},
+        "output": "HELLO",
+        "errorText": None,
+    }

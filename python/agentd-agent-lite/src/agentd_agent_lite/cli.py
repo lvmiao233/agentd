@@ -1560,6 +1560,36 @@ def _run_chat_turn(
             if tool_decision == "ask":
                 raise RpcError(-32024, "policy.ask: approval required")
 
+            assistant_message["tool_calls"].append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_text
+                        if isinstance(arguments_text, str)
+                        else "{}",
+                    },
+                }
+            )
+
+            if stream_handler is not None:
+                stream_handler(
+                    {
+                        "type": "tool-input-start",
+                        "toolCallId": call_id,
+                        "toolName": policy_tool_name,
+                    }
+                )
+                stream_handler(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": call_id,
+                        "toolName": policy_tool_name,
+                        "input": parsed_arguments,
+                    }
+                )
+
             discovered_tool = _resolve_discovered_tool(session, tool_name)
             tool_error_text: str | None = None
             try:
@@ -1605,29 +1635,6 @@ def _run_chat_turn(
                     "input": parsed_prompt,
                     "output": tool_output_record,
                     "error": tool_error_text,
-                }
-            )
-
-            if stream_handler is not None:
-                stream_handler(
-                    {
-                        "type": "tool-input-available",
-                        "toolCallId": call_id,
-                        "toolName": policy_tool_name,
-                        "input": parsed_arguments,
-                    }
-                )
-
-            assistant_message["tool_calls"].append(
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": arguments_text
-                        if isinstance(arguments_text, str)
-                        else "{}",
-                    },
                 }
             )
 
