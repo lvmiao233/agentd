@@ -1,0 +1,36 @@
+iteration=1
+feature=chat_tool_lifecycle_streaming
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts chat-ui-stream.spec.ts chat-route-streaming.spec.ts
+   result=PASS
+
+2. uv run pytest python/agentd-agent-lite/tests/test_tool_loop.py python/agentd-agent-lite/tests/test_multi_turn.py
+   result=PASS
+
+3. uv run pytest python/agentd-agent-lite/tests/test_tool_loop.py::test_tool_loop_emits_stream_lifecycle_before_tool_output -q
+   result=PASS
+
+4. cargo test -p agentd-daemon run_agent_stream_forwards_provider_token_deltas -- --exact
+   result=PASS
+
+5. corepack pnpm --filter agent-shell build
+   result=PASS
+
+[scope]
+- python/agentd-agent-lite/src/agentd_agent_lite/cli.py
+- python/agentd-agent-lite/tests/test_tool_loop.py
+- crates/agentd-daemon/src/main.rs
+- web/agent-shell/lib/run-agent-stream.mjs
+- web/agent-shell/lib/chat-ui-stream.mjs
+- web/agent-shell/lib/chat-ui-stream.d.ts
+- web/agent-shell/components/ai-elements/tool.tsx
+- web/agent-shell/tests/run-agent-stream-parser.spec.ts
+- web/agent-shell/tests/run-agent-stream-reader.spec.ts
+- web/agent-shell/tests/chat-ui-stream.spec.ts
+- web/agent-shell/tests/chat-route-streaming.spec.ts
+
+[summary]
+The web chat now receives tool lifecycle events early enough to render a visible preparing/running state before tool execution completes. The agent-lite loop emits tool-input-start and pre-execution tool-input-available, the daemon forwards the lifecycle, and the web parser/tests accept the expanded sequence.
