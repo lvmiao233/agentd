@@ -95,7 +95,13 @@ function extractTextDelta(payload: any): string {
   return '';
 }
 
-function extractToolCalls(payload: any): Array<{ id: string; name: string; input: unknown }> {
+function extractToolCalls(payload: any): Array<{
+  id: string;
+  name: string;
+  input: unknown;
+  output: unknown;
+  errorText?: string;
+}> {
   const normalized = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
   const calls = normalized?.tool?.calls;
   if (!Array.isArray(calls)) return [];
@@ -114,7 +120,17 @@ function extractToolCalls(payload: any): Array<{ id: string; name: string; input
           input = argsRaw;
         }
       }
-      return { id, name, input };
+
+      const output = call?.output;
+      const errorValue = call?.error;
+      const errorText =
+        typeof errorValue === 'string'
+          ? errorValue
+          : typeof errorValue?.message === 'string'
+            ? errorValue.message
+            : undefined;
+
+      return { id, name, input, output, errorText };
     });
 }
 
@@ -239,6 +255,8 @@ export default function ChatPage() {
               toolCall.name,
               toolCall.input,
               toolCall.id,
+              toolCall.output,
+              toolCall.errorText,
             );
           }
           syncChatModel();
@@ -538,10 +556,13 @@ export default function ChatPage() {
                 <Fragment key={message.id}>
                   {message.role === 'tool' && (
                     <Tool key={message.id} defaultOpen>
-                      <ToolHeader type={`tool-${message.toolName}`} state="input-available" />
+                      <ToolHeader
+                        type={`tool-${message.toolName}`}
+                        state={message.errorText ? 'output-error' : message.output !== undefined ? 'output-available' : 'input-available'}
+                      />
                       <ToolContent>
                         <ToolInput input={message.input} />
-                        <ToolOutput output={undefined} errorText={undefined} />
+                        <ToolOutput output={message.output} errorText={message.errorText} />
                       </ToolContent>
                     </Tool>
                   )}

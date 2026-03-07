@@ -49,7 +49,18 @@ export class WebAgentChatModel {
     last.streamTokens.push(token);
   }
 
-  appendToolCall(toolName, args, id = this.nextId()) {
+  appendToolCall(toolName, args, id = this.nextId(), output = undefined, errorText = undefined) {
+    const existing = this.messages.find((message) => message.role === 'tool' && message.id === id);
+    if (existing) {
+      existing.toolName = toolName;
+      existing.input = args;
+      existing.tool = toolName;
+      existing.args = args;
+      existing.output = output;
+      existing.errorText = errorText;
+      return id;
+    }
+
     this.messages.push({
       id,
       role: 'tool',
@@ -57,6 +68,8 @@ export class WebAgentChatModel {
       input: args,
       tool: toolName,
       args,
+      output,
+      errorText,
     });
     return id;
   }

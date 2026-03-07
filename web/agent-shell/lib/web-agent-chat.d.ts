@@ -13,6 +13,8 @@ export type WebAgentChatMessage =
       input: unknown;
       tool: string;
       args: unknown;
+      output?: unknown;
+      errorText?: string;
     };
 
 export declare class WebAgentChatModel {
@@ -23,7 +25,13 @@ export declare class WebAgentChatModel {
   appendUserMessage(text: string, id?: string): string;
   appendAssistantMessage(text: string, id?: string): string;
   appendAssistantToken(token: string): void;
-  appendToolCall(toolName: string, args: unknown, id?: string): string;
+  appendToolCall(
+    toolName: string,
+    args: unknown,
+    id?: string,
+    output?: unknown,
+    errorText?: string,
+  ): string;
   handleDisconnect(): void;
   handleReconnect(): void;
   applyBridgeEvent(event: unknown): void;
