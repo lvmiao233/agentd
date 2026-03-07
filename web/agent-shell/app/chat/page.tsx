@@ -1,6 +1,12 @@
 'use client';
 
-import { useState, Fragment, useEffect, useRef } from 'react';
+import { useState, Fragment, useEffect } from 'react';
+import { useChat } from '@ai-sdk/react';
+import {
+  DefaultChatTransport,
+  isToolUIPart,
+  type UIMessage,
+} from 'ai';
 import {
   Conversation,
   ConversationContent,
@@ -21,6 +27,7 @@ import {
   PromptInputFooter,
   PromptInputTools,
   PromptInputSubmit,
+  type PromptInputMessage,
 } from '@/components/ai-elements/prompt-input';
 import {
   Select,
@@ -38,14 +45,7 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import { MessageSquare, RefreshCcw, Copy } from 'lucide-react';
-import {
-  type ApprovalItem,
-} from '@/lib/daemon-rpc';
-import {
-  WebAgentChatModel,
-  type WebAgentChatMessage,
-} from '@/lib/web-agent-chat';
-import { consumeChatUiStream } from '@/lib/chat-ui-stream';
+import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
   buildChatAgentUnavailableMessage,
   choosePreferredAgent,
@@ -61,10 +61,6 @@ type ChatAgentOption = {
   runnable_reason?: string;
 };
 
-type ChatStatus = 'ready' | 'streaming' | 'error';
-
-type ChatMessage = WebAgentChatMessage;
-
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
 }
@@ -73,54 +69,76 @@ function agentLiteSessionId(agentId: string): string {
   return `web-${agentId}`;
 }
 
+function buildChatRequestBody(agent: ChatAgentOption) {
+  return {
+    model: agent.model,
+    agentId: agent.agent_id,
+    sessionId: agentLiteSessionId(agent.agent_id),
+    runtime: 'agent-lite',
+  };
+}
+
+function extractMessageText(message: UIMessage): string {
+  return message.parts
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('')
+    .trim();
+}
+
 export default function ChatPage() {
   const [input, setInput] = useState('');
-  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [status, setStatus] = useState<ChatStatus>('ready');
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
-  const activeRequestAbortRef = useRef<AbortController | null>(null);
-  const lastSubmittedInputRef = useRef('');
-  const chatModelRef = useRef(new WebAgentChatModel());
 
-  const syncChatModel = () => {
-    const snapshot = chatModelRef.current.snapshot();
-    setMessages(snapshot.messages);
-    setShowReconnectBanner(snapshot.showReconnectBanner);
-  };
+  const {
+    messages,
+    status,
+    error,
+    sendMessage,
+    regenerate,
+    stop,
+    clearError,
+  } = useChat({
+    transport: new DefaultChatTransport({ api: '/api/chat' }),
+    experimental_throttle: 40,
+  });
 
-  const loadAgents = async () => {
+  const loadAgents = async (): Promise<ChatAgentOption | null> => {
     const response = await fetch('/api/agents');
     if (!response.ok) {
       throw new Error('load agents failed');
     }
-      const payload = (await response.json()) as {
+
+    const payload = (await response.json()) as {
       agents?: ChatAgentOption[];
     };
     const agents = payload.agents ?? [];
     setAvailableAgents(agents);
+
     if (agents.length === 0) {
       setAgentId('');
       return null;
     }
+
     const preferred = choosePreferredAgent(agents);
     if (!preferred) {
       setAgentId('');
       return null;
     }
-    setAgentId((current) => {
-      const currentAgent = current
-        ? agents.find((agent) => agent.agent_id === current)
-        : undefined;
-      if (currentAgent && isAgentRunnable(currentAgent)) {
-        return current;
-      }
-      return preferred.agent_id;
-    });
-    return preferred.agent_id;
+
+    const currentAgent = agentId
+      ? agents.find((candidate) => candidate.agent_id === agentId)
+      : undefined;
+
+    const resolved =
+      currentAgent && isAgentRunnable(currentAgent) ? currentAgent : preferred;
+
+    setAgentId(resolved.agent_id);
+    return resolved;
   };
 
   const refreshApprovalQueue = async (targetAgentId: string) => {
@@ -128,6 +146,7 @@ export default function ChatPage() {
       setApprovalQueue([]);
       return;
     }
+
     try {
       const response = await fetch(
         `/api/approvals?agent_id=${encodeURIComponent(targetAgentId)}`,
@@ -143,20 +162,12 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    chatModelRef.current.handleReconnect();
-    syncChatModel();
-    return () => {
-      activeRequestAbortRef.current?.abort();
-      activeRequestAbortRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
+
     loadAgents()
-      .then((agents) => {
-        if (cancelled) {
-          return;
+      .then((selected) => {
+        if (!cancelled) {
+          void refreshApprovalQueue(selected?.agent_id ?? '');
         }
       })
       .catch(() => {
@@ -175,9 +186,11 @@ export default function ChatPage() {
     if (!agentId) {
       return;
     }
+
     const timer = setInterval(() => {
       void refreshApprovalQueue(agentId);
     }, 3000);
+
     return () => clearInterval(timer);
   }, [agentId]);
 
@@ -188,7 +201,9 @@ export default function ChatPage() {
     if (!agentId) {
       return;
     }
+
     setApprovalBusyId(approvalId);
+
     try {
       const response = await fetch('/api/approvals', {
         method: 'POST',
@@ -199,123 +214,84 @@ export default function ChatPage() {
           decision,
         }),
       });
+
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? 'approval resolution failed');
       }
-      chatModelRef.current.appendAssistantMessage(
-        `Approval resolved: ${decision} (${approvalId})`,
-      );
-      syncChatModel();
+
+      setChatNotice(`Approval resolved: ${decision} (${approvalId})`);
       await refreshApprovalQueue(agentId);
-    } catch (error) {
+    } catch (approvalError) {
       const message =
-        error instanceof Error ? error.message : 'approval resolution failed';
-      chatModelRef.current.appendAssistantMessage(`Approval failed: ${message}`);
-      syncChatModel();
+        approvalError instanceof Error
+          ? approvalError.message
+          : 'approval resolution failed';
+      setChatNotice(`Approval failed: ${message}`);
     } finally {
       setApprovalBusyId(null);
     }
   };
 
-  const submitPrompt = async (raw: string): Promise<boolean> => {
-    const text = raw.trim();
-    if (!text) return false;
+  const submitPrompt = async ({ text }: PromptInputMessage): Promise<void> => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
 
-    const resolvedAgentId = agentId || (await loadAgents().catch(() => null));
-    const selectedAgent = availableAgents.find(
-      (candidate) => candidate.agent_id === resolvedAgentId,
+    let selectedAgent: ChatAgentOption | null | undefined = availableAgents.find(
+      (candidate) => candidate.agent_id === agentId,
     );
 
     if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
-      chatModelRef.current.appendAssistantMessage(
-        buildChatAgentUnavailableMessage(selectedAgent),
-      );
-      syncChatModel();
-      setStatus('error');
-      return false;
+      selectedAgent = await loadAgents().catch(() => null);
     }
 
-    chatModelRef.current.appendUserMessage(text, nextMessageId());
-    syncChatModel();
-    lastSubmittedInputRef.current = text;
-    setStatus('streaming');
-
-    activeRequestAbortRef.current?.abort();
-    const abortController = new AbortController();
-    activeRequestAbortRef.current = abortController;
-
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [
-            {
-              id: nextMessageId(),
-              role: 'user',
-              parts: [{ type: 'text', text }],
-            },
-          ],
-          model: selectedAgent.model,
-          agentId: selectedAgent.agent_id,
-          sessionId: agentLiteSessionId(selectedAgent.agent_id),
-          runtime: 'agent-lite',
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`chat request failed (${response.status})`);
-      }
-
-      await consumeChatUiStream(response, {
-        onAssistantDelta: (delta) => {
-          chatModelRef.current.appendAssistantToken(delta);
-          syncChatModel();
-        },
-        onToolInput: ({ toolCallId, toolName, input }) => {
-          chatModelRef.current.appendToolCall(toolName, input, toolCallId);
-          syncChatModel();
-        },
-        onToolOutput: ({ toolCallId, output, errorText }) => {
-          chatModelRef.current.appendToolResult(toolCallId ?? nextMessageId(), output, errorText);
-          syncChatModel();
-        },
-      });
-
-      setStatus('ready');
-      await refreshApprovalQueue(selectedAgent.agent_id);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'chat transport failed';
-      chatModelRef.current.appendAssistantMessage(`RunAgent failed: ${message}`);
-      syncChatModel();
-      setStatus('error');
-      await refreshApprovalQueue(selectedAgent.agent_id);
-      return false;
-    } finally {
-      if (activeRequestAbortRef.current === abortController) {
-        activeRequestAbortRef.current = null;
-      }
+    if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
+      setChatNotice(buildChatAgentUnavailableMessage(selectedAgent));
+      return;
     }
-  };
 
-  const handleSubmit = () => {
-    void submitPrompt(input).then((submitted) => {
-      if (submitted) {
-        setInput('');
-      }
-    });
-  };
+    setChatNotice(null);
+    if (error) {
+      clearError();
+    }
 
-  const handleRegenerate = () => {
-    if (!lastSubmittedInputRef.current) return;
-    void submitPrompt(lastSubmittedInputRef.current);
+    setInput('');
+    await sendMessage(
+      { text: trimmed },
+      {
+        body: buildChatRequestBody(selectedAgent),
+      },
+    );
+
+    await refreshApprovalQueue(selectedAgent.agent_id);
   };
 
   const selectedAgent = availableAgents.find((candidate) => candidate.agent_id === agentId);
   const selectedAgentRunnable = selectedAgent ? isAgentRunnable(selectedAgent) : false;
+
+  const lastAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant');
+  const lastAssistantText = lastAssistantMessage
+    ? extractMessageText(lastAssistantMessage)
+    : '';
+
+  const handleRegenerate = async () => {
+    if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
+      setChatNotice(buildChatAgentUnavailableMessage(selectedAgent));
+      return;
+    }
+
+    setChatNotice(null);
+    if (error) {
+      clearError();
+    }
+
+    await regenerate({ body: buildChatRequestBody(selectedAgent) });
+    await refreshApprovalQueue(selectedAgent.agent_id);
+  };
 
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col rounded-xl border border-border bg-card shadow-lg">
@@ -324,7 +300,7 @@ export default function ChatPage() {
           <div>
             <h1 className="text-lg font-semibold">Agent Chat</h1>
             <p className="text-sm text-muted-foreground">
-              选择一个 agent 后再发起实时对话
+              选择一个 agent 后发起实时对话，回复会逐步流式显示
             </p>
           </div>
           <div className="min-w-72">
@@ -347,11 +323,25 @@ export default function ChatPage() {
             </Select>
           </div>
         </div>
+
         {selectedAgent && !selectedAgentRunnable && (
           <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
             {buildChatAgentUnavailableMessage(selectedAgent)}
           </div>
         )}
+
+        {chatNotice && (
+          <div className="mb-3 rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-100">
+            {chatNotice}
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-3 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            Something went wrong while streaming this response. You can retry.
+          </div>
+        )}
+
         {approvalQueue.length > 0 && (
           <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
             <div className="mb-2 font-medium">Pending approvals</div>
@@ -390,11 +380,7 @@ export default function ChatPage() {
             </div>
           </div>
         )}
-        {showReconnectBanner && (
-          <div className="reconnect-banner mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-            Daemon WebSocket disconnected. Reconnecting…
-          </div>
-        )}
+
         <Conversation>
           <ConversationContent>
             {messages.length === 0 ? (
@@ -404,66 +390,124 @@ export default function ChatPage() {
                 description="与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控"
               />
             ) : (
-              messages.map((message, messageIndex) => (
-                <Fragment key={message.id}>
-                  {message.role === 'tool' && (
-                    <Tool key={message.id} defaultOpen>
-                      <ToolHeader
-                        type={`tool-${message.toolName}`}
-                        state={message.errorText ? 'output-error' : message.output !== undefined ? 'output-available' : 'input-available'}
-                      />
-                      <ToolContent>
-                        <ToolInput input={message.input} />
-                        <ToolOutput output={message.output} errorText={message.errorText} />
-                      </ToolContent>
-                    </Tool>
-                  )}
-                  {(message.role === 'user' || message.role === 'assistant') && (
-                    <Fragment>
+              messages.map((message, messageIndex) => {
+                const textParts = message.parts.filter(
+                  (part) =>
+                    part.type === 'text' ||
+                    part.type === 'reasoning' ||
+                    part.type === 'source-url' ||
+                    part.type === 'source-document',
+                );
+                const toolParts = message.parts.filter((part) => isToolUIPart(part));
+
+                return (
+                  <Fragment key={message.id}>
+                    {textParts.length > 0 && (
                       <Message from={message.role}>
                         <MessageContent>
-                          <div
-                            className={
-                              message.role === 'assistant' &&
-                              messageIndex === messages.length - 1 &&
-                              status === 'streaming'
-                                ? 'stream-token'
-                                : undefined
+                          {textParts.map((part, partIndex) => {
+                            if (part.type === 'text') {
+                              return (
+                                <MessageResponse key={`${message.id}-text-${partIndex}`}>
+                                  {part.text}
+                                </MessageResponse>
+                              );
                             }
-                          >
-                             <MessageResponse>{message.text}</MessageResponse>
-                           </div>
-                         </MessageContent>
-                       </Message>
-                      {message.role === 'assistant' &&
-                        messageIndex === messages.length - 1 &&
-                        status !== 'streaming' && (
-                          <MessageActions>
-                            <MessageAction onClick={handleRegenerate} label="重新生成">
-                              <RefreshCcw className="size-3" />
-                            </MessageAction>
-                            <MessageAction
-                              onClick={() => navigator.clipboard.writeText(message.text)}
-                              label="复制"
-                            >
-                              <Copy className="size-3" />
-                            </MessageAction>
-                          </MessageActions>
+
+                            if (part.type === 'reasoning') {
+                              return (
+                                <pre
+                                  key={`${message.id}-reasoning-${partIndex}`}
+                                  className="overflow-x-auto rounded-md border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground"
+                                >
+                                  {part.text}
+                                </pre>
+                              );
+                            }
+
+                            if (part.type === 'source-url') {
+                              return (
+                                <a
+                                  key={`${message.id}-source-url-${partIndex}`}
+                                  href={part.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs text-sky-400 underline-offset-2 hover:underline"
+                                >
+                                  [{part.title ?? part.url}]
+                                </a>
+                              );
+                            }
+
+                            if (part.type === 'source-document') {
+                              return (
+                                <div
+                                  key={`${message.id}-source-doc-${partIndex}`}
+                                  className="text-xs text-muted-foreground"
+                                >
+                                  [Document: {part.title}]
+                                </div>
+                              );
+                            }
+
+                            return null;
+                          })}
+                        </MessageContent>
+                      </Message>
+                    )}
+
+                    {toolParts.map((part, toolIndex) => (
+                      <Tool
+                        key={`${message.id}-tool-${toolIndex}`}
+                        defaultOpen={
+                          part.state === 'output-available' || part.state === 'output-error'
+                        }
+                      >
+                        {part.type === 'dynamic-tool' ? (
+                          <ToolHeader
+                            type="dynamic-tool"
+                            state={part.state}
+                            toolName={part.toolName}
+                          />
+                        ) : (
+                          <ToolHeader type={part.type} state={part.state} />
                         )}
-                    </Fragment>
-                  )}
-                </Fragment>
-              ))
+                        <ToolContent>
+                          <ToolInput input={part.input} />
+                          <ToolOutput output={part.output} errorText={part.errorText} />
+                        </ToolContent>
+                      </Tool>
+                    ))}
+
+                    {message.role === 'assistant' &&
+                      messageIndex === messages.length - 1 &&
+                      (status === 'ready' || status === 'error') &&
+                      lastAssistantText && (
+                        <MessageActions>
+                          <MessageAction onClick={() => void handleRegenerate()} label="重新生成">
+                            <RefreshCcw className="size-3" />
+                          </MessageAction>
+                          <MessageAction
+                            onClick={() => navigator.clipboard.writeText(lastAssistantText)}
+                            label="复制"
+                          >
+                            <Copy className="size-3" />
+                          </MessageAction>
+                        </MessageActions>
+                      )}
+                  </Fragment>
+                );
+              })
             )}
           </ConversationContent>
           <ConversationScrollButton />
         </Conversation>
 
-        <PromptInput onSubmit={handleSubmit} className="mt-3">
+        <PromptInput onSubmit={(message) => void submitPrompt(message)} className="mt-3">
           <PromptInputBody>
             <PromptInputTextarea
               value={input}
-              onChange={(e) => setInput(e.currentTarget.value)}
+              onChange={(event) => setInput(event.currentTarget.value)}
               placeholder="Ask the agent…"
               disabled={availableAgents.length > 0 && !selectedAgentRunnable}
             />
@@ -473,7 +517,11 @@ export default function ChatPage() {
             <PromptInputSubmit
               className="send-button"
               status={status}
-              disabled={(!input.trim() && status !== 'streaming') || (availableAgents.length > 0 && !selectedAgentRunnable)}
+              onStop={status === 'submitted' || status === 'streaming' ? () => void stop() : undefined}
+              disabled={
+                (!input.trim() && status !== 'submitted' && status !== 'streaming') ||
+                (availableAgents.length > 0 && !selectedAgentRunnable)
+              }
             />
           </PromptInputFooter>
         </PromptInput>
