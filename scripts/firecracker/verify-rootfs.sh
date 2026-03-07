@@ -195,11 +195,18 @@ if [[ -z "$PYTHON_VERSION" ]]; then
 fi
 
 if command -v readelf >/dev/null 2>&1; then
-    PYTHON_INTERPRETER_PATH="$(readelf -l "$PYTHON_ROOTFS" 2>/dev/null | python3 - <<'PY'
+    PYTHON_INTERPRETER_PATH="$(python3 - "$PYTHON_ROOTFS" <<'PY'
 import re
+import subprocess
 import sys
 
-text = sys.stdin.read()
+completed = subprocess.run(
+    ["readelf", "-l", sys.argv[1]],
+    check=False,
+    capture_output=True,
+    text=True,
+)
+text = completed.stdout if completed.returncode == 0 else ""
 match = re.search(r"Requesting program interpreter:\s*([^\]]+)", text)
 print(match.group(1).strip() if match else "")
 PY
