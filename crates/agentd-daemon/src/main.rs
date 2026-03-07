@@ -8154,6 +8154,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_managed_agent_injects_one_api_env_when_mapping_exists() {
+        let db_path = test_db_path();
+        let cgroup_root =
+            std::env::temp_dir().join(format!("agentd-managed-oneapi-{}", Uuid::new_v4()));
+        let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+        let state = managed_test_state(&cgroup_root);
+
+        let created = handle_rpc_request(
+            create_agent_request("managed-oneapi-env", "claude-4-sonnet"),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            created.error.is_none(),
+            "create should succeed: {created:?}"
+        );
+        let agent = created
+            .result
+            .expect("create result should exist")
+            .get("agent")
+            .expect("agent field should exist")
+            .clone();
+        let agent_id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("agent id should exist")
+            .to_string();
+
+        let now = chrono::Utc::now();
+        store
+            .save_mapping(OneApiMapping {
+                agent_id: Uuid::parse_str(&agent_id).expect("agent id should be valid uuid"),
+                idempotency_key: "managed-oneapi-env:one-api:claude-4-sonnet".to_string(),
+                one_api_token_id: "tok-managed".to_string(),
+                one_api_access_token: "managed-access-token".to_string(),
+                one_api_channel_id: Some("channel-managed".to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("save one-api mapping for managed start");
+
+        let env_capture_path = cgroup_root.join("managed-oneapi-env.txt");
+        let command = format!(
+            "printf '%s|%s' \"$ONE_API_TOKEN\" \"$ONE_API_BASE_URL\" > \"{}\"; sleep 1",
+            env_capture_path.display()
+        );
+
+        let start_response = handle_rpc_request(
+            JsonRpcRequest::new(
+                json!(81501),
+                "StartManagedAgent",
+                json!({
+                    "agent_id": agent_id,
+                    "command": "/bin/sh",
+                    "args": ["-c", command],
+                    "restart_max_attempts": 0,
+                    "restart_backoff_secs": 0,
+                }),
+            ),
+            store.clone(),
+            state.clone(),
+            OneApiConfig::default(),
+        )
+        .await;
+        assert!(
+            start_response.error.is_none(),
+            "start should succeed with stored one-api mapping: {start_response:?}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let captured = std::fs::read_to_string(&env_capture_path)
+            .expect("managed process should capture injected one-api environment");
+        assert_eq!(
+            captured,
+            "managed-access-token|http://127.0.0.1:3000/v1",
+            "managed lifecycle should inject one-api token and base url when mapping exists"
+        );
+
+        let _ = handle_rpc_request(
+            stop_managed_agent_request(&agent_id),
+            store,
+            state,
+            OneApiConfig::default(),
+        )
+        .await;
+
+        let _ = std::fs::remove_dir_all(cgroup_root);
+        cleanup_sqlite_files(&db_path);
+    }
+
+    #[tokio::test]
     async fn managed_agent_start_validates_agent_id_and_command() {
         let db_path = test_db_path();
         let cgroup_root =
@@ -10267,6 +10361,41 @@ async fn resolve_run_agent_access_token(
     Ok(mapping.map(|entry| entry.one_api_access_token))
 }
 
+async fn maybe_inject_managed_one_api_env(
+    store: &Arc<SqliteStore>,
+    profile: &AgentProfile,
+    one_api_config: &OneApiConfig,
+    managed_env: &mut HashMap<String, String>,
+) -> Result<(), AgentError> {
+    if profile.model.provider != "one-api" {
+        return Ok(());
+    }
+
+    let has_token = managed_env
+        .get("ONE_API_TOKEN")
+        .is_some_and(|value| !value.trim().is_empty());
+
+    if !has_token {
+        if let Some(access_token) = resolve_run_agent_access_token(store, profile).await? {
+            managed_env
+                .entry("ONE_API_TOKEN".to_string())
+                .or_insert(access_token);
+        }
+    }
+
+    if managed_env
+        .get("ONE_API_TOKEN")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        let base_url = derive_one_api_base_url(one_api_config)?;
+        managed_env
+            .entry("ONE_API_BASE_URL".to_string())
+            .or_insert(base_url);
+    }
+
+    Ok(())
+}
+
 async fn resolve_a2a_delegate_agent_id(
     store: &Arc<SqliteStore>,
     preferred_agent_id: Option<uuid::Uuid>,
@@ -11769,45 +11898,15 @@ async fn handle_rpc_request(
             };
 
             let mut managed_env = params.env.clone();
-            if profile.model.provider == "one-api" {
-                let base_url = match derive_one_api_base_url(&one_api_config) {
-                    Ok(url) => url,
-                    Err(err) => {
-                        return JsonRpcResponse::error(
-                            request.id,
-                            -32017,
-                            format!("resolve one-api base url failed: {err}"),
-                        );
-                    }
-                };
-
-                let access_token = match resolve_run_agent_access_token(&store, &profile).await {
-                    Ok(Some(token)) => token,
-                    Ok(None) => {
-                        return JsonRpcResponse::error(
-                            request.id,
-                            -32017,
-                            format!(
-                                "start managed agent requires one-api token mapping for agent {} ({})",
-                                profile.id, profile.name
-                            ),
-                        );
-                    }
-                    Err(err) => {
-                        return JsonRpcResponse::error(
-                            request.id,
-                            -32017,
-                            format!("resolve one-api token mapping failed: {err}"),
-                        );
-                    }
-                };
-
-                managed_env
-                    .entry("ONE_API_BASE_URL".to_string())
-                    .or_insert(base_url);
-                managed_env
-                    .entry("ONE_API_TOKEN".to_string())
-                    .or_insert(access_token);
+            if let Err(err) =
+                maybe_inject_managed_one_api_env(&store, &profile, &one_api_config, &mut managed_env)
+                    .await
+            {
+                return JsonRpcResponse::error(
+                    request.id,
+                    -32017,
+                    format!("resolve managed one-api environment failed: {err}"),
+                );
             }
 
             let limits = CgroupResourceLimits {
