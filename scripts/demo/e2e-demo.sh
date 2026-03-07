@@ -19,7 +19,7 @@ Options:
   --dry-run                 Validate prerequisites and planned steps without starting daemon
   --prompt <text>           Prompt for builtin lite run
   --tool <name>             Builtin tool name (default: builtin.lite.upper)
-  --model <model>           Model name (default: claude-4-sonnet)
+  --model <model>           Model name (default: gpt-5.3-codex)
   --tamper-card-field <f>   Remove one top-level field from generated card before validation
   --happy-evidence <path>   Output path for happy-path evidence
   --error-evidence <path>   Output path for failure evidence
@@ -36,9 +36,9 @@ require_cmd() {
 }
 
 DRY_RUN=false
-PROMPT="分析当前目录结构"
-TOOL="builtin.lite.upper"
-MODEL="claude-4-sonnet"
+PROMPT="hello demo"
+TOOL="builtin.lite.echo"
+MODEL="gpt-5.3-codex"
 TAMPER_CARD_FIELD=""
 HAPPY_EVIDENCE="$HAPPY_EVIDENCE_DEFAULT"
 ERROR_EVIDENCE="$ERROR_EVIDENCE_DEFAULT"
@@ -225,7 +225,7 @@ import sys
 
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     payload = json.load(f)
-print(payload['agent']['id'])
+print(payload['agent_id'])
 PY
 )" || fail "failed to parse agent id"
 
@@ -298,9 +298,9 @@ if total_tokens < 0:
 
 summary = {
     'task_19_demo': 'passed',
-    'agent_id': run_payload['agent']['id'],
+    'agent_id': run_payload['agent_id'],
     'agent_card_path': card_path,
-    'model': run_payload['agent']['model']['model_name'],
+    'model': run_payload['model'],
     'audit_events': len(audit_events),
     'lifecycle_events': len(events),
     'usage_total_tokens': total_tokens,
