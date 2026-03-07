@@ -181,7 +181,25 @@ export default function SettingsPage() {
         setFeedback(payload.error ?? 'Agent 创建失败');
         return;
       }
-      setFeedback(`${trimmedName} 创建成功`);
+      const latestAgentsResponse = await fetch('/api/agents');
+      let successMessage = `${trimmedName} 创建成功`;
+      if (latestAgentsResponse.ok) {
+        const latestAgentsPayload = (await latestAgentsResponse.json()) as {
+          agents?: Array<{
+            name?: string;
+            agent_id?: string;
+            runnable?: boolean;
+            runnable_reason?: string;
+          }>;
+        };
+        const createdAgent = (latestAgentsPayload.agents ?? []).find(
+          (agent) => agent.name === trimmedName,
+        );
+        if (createdAgent?.runnable === false && createdAgent.runnable_reason) {
+          successMessage = `${trimmedName} 已创建，但当前不可运行：${createdAgent.runnable_reason}`;
+        }
+      }
+      setFeedback(successMessage);
       setAgentName('');
       setAllowedToolsText('');
       setDeniedToolsText('');
