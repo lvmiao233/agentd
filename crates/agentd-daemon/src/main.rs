@@ -4889,6 +4889,36 @@ async fn orchestrate_task_rpc_executes_delegate_agents() {
         .expect("beta agent id should be present")
         .to_string();
 
+    let now = Utc::now();
+    for (agent_id, name, token_id, access_token) in [
+        (
+            alpha_id.as_str(),
+            "orchestrator-alpha",
+            "token-orchestrator-alpha",
+            "sk-orchestrator-alpha",
+        ),
+        (
+            beta_id.as_str(),
+            "orchestrator-beta",
+            "token-orchestrator-beta",
+            "sk-orchestrator-beta",
+        ),
+    ] {
+        store
+            .save_mapping(OneApiMapping {
+                agent_id: uuid::Uuid::parse_str(agent_id)
+                    .expect("delegate agent id should be valid uuid"),
+                idempotency_key: format!("{name}:one-api:gpt-4.1-mini"),
+                one_api_token_id: token_id.to_string(),
+                one_api_access_token: access_token.to_string(),
+                one_api_channel_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("save orchestrator delegate mapping");
+    }
+
     let provider_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind mock provider listener");
@@ -5004,6 +5034,70 @@ async fn orchestrate_task_rpc_executes_delegate_agents() {
     provider_task
         .await
         .expect("provider task should complete without panic");
+    cleanup_sqlite_files(&db_path);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn orchestrate_task_rpc_rejects_unrunnable_explicit_delegate_agent() {
+    let db_path = std::env::temp_dir().join(format!(
+        "agentd-daemon-task24-rpc-invalid-delegate-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Arc::new(SqliteStore::new(&db_path).expect("initialize sqlite store"));
+    let state = RuntimeState::new("disabled");
+
+    let created = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(2411),
+            "CreateAgent",
+            json!({
+                "name": "orchestrator-unrunnable",
+                "model": "gpt-4.1-mini",
+            }),
+        ),
+        store.clone(),
+        state.clone(),
+        OneApiConfig::default(),
+    )
+    .await;
+    let agent_id = created
+        .result
+        .as_ref()
+        .and_then(|result| result.get("agent"))
+        .and_then(|agent| agent.get("id"))
+        .and_then(Value::as_str)
+        .expect("delegate agent id should be present")
+        .to_string();
+
+    let response = handle_rpc_request(
+        JsonRpcRequest::new(
+            json!(2412),
+            "OrchestrateTask",
+            json!({
+                "input": {"goal": "ship task 24"},
+                "subtasks": [{"work": "decompose requirement"}],
+                "delegate_agent_ids": [agent_id],
+                "retry_limit": 0,
+            }),
+        ),
+        store,
+        state,
+        OneApiConfig::default(),
+    )
+    .await;
+
+    let error = response
+        .error
+        .expect("orchestrate should reject unrunnable explicit delegate");
+    assert_eq!(error.code, -32602);
+    assert!(
+        error
+            .message
+            .contains("is not runnable; ensure it is ready and has required one-api credentials"),
+        "unexpected orchestrate error: {error:?}"
+    );
+
     cleanup_sqlite_files(&db_path);
 }
 
@@ -10348,7 +10442,7 @@ async fn resolve_run_agent_profile(
 }
 
 async fn resolve_run_agent_access_token(
-    store: &Arc<SqliteStore>,
+    store: &SqliteStore,
     profile: &AgentProfile,
 ) -> Result<Option<String>, AgentError> {
     let idempotency_key = format!(
@@ -10362,7 +10456,7 @@ async fn resolve_run_agent_access_token(
 }
 
 async fn maybe_inject_managed_one_api_env(
-    store: &Arc<SqliteStore>,
+    store: &SqliteStore,
     profile: &AgentProfile,
     one_api_config: &OneApiConfig,
     managed_env: &mut HashMap<String, String>,
@@ -10394,6 +10488,80 @@ async fn maybe_inject_managed_one_api_env(
     }
 
     Ok(())
+}
+
+async fn is_runnable_delegate_agent(
+    store: &SqliteStore,
+    profile: &AgentProfile,
+) -> Result<bool, AgentError> {
+    if profile.status != AgentLifecycleState::Ready {
+        return Ok(false);
+    }
+
+    if profile.model.provider != "one-api" {
+        return Ok(true);
+    }
+
+    Ok(resolve_run_agent_access_token(store, profile).await?.is_some())
+}
+
+async fn resolve_runnable_orchestrator_agent_ids(
+    store: &SqliteStore,
+    explicit_agents: &[String],
+    parent_agent_id: Option<uuid::Uuid>,
+) -> Result<Vec<String>, AgentError> {
+    let trimmed_explicit = explicit_agents
+        .iter()
+        .map(|agent_id| agent_id.trim())
+        .filter(|agent_id| !agent_id.is_empty())
+        .collect::<Vec<_>>();
+
+    if !trimmed_explicit.is_empty() {
+        let mut resolved = Vec::with_capacity(trimmed_explicit.len());
+        for raw_agent_id in trimmed_explicit {
+            let agent_id = uuid::Uuid::parse_str(raw_agent_id).map_err(|err| {
+                AgentError::InvalidInput(format!(
+                    "invalid delegate_agent_id `{raw_agent_id}`: {err}"
+                ))
+            })?;
+            let profile = store.get_agent(agent_id).await?;
+            if !is_runnable_delegate_agent(store, &profile).await? {
+                return Err(AgentError::InvalidInput(format!(
+                    "delegate agent {} ({}) is not runnable; ensure it is ready and has required one-api credentials",
+                    profile.id, profile.name
+                )));
+            }
+            resolved.push(agent_id.to_string());
+        }
+        return Ok(resolved);
+    }
+
+    let local_profiles = store.list_agents().await?;
+    let mut runnable_profiles = Vec::new();
+    for profile in local_profiles {
+        if is_runnable_delegate_agent(store, &profile).await? {
+            runnable_profiles.push(profile);
+        }
+    }
+
+    let resolved = delegation_candidates_from_profiles(&runnable_profiles)
+        .into_iter()
+        .map(|candidate| candidate.agent_id)
+        .collect::<Vec<_>>();
+    if !resolved.is_empty() {
+        return Ok(resolved);
+    }
+
+    if let Some(parent_agent_id) = parent_agent_id {
+        let parent_profile = store.get_agent(parent_agent_id).await?;
+        if is_runnable_delegate_agent(store, &parent_profile).await? {
+            return Ok(vec![parent_agent_id.to_string()]);
+        }
+    }
+
+    Err(AgentError::NotFound(
+        "no runnable delegate agents available for orchestration".to_string(),
+    ))
 }
 
 async fn resolve_a2a_delegate_agent_id(
@@ -11685,13 +11853,50 @@ async fn handle_rpc_request(
             }
         }
         "OrchestrateTask" | "management.OrchestrateTask" => {
-            let params = match serde_json::from_value::<OrchestrateTaskParams>(request.params) {
+            let mut params = match serde_json::from_value::<OrchestrateTaskParams>(request.params) {
                 Ok(params) => params,
                 Err(err) => {
                     return JsonRpcResponse::error(
                         request.id,
                         -32602,
                         format!("invalid orchestrate task params: {err}"),
+                    )
+                }
+            };
+
+            let parent_agent_id = match params.parent_agent_id.as_deref() {
+                Some(raw_parent_agent_id) => match uuid::Uuid::parse_str(raw_parent_agent_id) {
+                    Ok(agent_id) => Some(agent_id),
+                    Err(err) => {
+                        return JsonRpcResponse::error(
+                            request.id,
+                            -32602,
+                            format!("invalid parent_agent_id: {err}"),
+                        )
+                    }
+                },
+                None => None,
+            };
+
+            params.delegate_agent_ids = match resolve_runnable_orchestrator_agent_ids(
+                store.as_ref(),
+                &params.delegate_agent_ids,
+                parent_agent_id,
+            )
+            .await
+            {
+                Ok(agent_ids) => agent_ids,
+                Err(AgentError::InvalidInput(message)) => {
+                    return JsonRpcResponse::error(request.id, -32602, message)
+                }
+                Err(AgentError::NotFound(message)) => {
+                    return JsonRpcResponse::error(request.id, -32010, message)
+                }
+                Err(err) => {
+                    return JsonRpcResponse::error(
+                        request.id,
+                        -32024,
+                        format!("resolve runnable delegate agents failed: {err}"),
                     )
                 }
             };
