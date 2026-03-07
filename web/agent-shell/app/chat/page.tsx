@@ -21,6 +21,17 @@ import {
   MessageAction,
 } from '@/components/ai-elements/message';
 import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from '@/components/ai-elements/reasoning';
+import {
+  Source,
+  Sources,
+  SourcesContent,
+  SourcesTrigger,
+} from '@/components/ai-elements/sources';
+import {
   Confirmation,
   ConfirmationAccepted,
   ConfirmationAction,
@@ -63,6 +74,7 @@ import {
   buildApprovalFeed,
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
+import { collectSourceParts } from '@/lib/chat-message-parts.js';
 
 type ChatAgentOption = {
   agent_id: string;
@@ -399,6 +411,7 @@ export default function ChatPage() {
             ) : (
               messages.map((message, messageIndex) => {
                 const renderedSegments: ReactNode[] = [];
+                const sourceParts = collectSourceParts(message.parts);
                 const contentParts: Array<{
                   part: UIMessage['parts'][number];
                   partIndex: number;
@@ -424,38 +437,23 @@ export default function ChatPage() {
 
                           if (part.type === 'reasoning') {
                             return (
-                              <pre
+                              <Reasoning
                                 key={`${message.id}-reasoning-${partIndex}`}
-                                className="overflow-x-auto rounded-md border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground"
+                                className="w-full"
+                                isStreaming={
+                                  status === 'streaming' &&
+                                  messageIndex === messages.length - 1 &&
+                                  partIndex === message.parts.length - 1
+                                }
                               >
-                                {part.text}
-                              </pre>
+                                <ReasoningTrigger />
+                                <ReasoningContent>{part.text}</ReasoningContent>
+                              </Reasoning>
                             );
                           }
 
-                          if (part.type === 'source-url') {
-                            return (
-                              <a
-                                key={`${message.id}-source-url-${partIndex}`}
-                                href={part.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs text-sky-400 underline-offset-2 hover:underline"
-                              >
-                                [{part.title ?? part.url}]
-                              </a>
-                            );
-                          }
-
-                          if (part.type === 'source-document') {
-                            return (
-                              <div
-                                key={`${message.id}-source-doc-${partIndex}`}
-                                className="text-xs text-muted-foreground"
-                              >
-                                [Document: {part.title}]
-                              </div>
-                            );
+                          if (part.type === 'source-url' || part.type === 'source-document') {
+                            return null;
                           }
 
                           return null;
@@ -501,6 +499,38 @@ export default function ChatPage() {
 
                 return (
                   <Fragment key={message.id}>
+                    {message.role === 'assistant' && sourceParts.length > 0 && (
+                      <Sources open>
+                        <SourcesTrigger count={sourceParts.length} />
+                        <SourcesContent className="space-y-1">
+                          {sourceParts.map(({ part, index }) => {
+                            if (part.type === 'source-url') {
+                              return (
+                                <Source
+                                  key={`${message.id}-source-${index}`}
+                                  href={part.url}
+                                  title={part.title ?? part.url}
+                                  kind="url"
+                                />
+                              );
+                            }
+
+                            if (part.type === 'source-document') {
+                              return (
+                                <Source
+                                  key={`${message.id}-source-${index}`}
+                                  title={part.title ?? 'Document source'}
+                                  kind="document"
+                                />
+                              );
+                            }
+
+                            return null;
+                          })}
+                        </SourcesContent>
+                      </Sources>
+                    )}
+
                     {renderedSegments}
 
                     {message.role === 'assistant' &&
