@@ -12,3 +12,5 @@
 - 2026-03-08 (Iteration 4): 当前 inline approval 仍受限于 fuzzy matching：一旦同名工具在单轮消息里多次出现，前端无法 100% 判断审批属于哪个 call。真正的根治方案仍是 daemon/stream 层补 `toolCallId` 或等价关联字段到 approval payload。
 - 2026-03-08 (Iteration 5): 当前 chat 即使已有 regenerate/copy，也仍然缺少“顺着上一条回复继续推进任务”的低摩擦入口；用户必须自己重新组织提示词，会打断持续 coding 的节奏。
 - 2026-03-08 (Iteration 5): 目前 follow-up suggestions 还是启发式生成，并没有读取模型原生的 suggested-reply chunk；如果后续接入更标准的 suggestion part，应优先接入流式数据而不是继续手写更多 heuristics。
+- 2026-03-08 (Iteration 6): regenerate 旧行为会直接抹掉前一版 assistant 回复，导致用户无法比较 alternative answer / plan / patch direction；这和 coding-agent 的探索式工作流不匹配。
+- 2026-03-08 (Iteration 6): 当前 branch history 只在前端内存里保留；刷新页面或切 agent 后会丢失。若后续要做真正的会话级 branch 持久化，需要在 daemon/session 层增加相应存储或 metadata 通道。

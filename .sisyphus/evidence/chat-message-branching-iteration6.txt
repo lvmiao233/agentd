@@ -1,0 +1,29 @@
+iteration=6
+feature=chat_message_branching
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs chat-message-branches.spec.ts chat-follow-up-suggestions.spec.ts chat-tool-approvals.spec.ts chat-message-parts.spec.ts chat-approval-feed.spec.ts chat-route-streaming.spec.ts chat-ui-stream.spec.ts run-agent-stream-parser.spec.ts run-agent-stream-reader.spec.ts
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. playwright_mcp regenerate branching interaction against http://127.0.0.1:4177/chat?fresh=branching-iteration6
+   mocked_endpoints=/api/agents,/api/approvals,/api/chat
+   result=PASS
+   firstAssistant="First draft answer."
+   secondAssistant="Second draft answer."
+   branchIndicatorAfterRegenerate="2 of 2"
+   branchIndicatorAfterPrevious="1 of 2"
+   screenshot=message-branching-iteration6.png
+
+[scope]
+- web/agent-shell/lib/chat-message-branches.js
+- web/agent-shell/lib/chat-message-branches.d.ts
+- web/agent-shell/tests/chat-message-branches.spec.ts
+- web/agent-shell/app/chat/page.tsx
+
+[summary]
+Regenerating the latest assistant response now preserves the prior version as a branch instead of destructively replacing it. The final assistant turn uses ai-elements MessageBranch controls so users can navigate between alternate replies inline.

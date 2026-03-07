@@ -19,3 +19,5 @@
 - 2026-03-08 (Iteration 4): 为避免 UI 双份噪音，已成功分配到 Tool 节点的 pending approval 不再重复显示在 approval inbox；inbox 只承担 fallback 角色。
 - 2026-03-08 (Iteration 5): follow-up suggestions 放在“最后一条 assistant 回复”的 actions 区上方，而不是放到输入框上方做全局 chips；这样建议始终贴着刚刚的上下文，阅读和继续行动在同一位置完成。
 - 2026-03-08 (Iteration 5): suggestion chip 点击后直接复用现有 `submitPrompt` 流程，而不是只填充输入框；目标是降低继续 coding 的动作成本，让用户一击推进下一步。
+- 2026-03-08 (Iteration 6): regenerate 不再视为“覆盖当前 assistant 回复”，而是视为“为同一 user turn 生成另一个候选分支”；因此 branch key 绑定到最近的 user message，而不是 assistant message 自己。
+- 2026-03-08 (Iteration 6): branch history 先保存在前端本地 state，而不侵入 AI SDK 内部 message 结构；这样能最小代价用上现有 `MessageBranch`，同时为后续持久化/服务端同步保留空间。
