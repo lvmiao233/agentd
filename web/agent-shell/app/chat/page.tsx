@@ -111,11 +111,15 @@ export default function ChatPage() {
       setAgentId(null);
       return null;
     }
-    setAgentId((current) =>
-      current && agents.some((agent) => agent.agent_id === current)
-        ? current
-        : preferred.agent_id,
-    );
+    setAgentId((current) => {
+      const currentAgent = current
+        ? agents.find((agent) => agent.agent_id === current)
+        : undefined;
+      if (currentAgent && isAgentRunnable(currentAgent)) {
+        return current;
+      }
+      return preferred.agent_id;
+    });
     return preferred.agent_id;
   };
 
@@ -310,6 +314,9 @@ export default function ChatPage() {
     void submitPrompt(lastSubmittedInputRef.current);
   };
 
+  const selectedAgent = availableAgents.find((candidate) => candidate.agent_id === agentId);
+  const selectedAgentRunnable = selectedAgent ? isAgentRunnable(selectedAgent) : false;
+
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col rounded-xl border border-border bg-card shadow-lg">
       <div className="flex flex-1 flex-col overflow-hidden p-4">
@@ -321,7 +328,7 @@ export default function ChatPage() {
             </p>
           </div>
           <div className="min-w-72">
-            <Select value={agentId ?? ''} onValueChange={setAgentId}>
+            <Select value={agentId ?? undefined} onValueChange={setAgentId}>
               <SelectTrigger aria-label="Active agent selector">
                 <SelectValue placeholder="Select an agent" />
               </SelectTrigger>
@@ -333,12 +340,18 @@ export default function ChatPage() {
                     disabled={!isAgentRunnable(agent)}
                   >
                     {agent.name} · {agent.model} · {agent.status}
+                    {isAgentRunnable(agent) ? '' : ' · unrunnable'}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
         </div>
+        {selectedAgent && !selectedAgentRunnable && (
+          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+            {buildChatAgentUnavailableMessage(selectedAgent)}
+          </div>
+        )}
         {approvalQueue.length > 0 && (
           <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
             <div className="mb-2 font-medium">Pending approvals</div>
@@ -452,6 +465,7 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => setInput(e.currentTarget.value)}
               placeholder="Ask the agent…"
+              disabled={availableAgents.length > 0 && !selectedAgentRunnable}
             />
           </PromptInputBody>
           <PromptInputFooter>
@@ -459,7 +473,7 @@ export default function ChatPage() {
             <PromptInputSubmit
               className="send-button"
               status={status}
-              disabled={!input.trim() && status !== 'streaming'}
+              disabled={(!input.trim() && status !== 'streaming') || (availableAgents.length > 0 && !selectedAgentRunnable)}
             />
           </PromptInputFooter>
         </PromptInput>
