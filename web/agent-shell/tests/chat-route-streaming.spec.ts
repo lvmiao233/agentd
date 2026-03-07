@@ -134,6 +134,68 @@ export async function run() {
   assert.equal(successPayloads[7].finishReason, 'stop', '[DONE] should yield stop finish reason');
   assert.equal(successEvents.at(-1), '[DONE]', 'UI response should terminate with [DONE]');
 
+  const remoteDefaultFetchCalls = [];
+  await handleChatPost(
+    new Request('https://shell.example/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-origin-1',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查远程默认 origin' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async (url) => {
+        remoteDefaultFetchCalls.push(url);
+        return new Response(createReadableStream(['data: [DONE]\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }
+  );
+  assert.equal(
+    remoteDefaultFetchCalls[0],
+    'https://shell.example/rpc',
+    'non-loopback requests should default to request origin when daemonUrl is not provided'
+  );
+
+  const localDefaultFetchCalls = [];
+  await handleChatPost(
+    new Request('http://127.0.0.1:4173/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-origin-2',
+            role: 'user',
+            parts: [{ type: 'text', text: '检查本地默认 origin' }],
+          },
+        ],
+      }),
+    }),
+    {
+      fetchImpl: async (url) => {
+        localDefaultFetchCalls.push(url);
+        return new Response(createReadableStream(['data: [DONE]\n\n']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }
+  );
+  assert.equal(
+    localDefaultFetchCalls[0],
+    'http://127.0.0.1:7000/rpc',
+    'loopback requests should preserve the local daemon default when daemonUrl is not provided'
+  );
+
   const failedResponse = await handleChatPost(
     new Request('http://local.test/api/chat', {
       method: 'POST',

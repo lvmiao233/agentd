@@ -4,7 +4,28 @@ import {
 } from 'ai';
 import { consumeRunAgentStream } from './run-agent-stream-reader.mjs';
 
-const DEFAULT_DAEMON_URL = process.env.AGENTD_DAEMON_URL ?? 'http://127.0.0.1:7000';
+const LOCAL_DAEMON_URL = 'http://127.0.0.1:7000';
+
+function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function resolveDaemonUrl(req, daemonUrlOverride) {
+  if (typeof daemonUrlOverride === 'string' && daemonUrlOverride.trim()) {
+    return daemonUrlOverride.replace(/\/$/, '');
+  }
+
+  if (typeof process.env.AGENTD_DAEMON_URL === 'string' && process.env.AGENTD_DAEMON_URL.trim()) {
+    return process.env.AGENTD_DAEMON_URL.replace(/\/$/, '');
+  }
+
+  const requestUrl = new URL(req.url);
+  if (isLoopbackHostname(requestUrl.hostname)) {
+    return LOCAL_DAEMON_URL;
+  }
+
+  return requestUrl.origin;
+}
 
 export function buildConversationInput(messages) {
   const normalized = messages
@@ -51,7 +72,7 @@ function describeTransportFailure(error) {
 
 export async function handleChatPost(
   req,
-  { fetchImpl = fetch, daemonUrl = DEFAULT_DAEMON_URL } = {}
+  { fetchImpl = fetch, daemonUrl } = {}
 ) {
   const {
     messages,
@@ -61,13 +82,14 @@ export async function handleChatPost(
 
   const selectedModel = modelId ?? 'gpt-5.3-codex';
   const input = buildConversationInput(messages);
+  const resolvedDaemonUrl = resolveDaemonUrl(req, daemonUrl);
   if (!input) {
     return buildSingleTextStreamResponse('Please provide a message to run.');
   }
 
   let response;
   try {
-    response = await fetchImpl(`${daemonUrl}/rpc`, {
+    response = await fetchImpl(`${resolvedDaemonUrl}/rpc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

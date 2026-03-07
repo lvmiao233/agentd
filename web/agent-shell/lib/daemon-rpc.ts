@@ -1,11 +1,62 @@
-const DAEMON_URL =
-  process.env.NEXT_PUBLIC_AGENTD_DAEMON_URL ??
-  process.env.AGENTD_DAEMON_URL ??
-  'http://127.0.0.1:7000';
-const DAEMON_WS_URL =
-  process.env.NEXT_PUBLIC_AGENTD_DAEMON_WS_URL ??
-  process.env.AGENTD_DAEMON_WS_URL ??
-  'ws://127.0.0.1:7000/ws';
+const LOCAL_DAEMON_HTTP_URL = 'http://127.0.0.1:7000';
+const LOCAL_DAEMON_WS_URL = 'ws://127.0.0.1:7000/ws';
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+function wsUrlFromHttpBase(httpBaseUrl: string): string {
+  const url = new URL(httpBaseUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/ws';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+function resolveDaemonHttpUrl(): string {
+  const configuredUrl =
+    process.env.NEXT_PUBLIC_AGENTD_DAEMON_URL ?? process.env.AGENTD_DAEMON_URL;
+  if (configuredUrl) {
+    return trimTrailingSlash(configuredUrl);
+  }
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname, host } = window.location;
+    if (!isLoopbackHostname(hostname)) {
+      return `${protocol}//${host}`;
+    }
+  }
+
+  return LOCAL_DAEMON_HTTP_URL;
+}
+
+function resolveDaemonWsUrl(): string {
+  const configuredWsUrl =
+    process.env.NEXT_PUBLIC_AGENTD_DAEMON_WS_URL ?? process.env.AGENTD_DAEMON_WS_URL;
+  if (configuredWsUrl) {
+    return configuredWsUrl;
+  }
+
+  const configuredHttpUrl =
+    process.env.NEXT_PUBLIC_AGENTD_DAEMON_URL ?? process.env.AGENTD_DAEMON_URL;
+  if (configuredHttpUrl) {
+    return wsUrlFromHttpBase(trimTrailingSlash(configuredHttpUrl));
+  }
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname, host } = window.location;
+    if (!isLoopbackHostname(hostname)) {
+      return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/ws`;
+    }
+  }
+
+  return LOCAL_DAEMON_WS_URL;
+}
 
 let rpcIdCounter = 0;
 function nextId(): number {
@@ -38,7 +89,7 @@ async function rpcCall<T = unknown>(method: string, params: unknown = {}): Promi
     params,
   });
 
-  const response = await fetch(`${DAEMON_URL}/rpc`, {
+  const response = await fetch(`${resolveDaemonHttpUrl()}/rpc`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
@@ -388,7 +439,7 @@ export async function startManagedAgent(params: {
 // --- WebSocket Client ---
 
 export function createDaemonWs(): WebSocket {
-  return new WebSocket(DAEMON_WS_URL);
+  return new WebSocket(resolveDaemonWsUrl());
 }
 
 export function sendWsRpc(
