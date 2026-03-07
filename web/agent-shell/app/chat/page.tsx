@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Fragment, useEffect } from 'react';
+import { useState, Fragment, useEffect, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import {
   DefaultChatTransport,
@@ -73,7 +73,7 @@ function buildChatRequestBody(agent: ChatAgentOption) {
   return {
     model: agent.model,
     agentId: agent.agent_id,
-    sessionId: agentLiteSessionId(agent.agent_id),
+    sessionId: `${agentLiteSessionId(agent.agent_id)}-${nextMessageId()}`,
     runtime: 'agent-lite',
   };
 }
@@ -93,6 +93,7 @@ export default function ChatPage() {
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const previousAgentIdRef = useRef<string | null>(null);
 
   const {
     messages,
@@ -102,6 +103,7 @@ export default function ChatPage() {
     regenerate,
     stop,
     clearError,
+    setMessages,
   } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     experimental_throttle: 40,
@@ -193,6 +195,24 @@ export default function ChatPage() {
 
     return () => clearInterval(timer);
   }, [agentId]);
+
+  useEffect(() => {
+    const previousAgentId = previousAgentIdRef.current;
+    previousAgentIdRef.current = agentId || null;
+
+    if (!previousAgentId || !agentId || previousAgentId === agentId) {
+      return;
+    }
+
+    if (messages.length === 0) {
+      return;
+    }
+
+    clearError();
+    setMessages([]);
+    setInput('');
+    setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
+  }, [agentId, clearError, messages.length, setMessages]);
 
   const handleApprovalDecision = async (
     approvalId: string,

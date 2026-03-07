@@ -134,6 +134,7 @@ export async function handleChatPost(
     response = await fetchImpl(`${resolvedDaemonUrl}/rpc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: req.signal,
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: Date.now(),
