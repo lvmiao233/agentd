@@ -175,7 +175,7 @@ export async function handleChatPost(
         },
       };
 
-      const { emitted, finishReason } = await consumeRunAgentStream({
+      const { emitted, terminalReached, finishReason } = await consumeRunAgentStream({
         responseBody,
         textId,
         writer: streamingWriter,
@@ -193,11 +193,26 @@ export async function handleChatPost(
         });
       }
 
+      if (emitted && !terminalReached) {
+        if (!textStarted) {
+          writer.write({ type: 'text-start', id: textId });
+          textStarted = true;
+        }
+        writer.write({
+          type: 'text-delta',
+          id: textId,
+          delta: 'RunAgent stream ended before a terminal event.',
+        });
+      }
+
       if (textStarted) {
         writer.write({ type: 'text-end', id: textId });
       }
       writer.write({ type: 'finish-step' });
-      writer.write({ type: 'finish', finishReason: finishReason ?? 'stop' });
+      writer.write({
+        type: 'finish',
+        finishReason: terminalReached ? finishReason ?? 'stop' : 'error',
+      });
     },
   });
 

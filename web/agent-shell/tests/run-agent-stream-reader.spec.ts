@@ -27,6 +27,7 @@ export async function run() {
       'tput":"Hel',
       'lo"}}}\n',
       '\n',
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_start","name":"lookup","phase":"input-start"}]}}}\n\n',
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_1","function":{"name":"lookup","arguments":"{\\"path\\":\\"/tmp/a\\"}"}}]}}}\n\n',
       'data: {"result":{"status":"completed","type":"done"}}\n\n',
     ]),
@@ -43,10 +44,38 @@ export async function run() {
     delta: 'Hello',
   });
   assert.deepEqual(writes[1], {
+    type: 'tool-input-start',
+    toolCallId: 'call_start',
+    toolName: 'lookup',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_1',
     toolName: 'lookup',
     input: { path: '/tmp/a' },
+  });
+
+  writes.length = 0;
+  const toolErrorOutcome = await consumeRunAgentStream({
+    responseBody: createReadableStream([
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_error","name":"lookup","arguments":"{\\"path\\":\\"/tmp/secret\\"}","error":{"message":"denied"}}]}}}\n\n',
+    ]),
+    textId: 'text-tool-error',
+    writer,
+  });
+
+  assert.equal(toolErrorOutcome.emitted, true, 'tool error stream should emit content');
+  assert.equal(toolErrorOutcome.terminalReached, false, 'tool error frame itself should not terminate stream');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-available',
+    toolCallId: 'call_error',
+    toolName: 'lookup',
+    input: { path: '/tmp/secret' },
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-output-error',
+    toolCallId: 'call_error',
+    errorText: 'denied',
   });
 
   writes.length = 0;

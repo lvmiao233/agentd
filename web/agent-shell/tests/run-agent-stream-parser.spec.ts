@@ -27,6 +27,22 @@ export async function run() {
   });
 
   writes.length = 0;
+  const toolStartOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_start","name":"mcp.fs.read_file","phase":"input-start"}]}}}',
+    textId: 'text-start',
+    writer,
+  });
+
+  assert.equal(toolStartOutcome.emitted, true, 'tool-input-start frame should emit chunks');
+  assert.equal(toolStartOutcome.terminalReached, false, 'tool-input-start frame should stay non-terminal');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_start',
+    toolName: 'mcp.fs.read_file',
+  });
+
+  writes.length = 0;
   const fallbackArgsOutcome = emitRunAgentStreamLine({
     lineRaw:
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_2","type":"function","function":{"name":"lookup","arguments":"not-json"}}]}}}',
@@ -66,7 +82,6 @@ export async function run() {
     type: 'tool-output-available',
     toolCallId: 'call_3',
     output: { text: 'done' },
-    errorText: undefined,
   });
 
   writes.length = 0;
@@ -88,7 +103,27 @@ export async function run() {
     type: 'tool-output-available',
     toolCallId: 'call_flat',
     output: { content: 'ok' },
-    errorText: undefined,
+  });
+
+  writes.length = 0;
+  const toolErrorOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_err","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}","error":{"message":"permission denied"}}]}}}',
+    textId: 'text-error',
+    writer,
+  });
+
+  assert.equal(toolErrorOutcome.emitted, true, 'tool error frame should emit chunks');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-available',
+    toolCallId: 'call_err',
+    toolName: 'mcp.fs.read_file',
+    input: { path: 'README.md' },
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-output-error',
+    toolCallId: 'call_err',
+    errorText: 'permission denied',
   });
 
   writes.length = 0;

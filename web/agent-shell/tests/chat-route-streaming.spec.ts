@@ -265,6 +265,7 @@ export async function run() {
       fetchImpl: async () =>
         new Response(
           createReadableStream([
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_tool_first","name":"mcp.fs.read_file","phase":"input-start"}]}}}\n\n',
             'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_tool_first","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}\n\n',
             'data: {"result":{"llm":{"output":"agentd"}}}\n\n',
             'data: [DONE]\n\n',
@@ -283,6 +284,7 @@ export async function run() {
     [
       'start',
       'start-step',
+      'tool-input-start',
       'tool-input-available',
       'text-start',
       'text-delta',
@@ -291,6 +293,136 @@ export async function run() {
       'finish',
     ],
     'tool-first daemon frames should preserve tool ordering before assistant text starts'
+  );
+
+  const toolLifecycleResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-tool-life',
+            role: 'user',
+            parts: [{ type: 'text', text: 'trace tool lifecycle' }],
+          },
+        ],
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async () =>
+        new Response(
+          createReadableStream([
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_life","name":"mcp.fs.read_file","phase":"input-start"}]}}}\n\n',
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_life","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}\n\n',
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_life","output":{"content":"ok"}}]}}}\n\n',
+            'data: [DONE]\n\n',
+          ]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          }
+        ),
+    }
+  );
+  const toolLifecycleEvents = await readResponseEvents(toolLifecycleResponse);
+  const toolLifecyclePayloads = toolLifecycleEvents.filter((event) => event !== '[DONE]');
+  assert.deepEqual(
+    toolLifecyclePayloads.map((event) => event.type),
+    [
+      'start',
+      'start-step',
+      'tool-input-start',
+      'tool-input-available',
+      'tool-output-available',
+      'finish-step',
+      'finish',
+    ],
+    'tool lifecycle frames should preserve preparing, running, and completed phases'
+  );
+
+  const toolErrorResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-tool-error',
+            role: 'user',
+            parts: [{ type: 'text', text: 'trace tool error lifecycle' }],
+          },
+        ],
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async () =>
+        new Response(
+          createReadableStream([
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_error","name":"mcp.fs.read_file","phase":"input-start"}]}}}\n\n',
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_error","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}\n\n',
+            'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_error","error":{"message":"permission denied"}}]}}}\n\n',
+            'data: [DONE]\n\n',
+          ]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          }
+        ),
+    }
+  );
+  const toolErrorEvents = await readResponseEvents(toolErrorResponse);
+  const toolErrorPayloads = toolErrorEvents.filter((event) => event !== '[DONE]');
+  assert.deepEqual(
+    toolErrorPayloads.map((event) => event.type),
+    [
+      'start',
+      'start-step',
+      'tool-input-start',
+      'tool-input-available',
+      'tool-output-error',
+      'finish-step',
+      'finish',
+    ],
+    'tool errors should surface as error-state tool events instead of completed outputs'
+  );
+
+  const truncatedResponse = await handleChatPost(
+    new Request('http://local.test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-truncated',
+            role: 'user',
+            parts: [{ type: 'text', text: 'check truncated stream' }],
+          },
+        ],
+      }),
+    }),
+    {
+      daemonUrl: 'http://daemon.test:7000',
+      fetchImpl: async () =>
+        new Response(createReadableStream(['data: {"result":{"llm":{"output":"partial"}}}']), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+    }
+  );
+  const truncatedEvents = await readResponseEvents(truncatedResponse);
+  const truncatedPayloads = truncatedEvents.filter((event) => event !== '[DONE]');
+  assert.deepEqual(
+    truncatedPayloads.filter((event) => event.type === 'text-delta').map((event) => event.delta),
+    ['partial', 'RunAgent stream ended before a terminal event.'],
+    'truncated streams should preserve partial text and surface a terminal error hint'
+  );
+  assert.equal(
+    truncatedPayloads.at(-1).finishReason,
+    'error',
+    'truncated streams should finish as error instead of stop'
   );
 
   const remoteDefaultFetchCalls = [];

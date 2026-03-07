@@ -65,12 +65,12 @@ function extractStreamToolCalls(frame) {
       let name;
       let argumentsText = '';
       let hasInput = false;
+      let inputStarted = false;
 
       if (functionValue && typeof functionValue === 'object') {
         const nameValue = functionValue.name;
         if (typeof nameValue === 'string' && nameValue.trim()) {
           name = nameValue;
-          hasInput = true;
         }
 
         const argumentsValue = functionValue.arguments;
@@ -88,9 +88,16 @@ function extractStreamToolCalls(frame) {
           const value = call[key];
           if (typeof value === 'string' && value.trim()) {
             name = value;
-            hasInput = true;
             break;
           }
+        }
+      }
+
+      for (const key of ['phase', 'state', 'status']) {
+        const value = call[key];
+        if (value === 'input-start') {
+          inputStarted = true;
+          break;
         }
       }
 
@@ -115,6 +122,7 @@ function extractStreamToolCalls(frame) {
         name: typeof name === 'string' && name.trim() ? name : 'unknown_tool',
         argumentsText,
         hasInput,
+        inputStarted,
         output: call.output,
         errorText:
           typeof call.error === 'string'
@@ -194,6 +202,13 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
   const toolCalls = extractStreamToolCalls(parsed);
   if (toolCalls.length > 0) {
     for (const toolCall of toolCalls) {
+      if (toolCall.inputStarted) {
+        writer.write({
+          type: 'tool-input-start',
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+        });
+      }
       if (toolCall.hasInput) {
         writer.write({
           type: 'tool-input-available',
@@ -202,12 +217,17 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
           input: parseToolCallInput(toolCall.argumentsText),
         });
       }
-      if (toolCall.output !== undefined || toolCall.errorText !== undefined) {
+      if (toolCall.errorText !== undefined) {
+        writer.write({
+          type: 'tool-output-error',
+          toolCallId: toolCall.id,
+          errorText: toolCall.errorText,
+        });
+      } else if (toolCall.output !== undefined) {
         writer.write({
           type: 'tool-output-available',
           toolCallId: toolCall.id,
           output: toolCall.output,
-          errorText: toolCall.errorText,
         });
       }
     }
