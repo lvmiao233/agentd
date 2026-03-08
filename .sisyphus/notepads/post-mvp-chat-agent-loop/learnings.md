@@ -120,3 +120,4 @@
 - 2026-03-09 (Iteration 34): 对 continuation 去重来说，删掉 message-level chips 比删掉 composer strip 更合理。因为前几轮已经明确把输入区附近定义为主要 steering 层，继续把下一步动作留在那儿，信息架构才一致。
 - 2026-03-09 (Iteration 37): composer 上方的状态条并不需要分别把 active 与 approval 都摊开；用户真正需要的是“此刻最重要的状态”。把 approval 提升为统一 run-status strip 的高优先级分支后，输入区附近的状态语义更直接了。
 - 2026-03-09 (Iteration 37): 统一 run-status strip 时，审批态与 active 态共享同一套按钮区很值：审批态优先暴露 `Review/Approve/Deny`，若 run 仍在进行则追加 `Stop current run`，这样用户能在一条带里完成“看清阻塞 + 决策 + 中止”的闭环。
+- 2026-03-09 (Iteration 37b): run-status strip 统一之后，还要把 cockpit footer 的同类动作一起收掉，否则 active/blocked 场景仍会残留第二主入口。真正的“单一主状态面”不仅是合并 banner，也包括让其他层的同类动作退场。
