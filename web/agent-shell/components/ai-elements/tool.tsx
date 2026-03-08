@@ -15,6 +15,7 @@ import {
   ChevronDownIcon,
   CircleIcon,
   ClockIcon,
+  LoaderCircleIcon,
   WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
@@ -183,6 +184,56 @@ export const ToolOutput = ({
         {errorText && <div>{errorText}</div>}
         {Output}
       </div>
+    </div>
+  );
+};
+
+export type ToolProgressProps = ComponentProps<"div"> & {
+  state: ToolPart["state"];
+  toolName: string;
+};
+
+function getProgressMessage({ state, toolName }: ToolProgressProps) {
+  switch (state) {
+    case "input-streaming":
+      return `Collecting ${toolName} parameters…`;
+    case "input-available":
+      return `${toolName} is running…`;
+    case "approval-requested":
+      return `${toolName} is waiting for approval.`;
+    case "approval-responded":
+      return `${toolName} approval received. Resuming execution…`;
+    default:
+      return null;
+  }
+}
+
+export const ToolProgress = ({
+  className,
+  state,
+  toolName,
+  ...props
+}: ToolProgressProps) => {
+  const message = getProgressMessage({ state, toolName });
+
+  if (!message) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm text-muted-foreground",
+        className
+      )}
+      {...props}
+    >
+      {state === "input-available" ? (
+        <LoaderCircleIcon className="size-4 animate-spin" />
+      ) : (
+        <ClockIcon className="size-4" />
+      )}
+      <span>{message}</span>
     </div>
   );
 };

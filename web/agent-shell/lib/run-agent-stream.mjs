@@ -207,6 +207,7 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
           type: 'tool-input-start',
           toolCallId: toolCall.id,
           toolName: toolCall.name,
+          dynamic: true,
         });
       }
       if (toolCall.hasInput) {
@@ -215,6 +216,7 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
           toolCallId: toolCall.id,
           toolName: toolCall.name,
           input: parseToolCallInput(toolCall.argumentsText),
+          dynamic: true,
         });
       }
       if (toolCall.errorText !== undefined) {

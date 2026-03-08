@@ -95,6 +95,7 @@ import {
   ToolContent,
   ToolInput,
   ToolOutput,
+  ToolProgress,
 } from '@/components/ai-elements/tool';
 import ChatCockpitPlanPanel from '@/components/chat-cockpit-plan';
 import ChatCommandMenu from '@/components/chat-command-menu';
@@ -893,12 +894,18 @@ export default function ChatPage() {
                       const linkedApproval = allowLinkedApprovals
                         ? toolApprovalAssignments.get(`${targetMessage.id}-tool-${partIndex}`)
                         : undefined;
+                      const toolDisplayName = getToolDisplayName({
+                        type: part.type,
+                        toolName: part.type === 'dynamic-tool' ? part.toolName : undefined,
+                      });
                       variantSegments.push(
                         <Tool
                           id={`chat-tool-${targetMessage.id}-${partIndex}`}
                           className="scroll-mt-24"
                           key={toolKey}
                           defaultOpen={
+                            part.state === 'input-streaming' ||
+                            part.state === 'input-available' ||
                             part.state === 'output-available' ||
                             part.state === 'output-error' ||
                             linkedApproval !== undefined
@@ -910,6 +917,7 @@ export default function ChatPage() {
                             <ToolHeader type={part.type} state={part.state} />
                           )}
                           <ToolContent>
+                            <ToolProgress state={part.state} toolName={toolDisplayName} />
                             {linkedApproval && (
                               <Confirmation id={`chat-approval-${linkedApproval.id}`} state="approval-requested" className="scroll-mt-24">
                                 <ConfirmationRequest>
@@ -1058,20 +1066,26 @@ export default function ChatPage() {
                 };
 
                 for (const [partIndex, part] of message.parts.entries()) {
-                  if (isToolUIPart(part)) {
-                    flushContentParts();
-                    const toolKey = `${message.id}-tool-${partIndex}`;
-                    const linkedApproval = toolApprovalAssignments.get(toolKey);
-                    renderedSegments.push(
-                      <Tool
-                        id={`chat-tool-${message.id}-${partIndex}`}
-                        className="scroll-mt-24"
-                        key={toolKey}
-                        defaultOpen={
-                          part.state === 'output-available' ||
-                          part.state === 'output-error' ||
-                          linkedApproval !== undefined
-                        }
+                    if (isToolUIPart(part)) {
+                      flushContentParts();
+                      const toolKey = `${message.id}-tool-${partIndex}`;
+                      const linkedApproval = toolApprovalAssignments.get(toolKey);
+                      const toolDisplayName = getToolDisplayName({
+                        type: part.type,
+                        toolName: part.type === 'dynamic-tool' ? part.toolName : undefined,
+                      });
+                      renderedSegments.push(
+                        <Tool
+                          id={`chat-tool-${message.id}-${partIndex}`}
+                          className="scroll-mt-24"
+                          key={toolKey}
+                          defaultOpen={
+                            part.state === 'input-streaming' ||
+                            part.state === 'input-available' ||
+                            part.state === 'output-available' ||
+                            part.state === 'output-error' ||
+                            linkedApproval !== undefined
+                          }
                       >
                         {part.type === 'dynamic-tool' ? (
                           <ToolHeader
@@ -1083,6 +1097,7 @@ export default function ChatPage() {
                           <ToolHeader type={part.type} state={part.state} />
                         )}
                         <ToolContent>
+                          <ToolProgress state={part.state} toolName={toolDisplayName} />
                           {linkedApproval && (
                             <Confirmation id={`chat-approval-${linkedApproval.id}`} state="approval-requested" className="scroll-mt-24">
                               <ConfirmationRequest>

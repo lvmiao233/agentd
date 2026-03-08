@@ -47,12 +47,14 @@ export async function run() {
     type: 'tool-input-start',
     toolCallId: 'call_start',
     toolName: 'lookup',
+    dynamic: true,
   });
   assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_1',
     toolName: 'lookup',
     input: { path: '/tmp/a' },
+    dynamic: true,
   });
 
   writes.length = 0;
@@ -71,6 +73,7 @@ export async function run() {
     toolCallId: 'call_error',
     toolName: 'lookup',
     input: { path: '/tmp/secret' },
+    dynamic: true,
   });
   assert.deepEqual(writes[1], {
     type: 'tool-output-error',

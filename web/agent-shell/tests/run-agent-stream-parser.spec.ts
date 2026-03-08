@@ -24,6 +24,7 @@ export async function run() {
     toolCallId: 'call_1',
     toolName: 'lookup',
     input: { path: '/tmp/file.txt' },
+    dynamic: true,
   });
 
   writes.length = 0;
@@ -40,6 +41,7 @@ export async function run() {
     type: 'tool-input-start',
     toolCallId: 'call_start',
     toolName: 'mcp.fs.read_file',
+    dynamic: true,
   });
 
   writes.length = 0;
@@ -61,6 +63,7 @@ export async function run() {
     toolCallId: 'call_2',
     toolName: 'lookup',
     input: 'not-json',
+    dynamic: true,
   });
 
   writes.length = 0;
@@ -77,6 +80,7 @@ export async function run() {
     toolCallId: 'call_3',
     toolName: 'lookup',
     input: { path: '/tmp/out.txt' },
+    dynamic: true,
   });
   assert.deepEqual(writes[1], {
     type: 'tool-output-available',
@@ -98,6 +102,7 @@ export async function run() {
     toolCallId: 'call_flat',
     toolName: 'mcp.fs.read_file',
     input: { path: 'README.md' },
+    dynamic: true,
   });
   assert.deepEqual(writes[1], {
     type: 'tool-output-available',
@@ -119,6 +124,7 @@ export async function run() {
     toolCallId: 'call_err',
     toolName: 'mcp.fs.read_file',
     input: { path: 'README.md' },
+    dynamic: true,
   });
   assert.deepEqual(writes[1], {
     type: 'tool-output-error',

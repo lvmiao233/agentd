@@ -288,6 +288,7 @@ export async function run() {
     toolCallId: 'call_1',
     toolName: 'lookup',
     input: { path: '/tmp/a' },
+    dynamic: true,
   });
   assert.equal(successPayloads[7].finishReason, 'stop', '[DONE] should yield stop finish reason');
   assert.equal(successEvents.at(-1), '[DONE]', 'UI response should terminate with [DONE]');
