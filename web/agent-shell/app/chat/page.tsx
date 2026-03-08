@@ -903,6 +903,7 @@ export default function ChatPage() {
     messages.length > 0 && (status === 'ready' || status === 'error')
       ? resumeActions.filter((action) => action.kind === 'prompt' && action.prompt).slice(0, 3)
       : [];
+  const cockpitResumeActions = composerFollowUpActions.length > 0 ? [] : resumeActions;
   const sessionTimeline = buildChatSessionTimeline({
     checkpoints,
     status,
@@ -1049,7 +1050,7 @@ export default function ChatPage() {
           <ChatCockpitPlanPanel
             plan={cockpitPlan}
             runOverview={runOverview}
-            resumeActions={resumeActions}
+            resumeActions={cockpitResumeActions}
             approvalQueue={approvalQueue}
             approvalBusyId={approvalBusyId}
             sessionTimeline={sessionTimeline}
