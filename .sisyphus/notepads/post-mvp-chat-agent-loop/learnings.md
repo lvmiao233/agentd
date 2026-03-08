@@ -40,3 +40,5 @@
 - 2026-03-08 (Iteration 10): 真实浏览器回放已验证两种关键语义：无草稿时 starter command 会直接发送；有草稿时 contextual command 会把 prompt 插入草稿而不覆盖原文，随后由用户显式提交。
 - 2026-03-08 (Iteration 11): 对 run overview 这类“摘要层”最稳的可交互增强不是上复杂状态管理，而是给现有 conversation 节点补稳定 `id`，再让 overview item 持有 `targetId`；这样能在不改协议的前提下获得高价值深链能力。
 - 2026-03-08 (Iteration 11): 真实浏览器回放已验证 overview deep-link 的关键闭环：点击 `Tool activity` 或 `Pending approvals` 中的条目后，对应目标节点会被滚动到视口中心并打上临时 highlight ring，足够支撑长会话导航。
+- 2026-03-08 (Iteration 11 follow-up): 对 ai-elements `MessageBranch` 这类“隐藏但不卸载”的分支容器，DOM id 必须 branch-safe；只要旧分支节点还留在树里，重复 id 就会直接破坏 deep-link 的确定性。
+- 2026-03-08 (Iteration 11 follow-up): 对 run overview 的 assistant summary，最佳 target 不是“固定指向 assistant message”，而是“优先文本消息，否则首个工具”；这样更贴近 AI SDK 里 tool-first / tool-only assistant turn 的真实形态。

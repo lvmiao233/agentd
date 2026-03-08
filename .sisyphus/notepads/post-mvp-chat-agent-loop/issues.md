@@ -22,3 +22,4 @@
 - 2026-03-08 (Iteration 10): 浏览器里验证 command palette 的 streaming stop 分支时，若 mock SSE 过早结束，`useChat` 会很快回到 `ready`，导致 `Stop current run` 不出现；因此本轮把真实验证重点放在 starter command 与 contextual commands 这两条确定性路径上。
 - 2026-03-08 (Iteration 11): `build` 可以通过而 spec 在运行时崩掉：本轮 `chat-run-overview.js` 初版遗漏了 `partIndex`，只有在 `chat-run-overview.spec.ts` 真正执行时才暴露 `ReferenceError`；说明 overview 这类纯 JS helper 不能只依赖 TS/LSP 和 Next build。
 - 2026-03-08 (Iteration 11): Playwright 验证 overview deep-link 时不能假设 assistant message id 的具体格式，`useChat` 会生成自己的 message id；更稳的做法是先从 DOM 读取真实 `chat-tool-*` id，再验证点击后的高亮与定位效果。
+- 2026-03-08 (Iteration 11 follow-up): Oracle 复核抓到的 branch-id/assistant-target 两个问题都不是静态类型能覆盖到的；它们依赖“分支 DOM 仍在树里”和“tool-only assistant turn 没有 message bubble”这类真实渲染语义，因此需要 helper spec + 浏览器回放双重兜底。

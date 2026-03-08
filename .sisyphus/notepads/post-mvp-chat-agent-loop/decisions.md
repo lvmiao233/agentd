@@ -39,3 +39,5 @@
 - 2026-03-08 (Iteration 10): 当命令面板在“已有草稿或附件”时被触发，优先把命令插入到现有草稿中而不是立即发送；只有在输入为空时才走一键直发，这样能兼顾低摩擦与草稿安全。
 - 2026-03-08 (Iteration 11): 本轮优先把 run overview 做成可导航控制面板，而不是继续扩展新的输入命令或展示组件；原因是 overview 已经有足够多的状态信息，下一步最高性价比是把“看见状态”升级成“直接跳到上下文”。
 - 2026-03-08 (Iteration 11): run overview 导航先采用最小风险方案：前端派生 `targetId`，现有消息/工具/approval 节点补稳定 DOM `id`，点击 overview item 后 `scrollIntoView + transient highlight`；不引入额外 ref map，也不侵入 AI SDK message schema。
+- 2026-03-08 (Iteration 11 follow-up): 分支消息内的 tool anchor 必须使用当前 `targetMessage.id`，不能复用外层 message id；否则 hidden branch 也会占用相同 DOM id，deep-link 可能跳到错误版本。
+- 2026-03-08 (Iteration 11 follow-up): assistant-state 的 target 不应盲目指向 `chat-message-*`；当 assistant turn 只有 tool part、没有真正 message bubble 时，需回退到首个 tool anchor，避免死链。
