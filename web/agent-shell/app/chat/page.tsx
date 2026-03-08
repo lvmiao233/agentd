@@ -665,6 +665,9 @@ export default function ChatPage() {
     selectedAgentRunnable: commandPaletteRunnable,
   });
   const resumeActions = buildChatResumeActions(commandMenuItems);
+  const starterPromptActions = messages.length === 0
+    ? resumeActions.filter((action) => action.kind === 'prompt').slice(0, 3)
+    : [];
   const sessionTimeline = buildChatSessionTimeline({
     checkpoints,
     status,
@@ -825,6 +828,29 @@ export default function ChatPage() {
           />
         </div>
 
+        {starterPromptActions.length > 0 && (
+          <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
+            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Start with a coding action
+            </div>
+            <Suggestions className="mt-2">
+              {starterPromptActions.map((action) => (
+                <Suggestion
+                  key={action.id}
+                  disabled={action.disabled}
+                  onClick={() => void handleResumeAction(action)}
+                  title={action.description}
+                >
+                  {action.title}
+                </Suggestion>
+              ))}
+            </Suggestions>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Or open Commands to pick another workflow prompt.
+            </p>
+          </div>
+        )}
+
         <Conversation className="min-h-0">
           <ConversationDownload
             messages={messages.map((message) => ({ role: message.role, content: extractMessageText(message) || '[non-text message]' }))}
@@ -832,10 +858,26 @@ export default function ChatPage() {
           <ConversationContent className="pt-2 pb-24">
             {messages.length === 0 && approvalFeed.length === 0 ? (
               <ConversationEmptyState
+                className="min-h-[24rem] justify-start pt-10"
                 icon={<MessageSquare className="size-12" />}
                 title="Agent Chat"
                 description="与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控"
-              />
+              >
+                <div className="flex flex-col items-center gap-4 text-center">
+                  <MessageSquare className="size-12 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <h3 className="font-medium text-sm">Agent Chat</h3>
+                    <p className="text-muted-foreground text-sm">
+                      与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控
+                    </p>
+                  </div>
+                  {starterPromptActions.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Use the quick-start actions above to begin a coding run immediately.
+                    </p>
+                  )}
+                </div>
+              </ConversationEmptyState>
             ) : (
               messages.map((message, messageIndex) => {
                 const renderedSegments: ReactNode[] = [];
