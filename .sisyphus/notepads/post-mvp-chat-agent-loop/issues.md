@@ -25,3 +25,5 @@
 - 2026-03-08 (Iteration 11 follow-up): Oracle 复核抓到的 branch-id/assistant-target 两个问题都不是静态类型能覆盖到的；它们依赖“分支 DOM 仍在树里”和“tool-only assistant turn 没有 message bubble”这类真实渲染语义，因此需要 helper spec + 浏览器回放双重兜底。
 - 2026-03-08 (Iteration 12): `next dev` 某些布局下 Playwright 真实点击 checkpoint button 会被 sticky/overlay 区域拦截，但 DOM 触发仍能正确走恢复逻辑；这说明功能本身是好的，但后续如果要加强 E2E 稳定性，最好给 checkpoint trigger 一个更稳定的测试选择器或更明确的可点击区域。
 - 2026-03-08 (Iteration 12): `next start` 在当前环境里仍偶发 chunk/runtime 异常，不适合作为这一轮主要浏览器验证通道；本轮真实回放最终采用全新 `next dev :4186` 实例完成。
+- 2026-03-08 (Iteration 13): Momus 这次没有真正审到计划本体，因为它要求一个单独的 `.sisyphus/plans/*.md` 路径；对于这种小型 frontend iteration，直接以内联计划推进并不影响落地，但若后续继续频繁使用 Momus，最好给它一个临时 plan 文件。
+- 2026-03-08 (Iteration 13): resume bar 浏览器回放里仍伴随 dev 模式 RSC payload 噪音，但不影响核心交互验证；当前应将其视为环境噪声，而不是本特性的功能回归。

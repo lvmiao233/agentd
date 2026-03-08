@@ -43,3 +43,5 @@
 - 2026-03-08 (Iteration 11 follow-up): assistant-state 的 target 不应盲目指向 `chat-message-*`；当 assistant turn 只有 tool part、没有真正 message bubble 时，需回退到首个 tool anchor，避免死链。
 - 2026-03-08 (Iteration 12): 下一步优先做 conversation checkpoints，而不是继续扩充 run overview 顶部操作栏；原因是长任务除了“知道现在在哪”之外，还缺少“回到之前某一步重新探索”的低摩擦恢复能力。
 - 2026-03-08 (Iteration 12): checkpoint 本轮严格限定为前端会话级恢复：自动为已完成的 assistant turn 生成 snapshot，恢复时回滚 `messages / resolvedApprovals / messageBranchHistory / checkpoint list`，不声称回滚 daemon 内部状态，也不跨刷新持久化。
+- 2026-03-08 (Iteration 13): 完成 checkpoint 后，下一步最高影响的问题重新回到“继续推进任务仍然要滚到底部”；因此本轮把 follow-up actions 提升到 run overview 顶部，形成常驻的 resume action bar。
+- 2026-03-08 (Iteration 13): resume action bar 不引入新的 action schema，只复用 `buildChatCommandItems()` 的结果再做轻量筛选；这样顶部动作与 command palette / 底部 suggestions 共享同一套语义来源，避免三套逻辑漂移。

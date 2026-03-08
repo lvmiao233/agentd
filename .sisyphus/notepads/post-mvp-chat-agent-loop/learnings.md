@@ -45,3 +45,5 @@
 - 2026-03-08 (Iteration 12): ai-elements 官方 `Checkpoint` 非常轻量，真正有价值的部分不在组件本身，而在 snapshot 策略；把 snapshot helper 独立到 `lib/chat-checkpoints.js` 后，checkpoint 的生成/去重/裁剪都更容易稳定测试。
 - 2026-03-08 (Iteration 12): 对当前架构来说，checkpoint 恢复最稳的语义不是“回滚后端 session”，而是“回滚下一次提交给模型的前端会话历史”；因为当前 chat 请求本来就是按前端 message history 驱动的，这样不会额外引入协议耦合。
 - 2026-03-08 (Iteration 12): 真实浏览器回放已验证 checkpoint 核心闭环：两轮 assistant 回复后生成 checkpoint，点击第一轮 checkpoint 会移除第二轮消息并显示 restore notice，说明恢复链路真实可用。
+- 2026-03-08 (Iteration 13): 将顶部 resume bar 建立在 `commandMenuItems` 之上，而不是直接重复调用 `buildFollowUpSuggestions()`，可以天然复用已存在的 prompt title / disabled / action 语义；这比手动再拼一组 chips 更稳。
+- 2026-03-08 (Iteration 13): 真实浏览器回放已验证顶层 resume action 的价值：在 run overview 中点击 `Continue coding` 会直接触发第二轮 `/api/chat` 请求并渲染后续响应，真正消除了“必须滚到底部再继续”的摩擦。
