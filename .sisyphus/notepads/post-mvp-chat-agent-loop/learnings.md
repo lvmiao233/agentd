@@ -107,5 +107,8 @@
 - 2026-03-09 (Iteration 33): 当 composer 上方的上下文条开始变多时，最高价值的优化不一定是删功能，而是把语义相近的上下文收束成一个统一入口。`Recent context` 正好把“上一轮说了什么 / 产出了什么”这两类回顾行为装进同一层。
 - 2026-03-09 (Iteration 33): 用 wrapper 组件包住既有 strip，比直接改写它们更稳：source-guard 测试仍然能分别保证 latest-output 与 last-reply 的存在，同时 recent-context 只负责收束与折叠，不重新定义动作。
 - 2026-03-09 (Iteration 33): 真实浏览器回放里，展开 `Recent context` 后同时看见 `Latest output`、`Last reply`、`Review output`、`Jump to reply` 和 `Copy reply`，说明这次收束没有牺牲能力，只是减少了默认视觉高度。
+- 2026-03-09 (Iteration 34): continuation 去重的最佳方式不是删掉 composer strip，而是让 cockpit footer 在 composer strip 可见时退场。因为前几轮已经明确把输入区附近定义成主要 steering 层，这能让信息架构更一致。
+- 2026-03-09 (Iteration 34): 条件退场比永久删除 cockpit footer 更稳：在没有 composer continue strip 的状态里，cockpit 仍然能保留 continuation 发现能力；一旦 composer strip出现，页面自动收敛到单一主入口。
+- 2026-03-09 (Iteration 34): 真实浏览器回放里，当一轮 assistant 回复结束后，页面主文本中的 `CONTINUE THIS RUN` 只剩一次，且 transcript 底部仍只有 `重新生成 / 复制`。这说明 continuation 主入口已经真正被收敛到 composer 区附近。
 - 2026-03-09 (Iteration 34): transcript footer 里最适合留下的是“只影响这条消息本身”的操作（如 regenerate/copy）；一旦 continue prompts 同时出现在 cockpit、composer、message footer 三处，用户会感觉系统在重复喊同一句话。
 - 2026-03-09 (Iteration 34): 对 continuation 去重来说，删掉 message-level chips 比删掉 composer strip 更合理。因为前几轮已经明确把输入区附近定义为主要 steering 层，继续把下一步动作留在那儿，信息架构才一致。

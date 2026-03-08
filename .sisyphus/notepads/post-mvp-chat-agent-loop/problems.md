@@ -47,4 +47,5 @@
 - 2026-03-09 (Iteration 31): 即使继续动作和审批都在手边，只要“上一轮到底产出了什么”还主要留在顶部 cockpit，用户下一条 prompt 仍然容易脱离最近上下文。复杂 coding chat 里的 carry-forward，不只是动作入口，也包括结果入口。
 - 2026-03-09 (Iteration 32): 即使最近产物已经回到 composer 附近，只要最近一条 assistant 的文字结论仍然埋在消息历史里，用户在继续 prompt 时还是容易脱离 agent 刚刚的思路与结论。对复杂 coding，会话文字本身也是必须 carry-forward 的上下文。
 - 2026-03-09 (Iteration 33): 即使把越来越多高价值上下文都拉回了 composer 附近，如果继续一条条平铺，输入区上方最终会重新变成新的“信息墙”。复杂 coding chat 的后半段问题不再只是缺信息，而是如何在不丢信息的前提下控制密度。
+- 2026-03-09 (Iteration 34): 即使去掉了 transcript 里的重复 follow-up chips，只要 cockpit footer 和 composer strip 还同时在喊“Continue this run”，用户仍会面对“同一个动作到底该在哪儿点”的轻度混乱。真正的去重需要收敛到单一主入口。
 - 2026-03-09 (Iteration 34): 即使上下文已经收束，如果“继续下一步”的动作仍在 transcript/footer/composer/cockpit 多处重复，用户会再次回到“到处都能点，但不知道该以哪一层为主”的混乱状态。去重本身就是信息架构的一部分。
