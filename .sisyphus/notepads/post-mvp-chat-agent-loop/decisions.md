@@ -59,3 +59,5 @@
 - 2026-03-08 (Iteration 18): actionable summary cards 继续坚持“只复用已有信号与处理器”：objective 跳到 run overview 的目标消息，blocker 跳到首个 pending approval，next action 直接复用首个 enabled resume action；不发明新的按钮语义。
 - 2026-03-08 (Iteration 19): actionable summary cards 之后，下一步最高价值不是再加第四张 summary 卡，而是补一个“Latest output” 快速入口，把 cockpit 直接连到最近 artifact 或关键 tool result。
 - 2026-03-08 (Iteration 19): 最新输出入口优先指向 artifact，只有没有 artifact 时才回退到最近的成功/失败 tool output；这更贴合 coding-agent 场景里“最终产物优先于中间工具结果”的阅读顺序。
+- 2026-03-08 (Iteration 20): latest output 之后，下一步不是继续扩展“结果卡片”，而是补一张真正面向运行中的 `Live activity` 卡；这样用户在长任务进行中不必等结果落地，先看到 agent 正在跑哪个工具。
+- 2026-03-08 (Iteration 20): `Live activity` 卡优先级采用 `approval-requested > input-streaming > input-available > output-error > output-available`，确保 cockpit 优先呈现“当前最该关注的工具状态”，而不是简单显示最后一个 tool part。

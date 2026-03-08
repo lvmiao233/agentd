@@ -38,3 +38,4 @@
 - 2026-03-08 (Iteration 18): 4191 上的 dev/RSC payload 错误仍然存在，但这轮浏览器回放已经证明它不会必然阻断交互；页面虽然 noisy，`Review blocker` 与 next-action click 仍能稳定命中真实 UI 行为。
 - 2026-03-08 (Iteration 19): 初版 `Latest output` 被放进 `PlanContent` 后，在 `resumable` 默认折叠场景里实际上不可见；这是信息层级错误，不是组件 bug。本轮通过把它上移到 summary row 同层修复。
 - 2026-03-08 (Iteration 19): Playwright 对 `Latest output` 的文本可见性断言不稳定，但 `Review output` 按钮本身已真实存在且能高亮 artifact 节点；后续对这类 UI，优先断言可点击行为而不是纯文本更稳。
+- 2026-03-08 (Iteration 20): `liveActivityVisible` 的第一次 Playwright 布尔断言失败并不代表卡片没渲染；抓整页 `innerText` 后可以看到 `LIVE ACTIVITY / mcp.fs.read_file / Running / path: ...` 已真实存在。对这种 mixed-case UI，同样应该优先用整页文本或交互行为校验。

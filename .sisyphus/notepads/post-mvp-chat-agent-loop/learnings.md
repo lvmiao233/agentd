@@ -64,3 +64,6 @@
 - 2026-03-08 (Iteration 19): `buildChatLatestOutput()` 作为独立 helper 很有必要，因为“最新产物”与“最新动作”不是同一个概念：它需要先扫描 artifact，再扫描 tool outputs，且优先级必须稳定，不能把这类搜索逻辑塞回页面组件里。
 - 2026-03-08 (Iteration 19): cockpit 里的最新输出入口应当与 summary row 同层可见，而不是藏在 `PlanContent` 里；否则在 `resumable` 默认折叠态下，用户根本看不到它，等于损失了入口价值。
 - 2026-03-08 (Iteration 19): 真实浏览器回放已验证 `Review output` 会高亮对应 artifact 节点；即使 `beforeJump.includes('Latest output')` 这种字面断言受大小写/文本抽取影响不稳定，交互本身是真实打通的。
+- 2026-03-08 (Iteration 20): `buildChatLiveActivity()` 值得独立成 helper，因为它解决的是“从当前 turn 的多个 tool parts 中挑出现在最值得关注的那个”，这本质上是优先级决策，不该散落在 JSX 层。
+- 2026-03-08 (Iteration 20): 对 live activity 来说，`getStatusBadge()` 的复用价值很高：它让 cockpit 和正文 Tool 节点使用同一套状态视觉语言，用户不需要重新学习“Running / Preparing / Awaiting Approval”在顶部和正文的含义。
+- 2026-03-08 (Iteration 20): 真实浏览器回放已验证 `LIVE ACTIVITY` 卡确实在页面中出现，并显示 `mcp.fs.read_file / Running / path: ...`；点击 `Review activity` 会高亮对应 tool 节点，说明 cockpit 已开始真正承担“运行中观测台”的角色。
