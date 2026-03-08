@@ -14,7 +14,10 @@ export async function run() {
   });
 
   assert.equal(blocked.title, 'Resolve the blocker and continue');
+  assert.equal(blocked.mode, 'blocked');
   assert.match(blocked.description, /2 approvals pending/i);
+  assert.equal(blocked.highlights[0].label, 'Current objective');
+  assert.match(blocked.highlights[1].value, /2 approvals pending/i);
 
   const streaming = buildChatCockpitPlan({
     status: 'streaming',
@@ -24,10 +27,13 @@ export async function run() {
     lastUserText: 'Continue coding',
     lastAssistantText: '',
     selectedAgentRunnable: true,
+    nextActionTitle: 'Run verification',
   });
 
   assert.equal(streaming.title, 'Running tools and drafting the reply');
+  assert.equal(streaming.mode, 'streaming');
   assert.equal(streaming.isStreaming, true);
+  assert.equal(streaming.highlights[2].value, 'Run verification');
 
   const resumed = buildChatCockpitPlan({
     status: 'ready',
@@ -40,7 +46,9 @@ export async function run() {
   });
 
   assert.equal(resumed.title, 'Continue the current coding session');
+  assert.equal(resumed.mode, 'resumable');
   assert.equal(resumed.defaultOpen, false);
+  assert.match(resumed.highlights[1].value, /latest stable checkpoint/i);
 
   const unrunnable = buildChatCockpitPlan({
     status: 'ready',
@@ -53,4 +61,6 @@ export async function run() {
   });
 
   assert.equal(unrunnable.title, 'Select a runnable agent');
+  assert.equal(unrunnable.mode, 'unrunnable');
+  assert.equal(unrunnable.highlights[2].value, 'Choose a runnable agent.');
 }
