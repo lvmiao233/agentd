@@ -105,6 +105,8 @@
 - 2026-03-09 (Iteration 33): `ComposerRecentContextStrip` 默认折叠，只在用户需要时展开。这让 composer 控制层开始形成更清晰的优先级：阻塞和 steering（approval / active run / continue）优先常驻，而“回顾上下文”收束到一个统一入口。
 - 2026-03-09 (Iteration 34): 在 recent-context 收束之后，最明显的剩余重复变成 continuation actions 仍然同时出现在 cockpit footer 与 composer strip。为了让“继续下一步”的主入口更明确，本轮决定在 composer continue strip 出现时，让 cockpit footer 让位。
 - 2026-03-09 (Iteration 34): 这里不彻底删除 cockpit footer resume 逻辑，而是采用条件退场：当 `composerFollowUpActions.length > 0` 时向 `ChatCockpitPlanPanel` 传空的 `resumeActions`。这样在无 composer strip 的状态下，cockpit 仍可继续承担默认 continuation 入口。
+- 2026-03-09 (Iteration 35): continuation 收敛后，空会话里最明显的剩余重复是 cockpit `Next action` 仍会直接复述 quick-start strip 的具体启动 prompt。为了让第一步主入口更清楚，本轮让 `nextActionTitle` 也跟着 dedup 过的 `cockpitResumeActions` 走。
+- 2026-03-09 (Iteration 35): 这样一来，空会话里 quick-start strip 保持为唯一显式启动动作面，而 cockpit 的 `Next action` 退回通用默认文案；cockpit 继续负责方向总览，composer/quick-start 负责主操作。
 - 2026-03-09 (Iteration 35): continuation 主入口收敛后，空会话时最明显的剩余重复是 cockpit `Next action` 仍会直接复述 quick-start strip 的具体按钮文案。为了让第一步主入口更清楚，本轮让 `nextActionTitle` 也跟着 dedup 过的 `cockpitResumeActions` 走。
 - 2026-03-09 (Iteration 35): 这意味着空会话里，quick-start strip 保留为唯一显式启动动作面，而 cockpit 的 `Next action` 退回更概括的默认文案；cockpit 继续负责方向总览，composer/quick-start 负责主操作。
 - 2026-03-09 (Iteration 34): 在 recent-context 收束后，最明显的剩余重复是 transcript 底部还保留着一整组 follow-up suggestion chips，而同一批 continue actions 已经存在于 cockpit footer 与 composer strip。为了降低重复，本轮决定收掉消息底部 chips，只保留 regenerate/copy。

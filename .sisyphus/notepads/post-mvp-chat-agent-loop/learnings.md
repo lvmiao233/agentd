@@ -110,6 +110,8 @@
 - 2026-03-09 (Iteration 34): continuation 去重的最佳方式不是删掉 composer strip，而是让 cockpit footer 在 composer strip 可见时退场。因为前几轮已经明确把输入区附近定义成主要 steering 层，这能让信息架构更一致。
 - 2026-03-09 (Iteration 34): 条件退场比永久删除 cockpit footer 更稳：在没有 composer continue strip 的状态里，cockpit 仍然能保留 continuation 发现能力；一旦 composer strip出现，页面自动收敛到单一主入口。
 - 2026-03-09 (Iteration 34): 真实浏览器回放里，当一轮 assistant 回复结束后，页面主文本中的 `CONTINUE THIS RUN` 只剩一次，且 transcript 底部仍只有 `重新生成 / 复制`。这说明 continuation 主入口已经真正被收敛到 composer 区附近。
+- 2026-03-09 (Iteration 35): 启动面和继续面其实遵循同一个原则：cockpit 负责总览，输入区附近负责主动作。一旦 cockpit 的 `Next action` 也开始逐字复述 quick-start 按钮，首屏就会再次出现“双主入口”感。
+- 2026-03-09 (Iteration 35): 让 `nextActionTitle` 依赖已经 dedup 过的 `cockpitResumeActions`，是一种很低风险但高杠杆的修正：不用改 cockpit 组件结构，就能让首屏信息架构和后续 continuation 的收敛方式保持一致。
 - 2026-03-09 (Iteration 35): 首屏启动面和 continuation 面本质上遵循同一个原则：cockpit 负责总览，输入区附近负责主动作。一旦 cockpit `Next action` 也开始逐字复述 quick-start 按钮，用户又会重新感到“双主入口”。
 - 2026-03-09 (Iteration 35): 用已经 dedup 过的 `cockpitResumeActions` 去驱动 `nextActionTitle`，是一个很小但高杠杆的修正：既不用改 cockpit 组件结构，也能让首屏信息架构和后续 continuation 的收敛方式保持一致。
 - 2026-03-09 (Iteration 34): transcript footer 里最适合留下的是“只影响这条消息本身”的操作（如 regenerate/copy）；一旦 continue prompts 同时出现在 cockpit、composer、message footer 三处，用户会感觉系统在重复喊同一句话。
