@@ -80,3 +80,6 @@
 - 2026-03-09 (Iteration 24): `read_file`、`shell`、`search` 这类工具的结果可读性，往往不是靠更复杂的布局提升，而是靠“统一的摘要提炼规则”。只要优先读取 `stdout/content/text/message/path/exitCode/ok` 这些高信号字段，用户大多数时候根本不需要先看 raw JSON。
 - 2026-03-09 (Iteration 24): `ToolOutput` 摘要、cockpit 的 `Latest output`、以及 `Live activity` 最好共享同一个 summarizer；否则很容易出现正文说一套、顶部摘要又说另一套的分裂体验。
 - 2026-03-09 (Iteration 24): 浏览器实际验证表明，把摘要抬到 `ToolHeader` 很值：在工具卡标题区域已经能直接读到 `agentd shell quickstart`。哪怕当前布局里折叠交互偶发被周围容器干扰，用户也不必先依赖“成功点击展开”才能理解结果。
+- 2026-03-09 (Iteration 25): 对这种聊天布局，`min-h-0`/`shrink-0` 比额外 z-index 更关键。只要 flex item 的收缩边界没立住，scroll 区与固定 sibling 的可见区域就会互相侵蚀，最终表现成“看得见但点不到”。
+- 2026-03-09 (Iteration 25): 给滚动消息流预留上下安全区（这里是 `pt-2 pb-24`）是很划算的通用做法：它同时缓解了 tool header、message action、以及后续任何靠近边界的可点击元素被上/下容器吞事件的问题。
+- 2026-03-09 (Iteration 25): 这类布局修复值得用 source-guard spec 固定，而不只靠一次浏览器回放。因为热更新、RSC 资源加载、以及浏览器缓存都可能让交互验证噪声很大，但 class-level 约束是我们真正想防回归的结构事实。

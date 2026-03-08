@@ -75,3 +75,6 @@
 - 2026-03-09 (Iteration 24): 下一步优先补“工具结果摘要层”，而不是继续新增 cockpit 卡片。因为 partial input 已经让“过程”变得可见，现在真正拖累阅读速度的是完成后的 tool output 仍然经常是一大块 JSON，用户要自己提炼结论。
 - 2026-03-09 (Iteration 24): 这轮不发明新的 tool result 协议，而是抽一层共享 helper（`chat-tool-summary`），让 `ToolOutput`、`buildChatLiveActivity()`、`buildChatLatestOutput()` 都复用同一套摘要逻辑。这样正文卡片和 cockpit 不会各说各话。
 - 2026-03-09 (Iteration 24): 仅把摘要放在工具展开内容里还不够；高频场景下用户先看到的是 `ToolHeader`。因此 header 新增一行 preview，让结果即使在折叠状态下也有一眼可扫的可见层。
+- 2026-03-09 (Iteration 25): 既然浏览器回放已经多次暴露 `ToolHeader` 点击被周围布局拦截，这一轮不继续加新能力，而是优先修布局边界。可靠可点是所有后续 tool UX 的前置条件。
+- 2026-03-09 (Iteration 25): 修复策略采用“把 conversation 明确收进 `min-h-0` 的独立滚动区，并把 cockpit / prompt 显式标成 `shrink-0` 的上下 sibling”，而不是给某个按钮硬加更高 z-index。层级对抗只会让下一个遮挡问题更难收拾。
+- 2026-03-09 (Iteration 25): 同时给 `ConversationContent` 增加 `pt-2 pb-24` 的安全边距，让工具卡不会紧贴上方 cockpit 或下方 prompt 的交界区域；这比在每张消息卡上打补丁更集中、更可维护。
