@@ -31,3 +31,5 @@
 - 2026-03-08 (Iteration 14): 对带 sticky header / input 的复杂布局，Playwright 有时不适合坚持“纯鼠标点击”；本轮 timeline restore 采用 DOM 触发按钮 click，同样证明了真实交互链路是否连通。
 - 2026-03-08 (Iteration 15): 本轮 approval dock 的自动化验证（spec + build）是稳定的，但浏览器真实验证被当前 dev 资产加载异常阻塞：页面在 4188 上多次退化成未 hydrate 状态，导致顶部 dock 不参与交互。这更像环境噪声而不是 feature 自身回归。
 - 2026-03-08 (Iteration 15): 对依赖 hydration 的顶层 cockpit 功能，当前环境里 `next dev` 偶发静态资源 404 会直接把真实回放价值打折；后续如果要提升这类功能的 E2E 可信度，最好单独解决 dev asset 稳定性问题。
+- 2026-03-08 (Iteration 16): 本轮需要补 `card.tsx + shimmer.tsx + plan.tsx` 三个基础件才能落 ai-elements Plan；虽然这是新增基础组件，但它们都属于官方/生态标准依赖链，而不是凭空发明的新设计系统。
+- 2026-03-08 (Iteration 16): Playwright 在 4189 上对统一 cockpit 的验证是成功的；这说明前一轮 approval dock 的浏览器阻塞确实更像环境噪声，而不是顶层 cockpit 架构已经不可验证。

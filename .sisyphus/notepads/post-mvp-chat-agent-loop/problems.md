@@ -27,3 +27,4 @@
 - 2026-03-08 (Iteration 13): 即使有 command palette 和 checkpoints，如果用户每次继续任务都还得滚到最新 assistant 消息附近才能点 suggestion，长会话的推进仍然不够顺滑；因此需要一个始终贴近 run overview 的顶部 continuation 入口。
 - 2026-03-08 (Iteration 14): 有了 checkpoint 和 resume bar 之后，剩余摩擦变成“checkpoint 藏在消息中间，不够像会话级地图”；用户仍然缺一个顶部可扫描、可跳转、可恢复的阶段时间线。
 - 2026-03-08 (Iteration 15): 即使顶部已经有 run overview、resume bar、session timeline，真正阻塞 agent 继续工作的 pending approvals 仍然主要在消息区和 approval inbox 里，导致驾驶舱信息仍然不完整；这就是 approval dock 要解决的剩余顶层断层。
+- 2026-03-08 (Iteration 16): 即使补齐了 run overview、timeline、approval dock，如果它们继续作为三个独立 box 平铺在顶部，用户仍然要自己理解“这些卡片属于同一层 cockpit”；因此需要一个统一的 top-level shell 来建立清晰的主次关系。

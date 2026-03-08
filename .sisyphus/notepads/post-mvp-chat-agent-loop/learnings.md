@@ -52,3 +52,6 @@
 - 2026-03-08 (Iteration 14): 真实浏览器回放已验证顶部 Session timeline 的关键闭环：两轮 assistant 回复后能在顶部看到 timeline，展开后点击 `Restore` 会裁掉后续消息并显示 restore notice。
 - 2026-03-08 (Iteration 15): 顶部 approval dock 最稳的接法不是重新包装 `Confirmation`，而是把 approvals 视作 queue items：reason 显示在 description，`Jump / Approve / Deny` 落在 item actions，这样既和 session timeline 风格统一，也能复用现有审批处理逻辑。
 - 2026-03-08 (Iteration 15): 对当前 cockpit 结构来说，approval dock 与 run overview / session timeline 的价值互补很强：overview 负责“当前 run 在做什么”，timeline 负责“之前阶段在哪”，approval dock 负责“现在卡住什么”。
+- 2026-03-08 (Iteration 16): 当顶层控制区已经积累了多个高价值面板时，最该优化的往往不再是“增加信息”，而是“统一容器与视觉层级”；Plan 恰好是官方提供的低风险收束方式。
+- 2026-03-08 (Iteration 16): `buildChatCockpitPlan()` 这种轻量派生 helper 很重要：它把 title/description/defaultOpen/isStreaming 从页面里抽离出来，让 cockpit shell 只负责组合，而不是在 JSX 里堆更多条件分支。
+- 2026-03-08 (Iteration 16): 真实浏览器回放已验证新的顶层 shell 并非只改样式：页面会显示 `Agent cockpit`，内部同时包含 pending approvals、run overview、session timeline，以及 footer 上的 continuation actions，说明收束后的控制区真实可用。
