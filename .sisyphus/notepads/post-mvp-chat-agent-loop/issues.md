@@ -36,3 +36,5 @@
 - 2026-03-08 (Iteration 17): Oracle 复核抓到一个真实 blind spot：如果 `Plan` 只吃 `defaultOpen`，它在首次挂载后不会因 blocker/error 状态变化重新展开；对 cockpit 这种承载关键阻塞信息的容器，这是必须修掉的可见性问题。
 - 2026-03-08 (Iteration 17): Playwright 第一次验证 summary 时只看布尔断言，没抓 body text，导致误以为 summary 没渲染；后续对这类顶层文案验证，直接抓整页 `innerText` 更稳，能迅速区分“真的没渲染”和“断言写错了”。
 - 2026-03-08 (Iteration 18): 4191 上的 dev/RSC payload 错误仍然存在，但这轮浏览器回放已经证明它不会必然阻断交互；页面虽然 noisy，`Review blocker` 与 next-action click 仍能稳定命中真实 UI 行为。
+- 2026-03-08 (Iteration 19): 初版 `Latest output` 被放进 `PlanContent` 后，在 `resumable` 默认折叠场景里实际上不可见；这是信息层级错误，不是组件 bug。本轮通过把它上移到 summary row 同层修复。
+- 2026-03-08 (Iteration 19): Playwright 对 `Latest output` 的文本可见性断言不稳定，但 `Review output` 按钮本身已真实存在且能高亮 artifact 节点；后续对这类 UI，优先断言可点击行为而不是纯文本更稳。

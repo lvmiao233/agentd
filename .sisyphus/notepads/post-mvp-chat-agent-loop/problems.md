@@ -30,3 +30,4 @@
 - 2026-03-08 (Iteration 16): 即使补齐了 run overview、timeline、approval dock，如果它们继续作为三个独立 box 平铺在顶部，用户仍然要自己理解“这些卡片属于同一层 cockpit”；因此需要一个统一的 top-level shell 来建立清晰的主次关系。
 - 2026-03-08 (Iteration 17): 即使顶层已经统一成一个 cockpit，如果用户仍然要自己从 description、dock、timeline、actions 里推断“目标 / 阻塞 / 下一步”，认知负担依然偏高；因此需要一个明确的结构化 summary 层把这三个问题直接回答出来。
 - 2026-03-08 (Iteration 18): 即使结构化 summary 已经存在，如果三张卡仍然只是静态文本，用户还要再扫视下方面板去找真正可点的入口；因此 summary 需要具备最基础的导航/执行能力，才能真正承担 cockpit 的“驾驶”角色。
+- 2026-03-08 (Iteration 19): 即使 cockpit 已经能跳指令、跳阻塞、执行下一步，用户仍然缺一个面向“结果”的顶层入口；他们要看这轮到底产出了什么，还得自己滚回 artifact 或 tool output。最新输出入口正是为了解决这层断裂。

@@ -61,3 +61,6 @@
 - 2026-03-08 (Iteration 18): 对 cockpit summary 来说，“最小可用行动性”比复杂交互更重要；仅仅给三张卡补 `Jump to instruction / Review blocker / first enabled action`，已经足够把它从静态摘要提升成真实控制入口。
 - 2026-03-08 (Iteration 18): 将 actionable 逻辑抽成 `buildChatCockpitActions()` helper 很值：它把 summary card 与 `runOverview targetId / approvalQueue / resumeActions` 的映射从组件里剥离出来，避免 JSX 层硬编码分支。
 - 2026-03-08 (Iteration 18): 真实浏览器回放已验证两条关键动作：`Review blocker` 会高亮对应 approval，summary 区里的 next-action button 会触发第二轮请求并渲染新回复。即使 dev 模式仍有 RSC payload 噪音，这条交互链路是真实可用的。
+- 2026-03-08 (Iteration 19): `buildChatLatestOutput()` 作为独立 helper 很有必要，因为“最新产物”与“最新动作”不是同一个概念：它需要先扫描 artifact，再扫描 tool outputs，且优先级必须稳定，不能把这类搜索逻辑塞回页面组件里。
+- 2026-03-08 (Iteration 19): cockpit 里的最新输出入口应当与 summary row 同层可见，而不是藏在 `PlanContent` 里；否则在 `resumable` 默认折叠态下，用户根本看不到它，等于损失了入口价值。
+- 2026-03-08 (Iteration 19): 真实浏览器回放已验证 `Review output` 会高亮对应 artifact 节点；即使 `beforeJump.includes('Latest output')` 这种字面断言受大小写/文本抽取影响不稳定，交互本身是真实打通的。
