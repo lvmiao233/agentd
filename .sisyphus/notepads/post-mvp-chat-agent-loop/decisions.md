@@ -78,3 +78,7 @@
 - 2026-03-09 (Iteration 25): 既然浏览器回放已经多次暴露 `ToolHeader` 点击被周围布局拦截，这一轮不继续加新能力，而是优先修布局边界。可靠可点是所有后续 tool UX 的前置条件。
 - 2026-03-09 (Iteration 25): 修复策略采用“把 conversation 明确收进 `min-h-0` 的独立滚动区，并把 cockpit / prompt 显式标成 `shrink-0` 的上下 sibling”，而不是给某个按钮硬加更高 z-index。层级对抗只会让下一个遮挡问题更难收拾。
 - 2026-03-09 (Iteration 25): 同时给 `ConversationContent` 增加 `pt-2 pb-24` 的安全边距，让工具卡不会紧贴上方 cockpit 或下方 prompt 的交界区域；这比在每张消息卡上打补丁更集中、更可维护。
+- 2026-03-09 (Iteration 26): 这轮优先优化 chat 启动摩擦，而不是继续叠加消息部件。原则是：用户重新打开 chat 页面时，系统应尽可能“已经准备好发第一条消息”，而不是再次要求手动选 agent。
+- 2026-03-09 (Iteration 26): agent 选择策略统一收敛为：优先当前仍可运行的选择，其次恢复 localStorage 记住的上次 agent，再回退到 preferred runnable agent；如果完全没有 runnable agent，仍保留一个明确的不可运行选择用于解释状态。
+- 2026-03-09 (Iteration 26): 启动体验不只靠默认选择，还需要可解释状态，所以这轮同时补了 selector 周围的 loading / ready / empty 文案，而不是让下拉框在首屏短暂保持“空白但不知道为什么”。
+- 2026-03-09 (Iteration 26): 为了防止后续有人把这套首屏体验又删回“空白 selector”，本轮额外加了 source-guard spec，明确锁定 localStorage 恢复键、loading 文案、ready 文案和 empty-state 文案。

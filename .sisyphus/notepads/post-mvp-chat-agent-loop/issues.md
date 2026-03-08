@@ -45,3 +45,5 @@
 - 2026-03-09 (Iteration 23): 浏览器验证时，`next dev` 一度被 Next.js 自己的 devtools / RSC manifest 问题干扰（`segment-explorer-node` / `vendor-chunks/mermaid` 相关 500），不能把这类运行时噪声误判成聊天功能退化。最后通过单独启动禁用 devtools 的 dev server 才拿到可靠页面证据。
 - 2026-03-09 (Iteration 24): 这轮浏览器验证里，折叠按钮点击仍会被周围容器/输入区偶发拦截，所以“验证折叠后是否还能看到摘要”不适合只依赖 click 断言。更稳的证据是直接读取 trigger 区域文本，确认 header preview 已真实渲染。
 - 2026-03-09 (Iteration 25): 这轮继续尝试浏览器级点击验证时，`next dev`/`next start` 都出现了与静态 chunk / `vendor-chunks/mermaid` / RSC 资源加载相关的环境噪声，导致“页面能否完整 hydrate”本身不稳定。因此本轮最终把真实验证重点放在结构修复 + class guard spec，而不是把浏览器点击成败当成唯一事实来源。
+- 2026-03-09 (Iteration 26): 这轮 build 首次失败只是 `.d.ts` 同步遗漏：`chat-agent-readiness.js` 新增了 `chooseInitialAgentSelection`，但声明文件没更新。对这种 JS + d.ts 混合库，新增 helper 时必须一起补类型出口。
+- 2026-03-09 (Iteration 26): 浏览器里验证 loading 文案时，后续 ready 文案没有在同一轮回放里稳定出现，主要还是受 dev/RSC 静态资源噪声影响；但另一轮独立回放已经确认 localStorage 恢复后的 ready 文案和 selector 文本都正确出现，所以这轮证据采用“两次短回放组合”而不是硬拼单次完美脚本。
