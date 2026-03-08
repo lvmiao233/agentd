@@ -470,6 +470,49 @@ function ComposerLatestOutputStrip(props: {
   );
 }
 
+function ComposerLastReplyStrip(props: {
+  lastAssistantText: string;
+  targetId: string | null;
+  onReview: (targetId: string) => void;
+}) {
+  const { lastAssistantText, targetId, onReview } = props;
+  const [copied, setCopied] = useState(false);
+
+  if (!lastAssistantText) {
+    return null;
+  }
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(lastAssistantText);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">Last reply</Badge>
+            <span className="truncate text-sm font-medium">Assistant summary</span>
+          </div>
+          <p className="line-clamp-2 text-sm text-muted-foreground">{lastAssistantText}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {targetId && (
+            <Button type="button" variant="outline" size="sm" onClick={() => onReview(targetId)}>
+              Jump to reply
+            </Button>
+          )}
+          <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+            {copied ? 'Copied' : 'Copy reply'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
@@ -503,6 +546,9 @@ export default function ChatPage() {
   const lastAssistantText = lastAssistantMessage
     ? extractMessageText(lastAssistantMessage)
     : '';
+  const lastAssistantTargetId = lastAssistantMessage
+    ? `chat-message-${lastAssistantMessage.id}`
+    : null;
   const lastAssistantHasToolParts = lastAssistantMessage
     ? lastAssistantMessage.parts.some((part) => isToolUIPart(part))
     : false;
@@ -1584,6 +1630,14 @@ export default function ChatPage() {
         {(status === 'ready' || status === 'error') && (
           <ComposerLatestOutputStrip
             latestOutput={latestOutput}
+            onReview={highlightConversationTarget}
+          />
+        )}
+
+        {(status === 'ready' || status === 'error') && (
+          <ComposerLastReplyStrip
+            lastAssistantText={lastAssistantText}
+            targetId={lastAssistantTargetId}
             onReview={highlightConversationTarget}
           />
         )}
