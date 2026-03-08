@@ -58,3 +58,6 @@
 - 2026-03-08 (Iteration 17): 对已经统一的 cockpit 而言，最高价值的信息不是更多 widget，而是更明确的语义层：`Current objective / Blocker / Next action` 能直接回答用户“现在在做什么、卡在哪、接下来最该点什么”。
 - 2026-03-08 (Iteration 17): `buildChatCockpitPlan()` 继续扩展成 `highlights` 输出比在组件内临时拼文案更稳，因为它把 summary 的文案来源固定在一个 helper 里，测试和后续演进都更容易。
 - 2026-03-08 (Iteration 17): 真实浏览器回放已验证结构化 summary 确实在页面中出现：`CURRENT OBJECTIVE / BLOCKER / NEXT ACTION` 分别显示当前 user task、pending approval blocker、以及推荐下一步动作，而不是只存在于 helper 测试里。
+- 2026-03-08 (Iteration 18): 对 cockpit summary 来说，“最小可用行动性”比复杂交互更重要；仅仅给三张卡补 `Jump to instruction / Review blocker / first enabled action`，已经足够把它从静态摘要提升成真实控制入口。
+- 2026-03-08 (Iteration 18): 将 actionable 逻辑抽成 `buildChatCockpitActions()` helper 很值：它把 summary card 与 `runOverview targetId / approvalQueue / resumeActions` 的映射从组件里剥离出来，避免 JSX 层硬编码分支。
+- 2026-03-08 (Iteration 18): 真实浏览器回放已验证两条关键动作：`Review blocker` 会高亮对应 approval，summary 区里的 next-action button 会触发第二轮请求并渲染新回复。即使 dev 模式仍有 RSC payload 噪音，这条交互链路是真实可用的。

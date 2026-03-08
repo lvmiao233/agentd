@@ -29,3 +29,4 @@
 - 2026-03-08 (Iteration 15): 即使顶部已经有 run overview、resume bar、session timeline，真正阻塞 agent 继续工作的 pending approvals 仍然主要在消息区和 approval inbox 里，导致驾驶舱信息仍然不完整；这就是 approval dock 要解决的剩余顶层断层。
 - 2026-03-08 (Iteration 16): 即使补齐了 run overview、timeline、approval dock，如果它们继续作为三个独立 box 平铺在顶部，用户仍然要自己理解“这些卡片属于同一层 cockpit”；因此需要一个统一的 top-level shell 来建立清晰的主次关系。
 - 2026-03-08 (Iteration 17): 即使顶层已经统一成一个 cockpit，如果用户仍然要自己从 description、dock、timeline、actions 里推断“目标 / 阻塞 / 下一步”，认知负担依然偏高；因此需要一个明确的结构化 summary 层把这三个问题直接回答出来。
+- 2026-03-08 (Iteration 18): 即使结构化 summary 已经存在，如果三张卡仍然只是静态文本，用户还要再扫视下方面板去找真正可点的入口；因此 summary 需要具备最基础的导航/执行能力，才能真正承担 cockpit 的“驾驶”角色。

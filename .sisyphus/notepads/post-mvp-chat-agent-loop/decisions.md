@@ -55,3 +55,5 @@
 - 2026-03-08 (Iteration 17): unified cockpit shell 之后，下一步不再增加新容器，而是增强 shell 内部的语义清晰度；因此本轮优先把 `Current objective / Blocker / Next action` 结构化 summary 提升到 cockpit 顶部。
 - 2026-03-08 (Iteration 17): 三段式 summary 只复用现有信号：`lastUserText`、`approvalQueue.length`、`status`、`checkpointCount`、`resumeActions[0]`、`runOverview.statusSummary`；不引入任何伪造的“计划状态”或后端协议字段。
 - 2026-03-08 (Iteration 17): Oracle 指出的 `Plan defaultOpen` 单次生效问题本轮一并修复：cockpit 在 `blocked / error / unrunnable` 三种高优先级状态下必须自动重新展开，不能因为用户先前折叠过就隐藏关键阻塞信息。
+- 2026-03-08 (Iteration 18): 在结构化 summary 之后，下一步最高价值不是再丰富文案，而是让 summary 本身变成操作入口；因此本轮优先把 objective/blocker/next 三张卡接上现有的导航与 continuation 行为。
+- 2026-03-08 (Iteration 18): actionable summary cards 继续坚持“只复用已有信号与处理器”：objective 跳到 run overview 的目标消息，blocker 跳到首个 pending approval，next action 直接复用首个 enabled resume action；不发明新的按钮语义。

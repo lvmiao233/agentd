@@ -35,3 +35,4 @@
 - 2026-03-08 (Iteration 16): Playwright 在 4189 上对统一 cockpit 的验证是成功的；这说明前一轮 approval dock 的浏览器阻塞确实更像环境噪声，而不是顶层 cockpit 架构已经不可验证。
 - 2026-03-08 (Iteration 17): Oracle 复核抓到一个真实 blind spot：如果 `Plan` 只吃 `defaultOpen`，它在首次挂载后不会因 blocker/error 状态变化重新展开；对 cockpit 这种承载关键阻塞信息的容器，这是必须修掉的可见性问题。
 - 2026-03-08 (Iteration 17): Playwright 第一次验证 summary 时只看布尔断言，没抓 body text，导致误以为 summary 没渲染；后续对这类顶层文案验证，直接抓整页 `innerText` 更稳，能迅速区分“真的没渲染”和“断言写错了”。
+- 2026-03-08 (Iteration 18): 4191 上的 dev/RSC payload 错误仍然存在，但这轮浏览器回放已经证明它不会必然阻断交互；页面虽然 noisy，`Review blocker` 与 next-action click 仍能稳定命中真实 UI 行为。
