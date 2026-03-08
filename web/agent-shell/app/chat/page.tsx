@@ -727,6 +727,10 @@ export default function ChatPage() {
   const starterPromptActions = messages.length === 0
     ? resumeActions.filter((action) => action.kind === 'prompt').slice(0, 3)
     : [];
+  const composerFollowUpActions =
+    messages.length > 0 && (status === 'ready' || status === 'error')
+      ? resumeActions.filter((action) => action.kind === 'prompt' && action.prompt).slice(0, 3)
+      : [];
   const sessionTimeline = buildChatSessionTimeline({
     checkpoints,
     status,
@@ -1496,6 +1500,29 @@ export default function ChatPage() {
           </ConversationContent>
           <ConversationScrollButton />
         </Conversation>
+
+        {composerFollowUpActions.length > 0 && (
+          <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
+            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Continue this run
+            </div>
+            <Suggestions className="mt-2">
+              {composerFollowUpActions.map((action) => (
+                <Suggestion
+                  key={action.id}
+                  disabled={action.disabled}
+                  onClick={() => void handleResumeAction(action)}
+                  title={action.description}
+                >
+                  {action.title}
+                </Suggestion>
+              ))}
+            </Suggestions>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Keep moving without scrolling back to the previous reply.
+            </p>
+          </div>
+        )}
 
         <ActiveRunControls
           status={status}
