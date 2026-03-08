@@ -42,5 +42,28 @@ export async function run() {
   assert.equal(prefersRunningOverCompleted.state, 'approval-requested');
   assert.equal(prefersRunningOverCompleted.targetId, 'chat-tool-assistant-2-1');
 
+  const completedSummary = buildChatLiveActivity([
+    { id: 'user-3', role: 'user', parts: [{ type: 'text', text: 'Inspect file' }] },
+    {
+      id: 'assistant-3',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'dynamic-tool',
+          toolName: 'mcp.fs.read_file',
+          state: 'output-available',
+          output: { path: 'README.md', content: 'agentd shell quickstart' },
+        },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(completedSummary, {
+    title: 'mcp.fs.read_file',
+    state: 'output-available',
+    description: 'agentd shell quickstart',
+    targetId: 'chat-tool-assistant-3-0',
+  });
+
   assert.equal(buildChatLiveActivity([]), null);
 }

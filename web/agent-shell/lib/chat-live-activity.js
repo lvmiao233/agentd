@@ -1,17 +1,4 @@
-function normalizeSnippet(value, maxLength = 96) {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return '';
-  }
-
-  return normalized.length <= maxLength
-    ? normalized
-    : `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
+import { summarizeToolInput, summarizeToolOutput } from './chat-tool-summary.js';
 
 function isToolPart(part) {
   return part?.type === 'dynamic-tool' ||
@@ -40,47 +27,6 @@ function toolName(part) {
   return 'tool';
 }
 
-function summarizeInput(input) {
-  if (typeof input === 'string') {
-    return normalizeSnippet(input);
-  }
-
-  if (!input || typeof input !== 'object') {
-    return '';
-  }
-
-  for (const field of ['path', 'command', 'query', 'url', 'task', 'prompt']) {
-    if (typeof input[field] === 'string' && input[field].trim()) {
-      return `${field}: ${normalizeSnippet(input[field], 72)}`;
-    }
-  }
-
-  try {
-    return normalizeSnippet(JSON.stringify(input));
-  } catch {
-    return 'structured input';
-  }
-}
-
-function summarizeOutput(output, errorText) {
-  if (typeof errorText === 'string' && errorText.trim()) {
-    return normalizeSnippet(errorText);
-  }
-
-  if (typeof output === 'string') {
-    return normalizeSnippet(output);
-  }
-
-  if (!output || typeof output !== 'object') {
-    return '';
-  }
-
-  try {
-    return normalizeSnippet(JSON.stringify(output));
-  } catch {
-    return 'structured output';
-  }
-}
 
 const STATE_PRIORITY = {
   'approval-requested': 5,
@@ -126,8 +72,8 @@ export function buildChatLiveActivity(messages) {
 
   const description =
     picked.part.state === 'output-available' || picked.part.state === 'output-error'
-      ? summarizeOutput(picked.part.output, picked.part.errorText)
-      : summarizeInput(picked.part.input);
+      ? summarizeToolOutput(picked.part.output, picked.part.errorText)
+      : summarizeToolInput(picked.part.input);
 
   return {
     title: toolName(picked.part),

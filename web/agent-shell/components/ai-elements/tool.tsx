@@ -9,6 +9,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Separator } from "@/components/ui/separator";
+import { buildToolOutputFacts, summarizeToolOutput } from "@/lib/chat-tool-summary.js";
 import { cn } from "@/lib/utils";
 import {
   CheckCircleIcon,
@@ -36,6 +38,7 @@ export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
 export type ToolHeaderProps = {
   title?: string;
+  preview?: string;
   className?: string;
 } & (
   | { type: ToolUIPart["type"]; state: ToolUIPart["state"]; toolName?: never }
@@ -85,6 +88,7 @@ export function getToolDisplayName(params: {
 export const ToolHeader = ({
   className,
   title,
+  preview,
   type,
   state,
   toolName,
@@ -100,10 +104,17 @@ export const ToolHeader = ({
       )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="font-medium text-sm">{title ?? derivedName}</span>
-        {getStatusBadge(state)}
+      <div className="min-w-0 space-y-1 text-left">
+        <div className="flex min-w-0 items-center gap-2">
+          <WrenchIcon className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate font-medium text-sm">{title ?? derivedName}</span>
+          {getStatusBadge(state)}
+        </div>
+        {preview ? (
+          <div className="truncate pl-6 text-muted-foreground text-xs">
+            {preview}
+          </div>
+        ) : null}
       </div>
       <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
     </CollapsibleTrigger>
@@ -158,6 +169,9 @@ export const ToolOutput = ({
     return null;
   }
 
+  const summary = summarizeToolOutput(output, errorText);
+  const facts = buildToolOutputFacts(output, errorText);
+
   let Output = <div>{output as ReactNode}</div>;
 
   if (typeof output === "object" && !isValidElement(output)) {
@@ -173,6 +187,22 @@ export const ToolOutput = ({
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
         {errorText ? "Error" : "Result"}
       </h4>
+      {(summary || facts.length > 0) && (
+        <div className="space-y-2 rounded-md border border-border/60 bg-background/80 p-3">
+          {summary && <p className="text-sm text-foreground">{summary}</p>}
+          {facts.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {facts.map((fact) => (
+                <Badge key={`${fact.label}-${fact.value}`} variant="outline" className="gap-1.5">
+                  <span className="text-muted-foreground">{fact.label}</span>
+                  <span>{fact.value}</span>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <Separator />
+        </div>
+      )}
       <div
         className={cn(
           "overflow-x-auto rounded-md text-xs [&_table]:w-full",

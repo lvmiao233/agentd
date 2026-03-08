@@ -50,6 +50,7 @@ export async function run() {
 
   assert.equal(toolOutput.kind, 'tool');
   assert.equal(toolOutput.title, 'mcp.fs.read_file');
+  assert.equal(toolOutput.description, 'path: src/app.tsx');
   assert.equal(toolOutput.targetId, 'chat-tool-assistant-2-0');
 
   assert.equal(buildChatLatestOutput([]), null);

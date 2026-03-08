@@ -1,4 +1,5 @@
 import { extractPreviewArtifacts } from './chat-artifacts.js';
+import { summarizeToolOutput } from './chat-tool-summary.js';
 
 function snippet(value, maxLength = 96) {
   if (typeof value !== 'string') {
@@ -73,16 +74,16 @@ export function buildChatLatestOutput(messages) {
         continue;
       }
 
-      return {
-        kind: 'tool',
-        title: toolDisplayName(part),
-        description:
-          part.state === 'output-error'
-            ? snippet(part.errorText || 'Tool returned an error')
-            : snippet(JSON.stringify(part.output)),
-        targetId: `chat-tool-${message.id}-${partIndex}`,
-      };
-    }
+        return {
+          kind: 'tool',
+          title: toolDisplayName(part),
+          description:
+            part.state === 'output-error'
+            ? summarizeToolOutput(undefined, part.errorText || 'Tool returned an error')
+            : summarizeToolOutput(part.output, undefined),
+          targetId: `chat-tool-${message.id}-${partIndex}`,
+        };
+      }
   }
 
   return null;

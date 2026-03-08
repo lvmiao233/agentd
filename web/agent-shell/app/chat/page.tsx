@@ -134,6 +134,7 @@ import { buildChatLatestOutput } from '@/lib/chat-latest-output.js';
 import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
 import { buildChatSessionTimeline } from '@/lib/chat-session-timeline.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
+import { summarizeToolInput, summarizeToolOutput } from '@/lib/chat-tool-summary.js';
 
 type ChatAgentOption = {
   agent_id: string;
@@ -898,6 +899,10 @@ export default function ChatPage() {
                         type: part.type,
                         toolName: part.type === 'dynamic-tool' ? part.toolName : undefined,
                       });
+                      const toolPreview =
+                        part.state === 'output-available' || part.state === 'output-error'
+                          ? summarizeToolOutput(part.output, part.errorText)
+                          : summarizeToolInput(part.input);
                       variantSegments.push(
                         <Tool
                           id={`chat-tool-${targetMessage.id}-${partIndex}`}
@@ -912,9 +917,14 @@ export default function ChatPage() {
                           }
                         >
                           {part.type === 'dynamic-tool' ? (
-                            <ToolHeader type="dynamic-tool" state={part.state} toolName={part.toolName} />
+                            <ToolHeader
+                              type="dynamic-tool"
+                              state={part.state}
+                              toolName={part.toolName}
+                              preview={toolPreview}
+                            />
                           ) : (
-                            <ToolHeader type={part.type} state={part.state} />
+                            <ToolHeader type={part.type} state={part.state} preview={toolPreview} />
                           )}
                           <ToolContent>
                             <ToolProgress state={part.state} toolName={toolDisplayName} />
@@ -1074,6 +1084,10 @@ export default function ChatPage() {
                         type: part.type,
                         toolName: part.type === 'dynamic-tool' ? part.toolName : undefined,
                       });
+                      const toolPreview =
+                        part.state === 'output-available' || part.state === 'output-error'
+                          ? summarizeToolOutput(part.output, part.errorText)
+                          : summarizeToolInput(part.input);
                       renderedSegments.push(
                         <Tool
                           id={`chat-tool-${message.id}-${partIndex}`}
@@ -1092,9 +1106,10 @@ export default function ChatPage() {
                             type="dynamic-tool"
                             state={part.state}
                             toolName={part.toolName}
+                            preview={toolPreview}
                           />
                         ) : (
-                          <ToolHeader type={part.type} state={part.state} />
+                          <ToolHeader type={part.type} state={part.state} preview={toolPreview} />
                         )}
                         <ToolContent>
                           <ToolProgress state={part.state} toolName={toolDisplayName} />
