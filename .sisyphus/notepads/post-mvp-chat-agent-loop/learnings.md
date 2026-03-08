@@ -55,3 +55,6 @@
 - 2026-03-08 (Iteration 16): 当顶层控制区已经积累了多个高价值面板时，最该优化的往往不再是“增加信息”，而是“统一容器与视觉层级”；Plan 恰好是官方提供的低风险收束方式。
 - 2026-03-08 (Iteration 16): `buildChatCockpitPlan()` 这种轻量派生 helper 很重要：它把 title/description/defaultOpen/isStreaming 从页面里抽离出来，让 cockpit shell 只负责组合，而不是在 JSX 里堆更多条件分支。
 - 2026-03-08 (Iteration 16): 真实浏览器回放已验证新的顶层 shell 并非只改样式：页面会显示 `Agent cockpit`，内部同时包含 pending approvals、run overview、session timeline，以及 footer 上的 continuation actions，说明收束后的控制区真实可用。
+- 2026-03-08 (Iteration 17): 对已经统一的 cockpit 而言，最高价值的信息不是更多 widget，而是更明确的语义层：`Current objective / Blocker / Next action` 能直接回答用户“现在在做什么、卡在哪、接下来最该点什么”。
+- 2026-03-08 (Iteration 17): `buildChatCockpitPlan()` 继续扩展成 `highlights` 输出比在组件内临时拼文案更稳，因为它把 summary 的文案来源固定在一个 helper 里，测试和后续演进都更容易。
+- 2026-03-08 (Iteration 17): 真实浏览器回放已验证结构化 summary 确实在页面中出现：`CURRENT OBJECTIVE / BLOCKER / NEXT ACTION` 分别显示当前 user task、pending approval blocker、以及推荐下一步动作，而不是只存在于 helper 测试里。

@@ -33,3 +33,5 @@
 - 2026-03-08 (Iteration 15): 对依赖 hydration 的顶层 cockpit 功能，当前环境里 `next dev` 偶发静态资源 404 会直接把真实回放价值打折；后续如果要提升这类功能的 E2E 可信度，最好单独解决 dev asset 稳定性问题。
 - 2026-03-08 (Iteration 16): 本轮需要补 `card.tsx + shimmer.tsx + plan.tsx` 三个基础件才能落 ai-elements Plan；虽然这是新增基础组件，但它们都属于官方/生态标准依赖链，而不是凭空发明的新设计系统。
 - 2026-03-08 (Iteration 16): Playwright 在 4189 上对统一 cockpit 的验证是成功的；这说明前一轮 approval dock 的浏览器阻塞确实更像环境噪声，而不是顶层 cockpit 架构已经不可验证。
+- 2026-03-08 (Iteration 17): Oracle 复核抓到一个真实 blind spot：如果 `Plan` 只吃 `defaultOpen`，它在首次挂载后不会因 blocker/error 状态变化重新展开；对 cockpit 这种承载关键阻塞信息的容器，这是必须修掉的可见性问题。
+- 2026-03-08 (Iteration 17): Playwright 第一次验证 summary 时只看布尔断言，没抓 body text，导致误以为 summary 没渲染；后续对这类顶层文案验证，直接抓整页 `innerText` 更稳，能迅速区分“真的没渲染”和“断言写错了”。

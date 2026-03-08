@@ -52,3 +52,6 @@
 - 2026-03-08 (Iteration 16): approval dock 之后，下一步不再继续叠加新的顶层盒子，而是优先把已有 top controls 收束成单一 Plan-based cockpit shell；否则 run overview / approval dock / session timeline 的价值会继续被割裂布局抵消。
 - 2026-03-08 (Iteration 16): 顶层 cockpit shell 采用 ai-elements 官方 `Plan` 作为外层容器，而不是手写新的 dashboard card；因为 `Plan` 已经提供了 streaming-aware title/description、collapsible content、footer action 区，正好适合作为统一控制带。
 - 2026-03-08 (Iteration 16): run overview 内嵌 resume actions 在 this iteration 中上移到 Plan footer，避免顶层同时出现“Plan footer + Run overview actions”两套 continuation UI；action 语义仍全部复用 `buildChatCommandItems` / `buildChatResumeActions`。
+- 2026-03-08 (Iteration 17): unified cockpit shell 之后，下一步不再增加新容器，而是增强 shell 内部的语义清晰度；因此本轮优先把 `Current objective / Blocker / Next action` 结构化 summary 提升到 cockpit 顶部。
+- 2026-03-08 (Iteration 17): 三段式 summary 只复用现有信号：`lastUserText`、`approvalQueue.length`、`status`、`checkpointCount`、`resumeActions[0]`、`runOverview.statusSummary`；不引入任何伪造的“计划状态”或后端协议字段。
+- 2026-03-08 (Iteration 17): Oracle 指出的 `Plan defaultOpen` 单次生效问题本轮一并修复：cockpit 在 `blocked / error / unrunnable` 三种高优先级状态下必须自动重新展开，不能因为用户先前折叠过就隐藏关键阻塞信息。
