@@ -53,3 +53,5 @@
 - 2026-03-09 (Iteration 30): approval strip 浏览器验证第一次失败，不是功能没接通，而是页面里存在多个 `Approve` 按钮（cockpit dock、正文 inbox、composer strip）。对这类多入口交互，必须明确点中 composer strip 对应的那颗按钮，才能得到可信结论。
 - 2026-03-09 (Iteration 31): `Latest output` 浏览器验证同样存在多入口同名文案（顶部 cockpit 与 composer strip 都叫 `Latest output` / `Review output`），所以回放时必须精确选中 composer 邻近的那一组按钮，并通过目标节点高亮来判定行为是否正确。
 - 2026-03-09 (Iteration 32): `chat-message-*` 前缀会同时命中 assistant message 本体与 `chat-message-actions-*` 容器；第一次验证 `Jump to reply` 时就因此误拿到了 actions 容器的 className。后续凡是验证消息跳转，都应过滤掉 action 容器再判断高亮。
+- 2026-03-09 (Iteration 33): 收束成 `Recent context` 后，旧的 source-guard 仍按“latest-output 直接挂在页面上”断言，第一次 test 因此失败。解决方式不是回滚收束，而是把 spec 同步为“保留原 strip 定义，但由 recent-context wrapper 承载”。
+- 2026-03-09 (Iteration 33): 浏览器验证 `Recent context` 时，`Review output` 仍然会与顶部 cockpit 同名按钮冲突，因此这轮改成验证“展开后主文本里同时存在两块上下文与动作标签”；对收束型 UI，这种 presence 断言有时比逐个按钮 click 更稳。

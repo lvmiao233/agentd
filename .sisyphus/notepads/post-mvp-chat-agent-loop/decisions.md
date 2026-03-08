@@ -100,3 +100,6 @@
 - 2026-03-09 (Iteration 32): 当 latest output 已经回到 composer 附近后，仍然缺少“上一条 assistant 到底说了什么”的 carry-forward。因为复杂 coding 会话里，真正影响下一条 prompt 的往往是模型的文字结论，不只是 tool/artifact 产物。
 - 2026-03-09 (Iteration 32): 本轮采用 `ComposerLastReplyStrip`，直接复用 `lastAssistantText` 与 `lastAssistantMessage.id`，提供 `Jump to reply` 与 `Copy reply`，而不是另造新的摘要 helper。这样文本上下文与消息历史保持同一真相源。
 - 2026-03-09 (Iteration 32): `Last reply` strip 与 `Latest output` strip 并列存在：一个回答“刚刚说了什么”，一个回答“刚刚产出了什么”。两者都是继续编码前需要留在用户眼前的上下文。
+- 2026-03-09 (Iteration 33): 在 composer 上方连续补齐 latest output 与 last reply 后，新的最高摩擦点变成“控制条开始堆叠”。因此这轮优先做收束：把两者折叠进一个统一的 `ComposerRecentContextStrip`，保留动作但降低垂直噪音。
+- 2026-03-09 (Iteration 33): recent-context 不是新的数据源，只是新的容器：继续复用 `ComposerLatestOutputStrip` 与 `ComposerLastReplyStrip` 作为内部内容。这样之前已经验证过的 `Review output / Jump to reply / Copy reply` 行为可以原样继承，而不是被重写。
+- 2026-03-09 (Iteration 33): `ComposerRecentContextStrip` 默认折叠，只在用户需要时展开。这让 composer 控制层开始形成更清晰的优先级：阻塞和 steering（approval / active run / continue）优先常驻，而“回顾上下文”收束到一个统一入口。

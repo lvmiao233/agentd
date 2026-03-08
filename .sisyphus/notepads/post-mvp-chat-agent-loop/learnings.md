@@ -104,3 +104,6 @@
 - 2026-03-09 (Iteration 32): 文本回复 carry-forward 和 tool/artifact carry-forward 是两种不同上下文：前者帮助用户理解 agent 的结论与意图，后者帮助用户定位具体产物。两者都靠近 composer 时，继续 prompt 的质量更稳定。
 - 2026-03-09 (Iteration 32): `Copy reply` 与 `Jump to reply` 放在 composer strip 很有价值，因为用户一旦把视线拉回输入区，最常见的动作就是“重新看一眼上一条结论”或“复制其中一句话重写 prompt”。
 - 2026-03-09 (Iteration 32): 验证 `Jump to reply` 时，直接检查目标 assistant message 节点是否带上 `ring-2 ring-sky-500/70 ring-offset-2 ring-offset-background`，比试图从滚动位置推断更稳定。
+- 2026-03-09 (Iteration 33): 当 composer 上方的上下文条开始变多时，最高价值的优化不一定是删功能，而是把语义相近的上下文收束成一个统一入口。`Recent context` 正好把“上一轮说了什么 / 产出了什么”这两类回顾行为装进同一层。
+- 2026-03-09 (Iteration 33): 用 wrapper 组件包住既有 strip，比直接改写它们更稳：source-guard 测试仍然能分别保证 latest-output 与 last-reply 的存在，同时 recent-context 只负责收束与折叠，不重新定义动作。
+- 2026-03-09 (Iteration 33): 真实浏览器回放里，展开 `Recent context` 后同时看见 `Latest output`、`Last reply`、`Review output`、`Jump to reply` 和 `Copy reply`，说明这次收束没有牺牲能力，只是减少了默认视觉高度。
