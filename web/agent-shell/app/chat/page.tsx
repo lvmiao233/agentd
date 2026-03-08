@@ -88,6 +88,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   Tool,
   getToolDisplayName,
@@ -337,6 +339,63 @@ function ChatPromptTools(props: {
         </PromptInputActionMenuContent>
       </PromptInputActionMenu>
     </PromptInputTools>
+  );
+}
+
+function activeRunStateLabel(status: string, liveActivity: ReturnType<typeof buildChatLiveActivity>) {
+  if (liveActivity?.state === 'approval-requested') {
+    return 'Awaiting approval';
+  }
+
+  if (status === 'submitted') {
+    return 'Preparing';
+  }
+
+  return 'Running';
+}
+
+function ActiveRunControls(props: {
+  status: string;
+  liveActivity: ReturnType<typeof buildChatLiveActivity>;
+  onStop: () => void;
+  onReviewActivity: (targetId: string) => void;
+}) {
+  const { status, liveActivity, onStop, onReviewActivity } = props;
+
+  if (!(status === 'submitted' || status === 'streaming')) {
+    return null;
+  }
+
+  const stateLabel = activeRunStateLabel(status, liveActivity);
+  const title = liveActivity?.title ?? 'Agent response';
+  const description =
+    liveActivity?.description ??
+    (status === 'submitted'
+      ? 'The agent is preparing the next response.'
+      : 'The agent is actively working on your request.');
+
+  return (
+    <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{stateLabel}</Badge>
+            <span className="truncate text-sm font-medium">{title}</span>
+          </div>
+          <p className="truncate text-sm text-muted-foreground">{description}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {liveActivity?.targetId && (
+            <Button type="button" variant="outline" size="sm" onClick={() => onReviewActivity(liveActivity.targetId)}>
+              Review live activity
+            </Button>
+          )}
+          <Button type="button" variant="secondary" size="sm" onClick={onStop}>
+            Stop current run
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1437,6 +1496,13 @@ export default function ChatPage() {
           </ConversationContent>
           <ConversationScrollButton />
         </Conversation>
+
+        <ActiveRunControls
+          status={status}
+          liveActivity={liveActivity}
+          onStop={() => void stop()}
+          onReviewActivity={highlightConversationTarget}
+        />
 
         <PromptInputProvider>
           <PromptInput
