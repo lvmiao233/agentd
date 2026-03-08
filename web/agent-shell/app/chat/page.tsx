@@ -10,9 +10,15 @@ import {
 import {
   Conversation,
   ConversationContent,
+  ConversationDownload,
   ConversationEmptyState,
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation';
+import {
+  Checkpoint,
+  CheckpointIcon,
+  CheckpointTrigger,
+} from '@/components/ai-elements/checkpoint';
 import {
   Artifact,
 } from '@/components/ai-elements/artifact';
@@ -105,6 +111,12 @@ import {
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
 import { buildFollowUpSuggestions } from '@/lib/chat-follow-up-suggestions.js';
+import {
+  appendChatCheckpoint,
+  createChatCheckpoint,
+  pruneChatCheckpoints,
+  type ChatCheckpoint,
+} from '@/lib/chat-checkpoints.js';
 import { collectMessageAttachments, getAttachmentLabel } from '@/lib/chat-attachments.js';
 import { extractPreviewArtifacts } from '@/lib/chat-artifacts.js';
 import {
@@ -328,6 +340,7 @@ export default function ChatPage() {
   const [resolvedApprovals, setResolvedApprovals] = useState<ResolvedApprovalItem[]>([]);
   const [messageBranchHistory, setMessageBranchHistory] = useState<Record<string, UIMessage[]>>({});
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [checkpoints, setCheckpoints] = useState<ChatCheckpoint[]>([]);
   const previousAgentIdRef = useRef<string | null>(null);
 
   const {
@@ -343,6 +356,16 @@ export default function ChatPage() {
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     experimental_throttle: 40,
   });
+
+  const lastAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant');
+  const lastAssistantText = lastAssistantMessage
+    ? extractMessageText(lastAssistantMessage)
+    : '';
+  const lastAssistantHasToolParts = lastAssistantMessage
+    ? lastAssistantMessage.parts.some((part) => isToolUIPart(part))
+    : false;
 
   const loadAgents = async (): Promise<ChatAgentOption | null> => {
     const response = await fetch('/api/agents');
@@ -447,8 +470,36 @@ export default function ChatPage() {
     setMessages([]);
     setResolvedApprovals([]);
     setMessageBranchHistory({});
+    setCheckpoints([]);
     setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
   }, [agentId, clearError, messages.length, setMessages]);
+
+  useEffect(() => {
+    if (!(status === 'ready' || status === 'error') || !lastAssistantMessage) {
+      return;
+    }
+
+    const checkpoint = createChatCheckpoint({
+      messages,
+      assistantMessage: lastAssistantMessage,
+      resolvedApprovals,
+      messageBranchHistory,
+    });
+
+    setCheckpoints((current) => appendChatCheckpoint(current, checkpoint));
+  }, [lastAssistantMessage, messageBranchHistory, messages, resolvedApprovals, status]);
+
+  const handleRestoreCheckpoint = (checkpoint: ChatCheckpoint) => {
+    clearError();
+    setMessages(checkpoint.messages);
+    setResolvedApprovals(checkpoint.resolvedApprovals);
+    setMessageBranchHistory(checkpoint.messageBranchHistory);
+    setCheckpoints((current) => pruneChatCheckpoints(current, checkpoint.messageCount));
+    setChatNotice(`Restored the conversation to checkpoint: ${checkpoint.label}`);
+    if (agentId) {
+      void refreshApprovalQueue(agentId);
+    }
+  };
 
   const handleApprovalDecision = async (
     approvalId: string,
@@ -567,15 +618,6 @@ export default function ChatPage() {
     approvalCount: approvalQueue.length,
   });
 
-  const lastAssistantMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === 'assistant');
-  const lastAssistantText = lastAssistantMessage
-    ? extractMessageText(lastAssistantMessage)
-    : '';
-  const lastAssistantHasToolParts = lastAssistantMessage
-    ? lastAssistantMessage.parts.some((part) => isToolUIPart(part))
-    : false;
   const followUpSuggestions = buildFollowUpSuggestions({
     status,
     lastAssistantText,
@@ -688,6 +730,9 @@ export default function ChatPage() {
         )}
 
         <Conversation>
+          <ConversationDownload
+            messages={messages.map((message) => ({ role: message.role, content: extractMessageText(message) || '[non-text message]' }))}
+          />
           <ConversationContent>
             {messages.length === 0 && approvalFeed.length === 0 ? (
               <ConversationEmptyState
@@ -703,6 +748,10 @@ export default function ChatPage() {
                 const assistantBranchKey =
                   message.role === 'assistant'
                     ? getAssistantBranchKey(messages, message.id)
+                    : null;
+                const messageCheckpoint =
+                  message.role === 'assistant'
+                    ? checkpoints.find((checkpoint) => checkpoint.messageId === message.id) ?? null
                     : null;
                 const branchMessages =
                   message.role === 'assistant' && assistantBranchKey
@@ -1113,6 +1162,18 @@ export default function ChatPage() {
                           </MessageActions>
                         </>
                       )}
+
+                    {messageCheckpoint && (
+                      <Checkpoint className="mt-3">
+                        <CheckpointIcon />
+                        <CheckpointTrigger
+                          tooltip="Restore the conversation to this point"
+                          onClick={() => handleRestoreCheckpoint(messageCheckpoint)}
+                        >
+                          {messageCheckpoint.label}
+                        </CheckpointTrigger>
+                      </Checkpoint>
+                    )}
                   </Fragment>
                 );
               })
