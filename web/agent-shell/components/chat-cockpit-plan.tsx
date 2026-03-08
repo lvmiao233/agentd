@@ -13,9 +13,11 @@ import {
   PlanTrigger,
 } from '@/components/ai-elements/plan';
 import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
+import { Button } from '@/components/ui/button';
 import ChatApprovalDockPanel from '@/components/chat-approval-dock';
 import ChatRunOverviewPanel from '@/components/chat-run-overview';
 import ChatSessionTimelinePanel from '@/components/chat-session-timeline';
+import { buildChatCockpitActions } from '@/lib/chat-cockpit-actions.js';
 import type { ChatCheckpoint } from '@/lib/chat-checkpoints.js';
 import type { ChatCommandItem } from '@/lib/chat-command-menu.js';
 import type { ChatCockpitPlan } from '@/lib/chat-cockpit-plan.js';
@@ -51,10 +53,29 @@ export default function ChatCockpitPlanPanel({
   onRestoreCheckpoint,
 }: ChatCockpitPlanPanelProps) {
   const [open, setOpen] = useState(plan.defaultOpen);
+  const cockpitActions = buildChatCockpitActions({
+    runOverview,
+    approvalQueue,
+    resumeActions,
+  });
   const toneClasses: Record<'default' | 'warning' | 'success', string> = {
     default: 'border-border/60 bg-background/60',
     warning: 'border-amber-500/30 bg-amber-500/10',
     success: 'border-emerald-500/30 bg-emerald-500/10',
+  };
+
+  const handleHighlightAction = (key: 'objective' | 'blocker' | 'next') => {
+    const action = cockpitActions[key];
+    if (!action) {
+      return;
+    }
+
+    if (action.kind === 'navigate') {
+      onNavigateToTarget(action.targetId);
+      return;
+    }
+
+    onActionSelect(action.action);
   };
 
   useEffect(() => {
@@ -80,14 +101,29 @@ export default function ChatCockpitPlanPanel({
       </PlanHeader>
 
       <div className="grid gap-2 px-6 md:grid-cols-3">
-        {plan.highlights.map((item) => (
-          <div key={item.key} className={`rounded-lg border px-3 py-2 ${toneClasses[item.tone]}`}>
-            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              {item.label}
+        {plan.highlights.map((item) => {
+          const itemAction = cockpitActions[item.key];
+
+          return (
+            <div key={item.key} className={`rounded-lg border px-3 py-2 ${toneClasses[item.tone]}`}>
+              <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                {item.label}
+              </div>
+              <div className="mt-1 text-sm text-foreground">{item.value}</div>
+              {itemAction && (
+                <Button
+                  className="mt-2 h-7 px-2 text-xs"
+                  onClick={() => handleHighlightAction(item.key)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  {itemAction.label}
+                </Button>
+              )}
             </div>
-            <div className="mt-1 text-sm text-foreground">{item.value}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <PlanContent className="space-y-3">
