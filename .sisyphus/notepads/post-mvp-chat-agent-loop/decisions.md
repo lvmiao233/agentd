@@ -97,3 +97,6 @@
 - 2026-03-09 (Iteration 31): 在 composer 上方已经有“怎么开始 / 怎么停 / 怎么继续 / 怎么审批”之后，下一条最值缺口是“刚刚产出了什么”仍然主要靠顶部 cockpit 提醒。为了让下一条 prompt 更有上下文，本轮把 `latestOutput` 也拉回 composer 邻近层。
 - 2026-03-09 (Iteration 31): 这里不新增状态源，而是复用现有 `buildChatLatestOutput(messages)` 结果渲染 `ComposerLatestOutputStrip`。这样顶部 cockpit 和输入区附近都对着同一份 latest-result 事实，不会产生两个不同版本的“最近产物”。
 - 2026-03-09 (Iteration 31): `ComposerLatestOutputStrip` 只在 `ready/error` 时出现，并提供唯一动作 `Review output`。它的职责不是替代正文产物，而是让用户在继续输入时不用先回忆或回滚：“上一轮到底输出了什么？”
+- 2026-03-09 (Iteration 32): 当 latest output 已经回到 composer 附近后，仍然缺少“上一条 assistant 到底说了什么”的 carry-forward。因为复杂 coding 会话里，真正影响下一条 prompt 的往往是模型的文字结论，不只是 tool/artifact 产物。
+- 2026-03-09 (Iteration 32): 本轮采用 `ComposerLastReplyStrip`，直接复用 `lastAssistantText` 与 `lastAssistantMessage.id`，提供 `Jump to reply` 与 `Copy reply`，而不是另造新的摘要 helper。这样文本上下文与消息历史保持同一真相源。
+- 2026-03-09 (Iteration 32): `Last reply` strip 与 `Latest output` strip 并列存在：一个回答“刚刚说了什么”，一个回答“刚刚产出了什么”。两者都是继续编码前需要留在用户眼前的上下文。

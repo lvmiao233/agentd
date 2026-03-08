@@ -101,3 +101,6 @@
 - 2026-03-09 (Iteration 31): latest-result carry-forward 的关键不是再造一个 summary，而是把现有 `latestOutput` 复用到离 composer 更近的层。只要数据源保持单一，用户在顶部 cockpit 和输入区附近看到的“最新产物”就能保持一致。
 - 2026-03-09 (Iteration 31): 真实浏览器回放里，`Review output` 不必靠猜；因为 `highlightConversationTarget()` 会给目标节点加 ring 类名，所以验证这类“回到对应产物”动作时，检查目标节点是否出现 `ring-sky-500/70` 比单纯看滚动位置更稳。
 - 2026-03-09 (Iteration 31): 当 composer 上方已经依次有 approval / latest output / continue strip 时，用户终于能在不离开输入区的情况下同时知道：当前有无阻塞、上一轮产出了什么、下一步可以做什么。这三件事是复杂 coding 会话真正高频的上下文。
+- 2026-03-09 (Iteration 32): 文本回复 carry-forward 和 tool/artifact carry-forward 是两种不同上下文：前者帮助用户理解 agent 的结论与意图，后者帮助用户定位具体产物。两者都靠近 composer 时，继续 prompt 的质量更稳定。
+- 2026-03-09 (Iteration 32): `Copy reply` 与 `Jump to reply` 放在 composer strip 很有价值，因为用户一旦把视线拉回输入区，最常见的动作就是“重新看一眼上一条结论”或“复制其中一句话重写 prompt”。
+- 2026-03-09 (Iteration 32): 验证 `Jump to reply` 时，直接检查目标 assistant message 节点是否带上 `ring-2 ring-sky-500/70 ring-offset-2 ring-offset-background`，比试图从滚动位置推断更稳定。
