@@ -77,3 +77,6 @@
 - 2026-03-09 (Iteration 23): AI SDK 的 `tool-input-delta` chunk 非常轻量，真正关键的是它和 `input-streaming` 之间的组合：前端会把累计的 `inputTextDelta` 喂给 `parsePartialJson`，再把结果实时回写到 `dynamic-tool.input`。因此这轮几乎不需要改 UI 数据模型，只要桥接层把 delta 语义发对。
 - 2026-03-09 (Iteration 23): `ToolInput` 组件本身已经足够吃下 partial input —— 不必额外造“partial params preview”组件。因为一旦 `dynamic-tool.input` 被 AI SDK 用 partial JSON 更新，现有 `CodeBlock(JSON.stringify(input))` 就会自然把半成品参数展示出来。
 - 2026-03-09 (Iteration 23): 真实浏览器回放已经看到 partial tool args 进入界面：`/chat` 页面中的 `mcp.fs.read_file` 工具卡停在 `Preparing`，正文显示 `Collecting mcp.fs.read_file parameters…`，而 cockpit `LIVE ACTIVITY` 与正文参数区都出现了 `path: READ`。这说明 partial tool input 已经真正穿透到用户可见层。
+- 2026-03-09 (Iteration 24): `read_file`、`shell`、`search` 这类工具的结果可读性，往往不是靠更复杂的布局提升，而是靠“统一的摘要提炼规则”。只要优先读取 `stdout/content/text/message/path/exitCode/ok` 这些高信号字段，用户大多数时候根本不需要先看 raw JSON。
+- 2026-03-09 (Iteration 24): `ToolOutput` 摘要、cockpit 的 `Latest output`、以及 `Live activity` 最好共享同一个 summarizer；否则很容易出现正文说一套、顶部摘要又说另一套的分裂体验。
+- 2026-03-09 (Iteration 24): 浏览器实际验证表明，把摘要抬到 `ToolHeader` 很值：在工具卡标题区域已经能直接读到 `agentd shell quickstart`。哪怕当前布局里折叠交互偶发被周围容器干扰，用户也不必先依赖“成功点击展开”才能理解结果。

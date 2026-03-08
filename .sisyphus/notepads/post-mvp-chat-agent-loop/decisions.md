@@ -72,3 +72,6 @@
 - 2026-03-09 (Iteration 23): 在 `dynamic-tool` 真正打通之后，下一步优先补 `tool-input-delta`，而不是急着引入更多 tool 卡组件。原因很直接：如果工具参数只能从“没有”瞬间跳到“完整”，用户仍然感知不到 agent 在逐步思考/构造调用，和 OpenCode 类体验还有明显差距。
 - 2026-03-09 (Iteration 23): `tool-input-delta` 的桥接策略采用“按 toolCallId 维护最近一次 `argumentsText`，仅发新增尾部 `inputTextDelta`”而不是重复发送完整参数。这样既贴合 AI SDK 官方 chunk 语义，也让前端的 `parsePartialJson` 能自然接管中间态解析。
 - 2026-03-09 (Iteration 23): 是否发出最终 `tool-input-available` 取决于参数是否已形成完整 JSON，或工具是否已经返回 output/error。对明显未闭合的结构化参数，只发送 `tool-input-delta`，继续保持 `input-streaming`；不要为了“看起来完整”而过早切到 `input-available`。
+- 2026-03-09 (Iteration 24): 下一步优先补“工具结果摘要层”，而不是继续新增 cockpit 卡片。因为 partial input 已经让“过程”变得可见，现在真正拖累阅读速度的是完成后的 tool output 仍然经常是一大块 JSON，用户要自己提炼结论。
+- 2026-03-09 (Iteration 24): 这轮不发明新的 tool result 协议，而是抽一层共享 helper（`chat-tool-summary`），让 `ToolOutput`、`buildChatLiveActivity()`、`buildChatLatestOutput()` 都复用同一套摘要逻辑。这样正文卡片和 cockpit 不会各说各话。
+- 2026-03-09 (Iteration 24): 仅把摘要放在工具展开内容里还不够；高频场景下用户先看到的是 `ToolHeader`。因此 header 新增一行 preview，让结果即使在折叠状态下也有一眼可扫的可见层。
