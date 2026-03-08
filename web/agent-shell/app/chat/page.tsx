@@ -90,6 +90,7 @@ import {
 } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Tool,
   getToolDisplayName,
@@ -101,7 +102,7 @@ import {
 } from '@/components/ai-elements/tool';
 import ChatCockpitPlanPanel from '@/components/chat-cockpit-plan';
 import ChatCommandMenu from '@/components/chat-command-menu';
-import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon } from 'lucide-react';
+import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon, ChevronDown } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
   buildChatAgentUnavailableMessage,
@@ -510,6 +511,59 @@ function ComposerLastReplyStrip(props: {
         </div>
       </div>
     </div>
+  );
+}
+
+function ComposerRecentContextStrip(props: {
+  latestOutput: ReturnType<typeof buildChatLatestOutput>;
+  lastAssistantText: string;
+  lastAssistantTargetId: string | null;
+  onReviewOutput: (targetId: string) => void;
+  onReviewReply: (targetId: string) => void;
+}) {
+  const {
+    latestOutput,
+    lastAssistantText,
+    lastAssistantTargetId,
+    onReviewOutput,
+    onReviewReply,
+  } = props;
+  const [open, setOpen] = useState(false);
+
+  if (!latestOutput && !lastAssistantText) {
+    return null;
+  }
+
+  const summary = latestOutput?.description || lastAssistantText;
+  const count = Number(Boolean(latestOutput)) + Number(Boolean(lastAssistantText));
+
+  return (
+    <Collapsible className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70" open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">Recent context</Badge>
+            <span className="text-sm font-medium">{count} item{count > 1 ? 's' : ''}</span>
+          </div>
+          <p className="truncate text-sm text-muted-foreground">{summary}</p>
+        </div>
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-t border-border/60 px-4 pb-3">
+        <div className="pt-3">
+          {latestOutput && (
+            <ComposerLatestOutputStrip latestOutput={latestOutput} onReview={onReviewOutput} />
+          )}
+          {lastAssistantText && (
+            <ComposerLastReplyStrip
+              lastAssistantText={lastAssistantText}
+              targetId={lastAssistantTargetId}
+              onReview={onReviewReply}
+            />
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -1628,17 +1682,12 @@ export default function ChatPage() {
         />
 
         {(status === 'ready' || status === 'error') && (
-          <ComposerLatestOutputStrip
+          <ComposerRecentContextStrip
             latestOutput={latestOutput}
-            onReview={highlightConversationTarget}
-          />
-        )}
-
-        {(status === 'ready' || status === 'error') && (
-          <ComposerLastReplyStrip
             lastAssistantText={lastAssistantText}
-            targetId={lastAssistantTargetId}
-            onReview={highlightConversationTarget}
+            lastAssistantTargetId={lastAssistantTargetId}
+            onReviewOutput={highlightConversationTarget}
+            onReviewReply={highlightConversationTarget}
           />
         )}
 
