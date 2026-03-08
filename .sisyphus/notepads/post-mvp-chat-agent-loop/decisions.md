@@ -85,3 +85,6 @@
 - 2026-03-09 (Iteration 27): 在 chat 已经能自动恢复 agent 之后，空会话里最缺的不是更多说明，而是“第一条可执行 prompt”。因此这轮把 starter actions 从 command palette 隐性能力，提升成首屏显式 quick-start strip。
 - 2026-03-09 (Iteration 27): starter actions 继续复用已有 `resumeActions` / `handleResumeAction` 路径，不另外发明新 prompt 源。这样 command palette、cockpit footer、quick-start strip 共享同一套 workflow prompts，不会出现三套入口各自说不同话。
 - 2026-03-09 (Iteration 27): 实践证明把 starter pills 放在 `ConversationEmptyState` 内部仍会掉进 scroll/overlay 交界区，所以本轮最终选择把它们提升为 cockpit 下方、conversation 上方的独立 `shrink-0` strip；这更稳定，也更符合“工作台入口”的语义。
+- 2026-03-09 (Iteration 28): 在 quick-start 之后，下一步最值的是让“进行中的 run”也有同样低摩擦的 steering 入口。虽然发送按钮在 streaming 时已可 stop，但只剩一个方块图标太隐性，不足以承担主要 steering 入口。
+- 2026-03-09 (Iteration 28): 本轮采用独立 `ActiveRunControls` strip，而不是把 stop 行为塞回消息内部 toolbar。原因是 strip 位于 prompt 上方、层级稳定，且能和 quick-start strip / cockpit 形成统一的“会话控制层”。
+- 2026-03-09 (Iteration 28): active strip 只做两件事：明确当前 run 状态（Preparing / Running / Awaiting approval）和暴露 `Stop current run` + `Review live activity`。不在这一轮继续加 redirect prompt，是为了先把“中止/定位”这个基础 steering 闭环做稳。

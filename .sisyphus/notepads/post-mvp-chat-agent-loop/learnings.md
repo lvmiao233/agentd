@@ -89,3 +89,6 @@
 - 2026-03-09 (Iteration 26): 对 JS helper + `.d.ts` 并存的前端仓库来说，新增选择策略函数后第一时间补类型声明，比等 build 报错后再修更省成本；这个仓库已经多次证明 strict build 会放大这种尾巴。
 - 2026-03-09 (Iteration 27): 空会话 starter actions 如果只存在于 command palette，discoverability 还是太弱；但如果直接塞进 `ConversationEmptyState`，又会回到之前那类边界点击问题。把它们提升成独立 quick-start strip，是目前这套布局下更稳的折中。
 - 2026-03-09 (Iteration 27): 对首条 prompt 引导来说，“能点击并真正发出 prompt”比“看起来有建议按钮”重要得多。真实浏览器回放里，`Plan and start coding` quick-start 已经把 prompt 送进 `/api/chat`，并在正文看到 `Started from starter prompt: ...`，这才算 feature 真正闭环。
+- 2026-03-09 (Iteration 28): streaming 时的 stop 能力如果只藏在 submit 图标状态切换里，用户需要先知道那个方块代表什么，认知负担太高。把它抬成具名按钮后，run steering 的可发现性会明显提升。
+- 2026-03-09 (Iteration 28): 对这类“中止 pending fetch”回放，mock `fetch` 必须显式支持 `AbortController.signal`，否则浏览器里看起来 stop 按钮点了也不会收掉状态。支持 abort 后，才能真实验证 UI 从 `Preparing` 回到 ready。
+- 2026-03-09 (Iteration 28): `Review live activity` 和 `Stop current run` 共享同一条控制层很有价值：前者回答“它现在在干嘛”，后者回答“我想立刻接管”，这两者正是 active steering 的最小闭环。
