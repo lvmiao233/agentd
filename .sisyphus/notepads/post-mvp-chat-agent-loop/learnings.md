@@ -42,3 +42,6 @@
 - 2026-03-08 (Iteration 11): 真实浏览器回放已验证 overview deep-link 的关键闭环：点击 `Tool activity` 或 `Pending approvals` 中的条目后，对应目标节点会被滚动到视口中心并打上临时 highlight ring，足够支撑长会话导航。
 - 2026-03-08 (Iteration 11 follow-up): 对 ai-elements `MessageBranch` 这类“隐藏但不卸载”的分支容器，DOM id 必须 branch-safe；只要旧分支节点还留在树里，重复 id 就会直接破坏 deep-link 的确定性。
 - 2026-03-08 (Iteration 11 follow-up): 对 run overview 的 assistant summary，最佳 target 不是“固定指向 assistant message”，而是“优先文本消息，否则首个工具”；这样更贴近 AI SDK 里 tool-first / tool-only assistant turn 的真实形态。
+- 2026-03-08 (Iteration 12): ai-elements 官方 `Checkpoint` 非常轻量，真正有价值的部分不在组件本身，而在 snapshot 策略；把 snapshot helper 独立到 `lib/chat-checkpoints.js` 后，checkpoint 的生成/去重/裁剪都更容易稳定测试。
+- 2026-03-08 (Iteration 12): 对当前架构来说，checkpoint 恢复最稳的语义不是“回滚后端 session”，而是“回滚下一次提交给模型的前端会话历史”；因为当前 chat 请求本来就是按前端 message history 驱动的，这样不会额外引入协议耦合。
+- 2026-03-08 (Iteration 12): 真实浏览器回放已验证 checkpoint 核心闭环：两轮 assistant 回复后生成 checkpoint，点击第一轮 checkpoint 会移除第二轮消息并显示 restore notice，说明恢复链路真实可用。

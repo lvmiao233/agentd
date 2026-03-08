@@ -23,3 +23,4 @@
 - 2026-03-08 (Iteration 10): 即使已经有 follow-up suggestions，当前 chat 仍然缺一个“随时可调出”的命令入口；用户必须先滚到最后一条 assistant 消息附近，才能点击继续/验证类 prompt，这对长会话尤其别扭。
 - 2026-03-08 (Iteration 10): 当前 PromptInput 工具区仍然偏“附件输入框”而不是“agent 控制台”；如果不把命令能力塞进输入侧，持续 coding 仍会被多处散落的 action 按钮打断。
 - 2026-03-08 (Iteration 11): run overview 虽然已经能汇总当前 turn / tool / approval 状态，但如果用户看完还得自己在长会话里滚动定位对应节点，它就仍然只解决了一半问题；缺失的正是“从摘要回到现场”的导航能力。
+- 2026-03-08 (Iteration 12): 现在用户虽然能继续提问、能 regenerate、能做分支、也能通过 run overview 找到上下文，但仍然缺少一个明确的“把整个会话恢复到之前某一步”的机制；这会让长任务探索在走偏后恢复成本偏高。

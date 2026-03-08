@@ -41,3 +41,5 @@
 - 2026-03-08 (Iteration 11): run overview 导航先采用最小风险方案：前端派生 `targetId`，现有消息/工具/approval 节点补稳定 DOM `id`，点击 overview item 后 `scrollIntoView + transient highlight`；不引入额外 ref map，也不侵入 AI SDK message schema。
 - 2026-03-08 (Iteration 11 follow-up): 分支消息内的 tool anchor 必须使用当前 `targetMessage.id`，不能复用外层 message id；否则 hidden branch 也会占用相同 DOM id，deep-link 可能跳到错误版本。
 - 2026-03-08 (Iteration 11 follow-up): assistant-state 的 target 不应盲目指向 `chat-message-*`；当 assistant turn 只有 tool part、没有真正 message bubble 时，需回退到首个 tool anchor，避免死链。
+- 2026-03-08 (Iteration 12): 下一步优先做 conversation checkpoints，而不是继续扩充 run overview 顶部操作栏；原因是长任务除了“知道现在在哪”之外，还缺少“回到之前某一步重新探索”的低摩擦恢复能力。
+- 2026-03-08 (Iteration 12): checkpoint 本轮严格限定为前端会话级恢复：自动为已完成的 assistant turn 生成 snapshot，恢复时回滚 `messages / resolvedApprovals / messageBranchHistory / checkpoint list`，不声称回滚 daemon 内部状态，也不跨刷新持久化。
