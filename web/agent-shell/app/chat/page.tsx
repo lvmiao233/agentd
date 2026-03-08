@@ -1550,18 +1550,6 @@ export default function ChatPage() {
                       (status === 'ready' || status === 'error') &&
                       lastAssistantText && (
                         <>
-                          {followUpSuggestions.length > 0 && (
-                          <Suggestions id={`chat-message-actions-${message.id}`}>
-                              {followUpSuggestions.map((suggestion) => (
-                                <Suggestion
-                                  key={suggestion}
-                                  onClick={() => void submitPrompt({ text: suggestion, files: [] })}
-                                >
-                                  {suggestion}
-                                </Suggestion>
-                              ))}
-                            </Suggestions>
-                          )}
                           <MessageActions>
                             <MessageAction onClick={() => void handleRegenerate()} label="重新生成">
                               <RefreshCcw className="size-3" />
