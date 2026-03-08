@@ -22,6 +22,7 @@ import type { ChatCheckpoint } from '@/lib/chat-checkpoints.js';
 import type { ChatCommandItem } from '@/lib/chat-command-menu.js';
 import type { ChatCockpitPlan } from '@/lib/chat-cockpit-plan.js';
 import type { ApprovalItem } from '@/lib/daemon-rpc';
+import type { ChatLatestOutput } from '@/lib/chat-latest-output.js';
 import type { ChatRunOverview } from '@/lib/chat-run-overview.js';
 import type { ChatSessionTimeline } from '@/lib/chat-session-timeline.js';
 
@@ -32,6 +33,7 @@ type ChatCockpitPlanPanelProps = {
   approvalQueue: ApprovalItem[];
   approvalBusyId: string | null;
   sessionTimeline: ChatSessionTimeline | null;
+  latestOutput: ChatLatestOutput | null;
   checkpointsById: Record<string, ChatCheckpoint>;
   onActionSelect: (action: ChatCommandItem) => void;
   onNavigateToTarget: (targetId: string) => void;
@@ -46,6 +48,7 @@ export default function ChatCockpitPlanPanel({
   approvalQueue,
   approvalBusyId,
   sessionTimeline,
+  latestOutput,
   checkpointsById,
   onActionSelect,
   onNavigateToTarget,
@@ -124,6 +127,24 @@ export default function ChatCockpitPlanPanel({
             </div>
           );
         })}
+        {latestOutput && (
+          <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Latest output
+            </div>
+            <div className="mt-1 text-sm text-foreground">{latestOutput.title}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{latestOutput.description}</div>
+            <Button
+              className="mt-2 h-7 px-2 text-xs"
+              onClick={() => onNavigateToTarget(latestOutput.targetId)}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              Review output
+            </Button>
+          </div>
+        )}
       </div>
 
       <PlanContent className="space-y-3">

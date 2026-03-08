@@ -128,6 +128,7 @@ import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
 import { buildChatCockpitPlan } from '@/lib/chat-cockpit-plan.js';
+import { buildChatLatestOutput } from '@/lib/chat-latest-output.js';
 import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
 import { buildChatSessionTimeline } from '@/lib/chat-session-timeline.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
@@ -642,6 +643,7 @@ export default function ChatPage() {
     status,
     activeMessageId: lastAssistantMessage?.id,
   });
+  const latestOutput = buildChatLatestOutput(messages);
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
@@ -771,6 +773,7 @@ export default function ChatPage() {
           approvalQueue={approvalQueue}
           approvalBusyId={approvalBusyId}
           sessionTimeline={sessionTimeline}
+          latestOutput={latestOutput}
           checkpointsById={checkpointsById}
           onActionSelect={(action) => void handleResumeAction(action)}
           onNavigateToTarget={highlightConversationTarget}
@@ -942,9 +945,11 @@ export default function ChatPage() {
                   flushVariantContentParts();
 
                   return (
-                    <div key={variantKey} className="space-y-4">
+                      <div key={variantKey} className="space-y-4">
                           {previewArtifacts.map((artifact, artifactIndex) => (
                         <Artifact
+                          id={`chat-artifact-${targetMessage.id}-${artifactIndex}`}
+                          className="scroll-mt-24"
                           key={`${variantKey}-artifact-${artifactIndex}`}
                           code={artifact.code}
                           language={artifact.language}
@@ -1138,6 +1143,8 @@ export default function ChatPage() {
                         {message.role === 'assistant' &&
                           previewArtifacts.map((artifact, artifactIndex) => (
                             <Artifact
+                              id={`chat-artifact-${message.id}-${artifactIndex}`}
+                              className="scroll-mt-24"
                               key={`${message.id}-artifact-${artifactIndex}`}
                               code={artifact.code}
                               language={artifact.language}
