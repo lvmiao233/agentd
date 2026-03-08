@@ -148,6 +148,78 @@ function parseToolCallInput(argumentsText) {
   }
 }
 
+function createRunAgentStreamStateRecord() {
+  return {
+    inputStarted: false,
+    lastArgumentsText: '',
+    lastAvailableArgumentsText: null,
+  };
+}
+
+function getToolCallState(streamState, toolCallId) {
+  if (!streamState.toolCalls.has(toolCallId)) {
+    streamState.toolCalls.set(toolCallId, createRunAgentStreamStateRecord());
+  }
+
+  return streamState.toolCalls.get(toolCallId);
+}
+
+function detectStructuredArguments(argumentsText) {
+  const trimmed = argumentsText.trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function getInputAvailability(argumentsText) {
+  const trimmed = argumentsText.trim();
+  if (!trimmed) {
+    return {
+      input: {},
+      isComplete: true,
+      isStructured: false,
+    };
+  }
+
+  const isStructured = detectStructuredArguments(argumentsText);
+
+  if (!isStructured) {
+    return {
+      input: trimmed,
+      isComplete: true,
+      isStructured: false,
+    };
+  }
+
+  try {
+    return {
+      input: JSON.parse(trimmed),
+      isComplete: true,
+      isStructured: true,
+    };
+  } catch {
+    return {
+      input: trimmed,
+      isComplete: false,
+      isStructured: true,
+    };
+  }
+}
+
+function getInputTextDelta(previousText, nextText) {
+  if (!nextText || nextText === previousText) {
+    return '';
+  }
+
+  if (!previousText) {
+    return nextText;
+  }
+
+  if (nextText.startsWith(previousText)) {
+    return nextText.slice(previousText.length);
+  }
+
+  return nextText;
+}
+
 function isTerminalStreamFrame(frame) {
   const payload = normalizeStreamPayload(frame);
   const status = payload.status;
@@ -167,7 +239,12 @@ function terminalFinishReason(frame) {
   return 'stop';
 }
 
-export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
+export function emitRunAgentStreamLine({
+  lineRaw,
+  textId,
+  writer,
+  streamState = { toolCalls: new Map() },
+}) {
   let line = (lineRaw ?? '').trim();
   if (!line) {
     return { emitted: false, terminalReached: false, finishReason: null };
@@ -202,23 +279,56 @@ export function emitRunAgentStreamLine({ lineRaw, textId, writer }) {
   const toolCalls = extractStreamToolCalls(parsed);
   if (toolCalls.length > 0) {
     for (const toolCall of toolCalls) {
-      if (toolCall.inputStarted) {
+      const toolCallState = getToolCallState(streamState, toolCall.id);
+
+      if (toolCall.inputStarted || (toolCall.hasInput && !toolCallState.inputStarted)) {
         writer.write({
           type: 'tool-input-start',
           toolCallId: toolCall.id,
           toolName: toolCall.name,
           dynamic: true,
         });
+        toolCallState.inputStarted = true;
       }
+
       if (toolCall.hasInput) {
-        writer.write({
-          type: 'tool-input-available',
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          input: parseToolCallInput(toolCall.argumentsText),
-          dynamic: true,
-        });
+        const deltaText = getInputTextDelta(
+          toolCallState.lastArgumentsText,
+          toolCall.argumentsText,
+        );
+        if (deltaText) {
+          writer.write({
+            type: 'tool-input-delta',
+            toolCallId: toolCall.id,
+            inputTextDelta: deltaText,
+          });
+        }
+
+        const inputAvailability = getInputAvailability(toolCall.argumentsText);
+        const shouldEmitAvailable =
+          inputAvailability.isComplete ||
+          toolCall.output !== undefined ||
+          toolCall.errorText !== undefined;
+
+        if (
+          shouldEmitAvailable &&
+          toolCallState.lastAvailableArgumentsText !== toolCall.argumentsText
+        ) {
+          writer.write({
+            type: 'tool-input-available',
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            input: inputAvailability.isComplete
+              ? inputAvailability.input
+              : parseToolCallInput(toolCall.argumentsText),
+            dynamic: true,
+          });
+          toolCallState.lastAvailableArgumentsText = toolCall.argumentsText;
+        }
+
+        toolCallState.lastArgumentsText = toolCall.argumentsText;
       }
+
       if (toolCall.errorText !== undefined) {
         writer.write({
           type: 'tool-output-error',

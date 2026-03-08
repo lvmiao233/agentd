@@ -50,6 +50,17 @@ export async function run() {
     dynamic: true,
   });
   assert.deepEqual(writes[2], {
+    type: 'tool-input-start',
+    toolCallId: 'call_1',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[3], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_1',
+    inputTextDelta: '{"path":"/tmp/a"}',
+  });
+  assert.deepEqual(writes[4], {
     type: 'tool-input-available',
     toolCallId: 'call_1',
     toolName: 'lookup',
@@ -69,13 +80,24 @@ export async function run() {
   assert.equal(toolErrorOutcome.emitted, true, 'tool error stream should emit content');
   assert.equal(toolErrorOutcome.terminalReached, false, 'tool error frame itself should not terminate stream');
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_error',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_error',
+    inputTextDelta: '{"path":"/tmp/secret"}',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_error',
     toolName: 'lookup',
     input: { path: '/tmp/secret' },
     dynamic: true,
   });
-  assert.deepEqual(writes[1], {
+  assert.deepEqual(writes[3], {
     type: 'tool-output-error',
     toolCallId: 'call_error',
     errorText: 'denied',
@@ -192,5 +214,41 @@ export async function run() {
     type: 'text-delta',
     id: 'text-trailing',
     delta: 'tail',
+  });
+
+  writes.length = 0;
+  const partialToolOutcome = await consumeRunAgentStream({
+    responseBody: createReadableStream([
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_partial","name":"lookup","arguments":"{\\"path\\":\\"READ"}]}}}\n\n',
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_partial","name":"lookup","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}\n\n',
+    ]),
+    textId: 'text-partial-tool',
+    writer,
+  });
+
+  assert.equal(partialToolOutcome.emitted, true, 'partial tool stream should emit content');
+  assert.equal(partialToolOutcome.terminalReached, false, 'partial tool stream should stay non-terminal');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_partial',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_partial',
+    inputTextDelta: '{"path":"READ',
+  });
+  assert.deepEqual(writes[2], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_partial',
+    inputTextDelta: 'ME.md"}',
+  });
+  assert.deepEqual(writes[3], {
+    type: 'tool-input-available',
+    toolCallId: 'call_partial',
+    toolName: 'lookup',
+    input: { path: 'README.md' },
+    dynamic: true,
   });
 }

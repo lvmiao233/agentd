@@ -34,6 +34,7 @@ function isCompleteEventData(eventData) {
 export async function consumeRunAgentStream({ responseBody, textId, writer }) {
   const reader = responseBody.getReader();
   const decoder = new TextDecoder();
+  const streamState = { toolCalls: new Map() };
 
   let pendingText = '';
   let pendingDataLines = [];
@@ -53,6 +54,7 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
       lineRaw: eventData,
       textId,
       writer,
+      streamState,
     });
     emitted = emitted || outcome.emitted;
     terminalReached = terminalReached || outcome.terminalReached;
@@ -104,6 +106,7 @@ export async function consumeRunAgentStream({ responseBody, textId, writer }) {
       lineRaw: line,
       textId,
       writer,
+      streamState,
     });
     emitted = emitted || outcome.emitted;
     terminalReached = terminalReached || outcome.terminalReached;

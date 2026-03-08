@@ -3,6 +3,7 @@ import { emitRunAgentStreamLine } from '../lib/run-agent-stream.mjs';
 
 export async function run() {
   const writes = [];
+  const streamState = { toolCalls: new Map() };
   const writer = {
     write(chunk) {
       writes.push(chunk);
@@ -14,12 +15,24 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\\"path\\":\\"/tmp/file.txt\\"}"}}]}}}',
     textId: 'text-1',
     writer,
+    streamState,
   });
 
   assert.equal(toolOutcome.emitted, true, 'tool-call frame should emit chunks');
   assert.equal(toolOutcome.terminalReached, false, 'working frame should not terminate stream');
   assert.equal(toolOutcome.finishReason, null, 'working frame should not provide finish reason');
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_1',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_1',
+    inputTextDelta: '{"path":"/tmp/file.txt"}',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_1',
     toolName: 'lookup',
@@ -33,6 +46,7 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_start","name":"mcp.fs.read_file","phase":"input-start"}]}}}',
     textId: 'text-start',
     writer,
+    streamState: { toolCalls: new Map() },
   });
 
   assert.equal(toolStartOutcome.emitted, true, 'tool-input-start frame should emit chunks');
@@ -50,6 +64,7 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_2","type":"function","function":{"name":"lookup","arguments":"not-json"}}]}}}',
     textId: 'text-2',
     writer,
+    streamState: { toolCalls: new Map() },
   });
 
   assert.equal(fallbackArgsOutcome.emitted, true, 'tool-call with plain text args should still emit');
@@ -59,6 +74,17 @@ export async function run() {
     'non-terminal tool frame should not provide finish reason'
   );
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_2',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_2',
+    inputTextDelta: 'not-json',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_2',
     toolName: 'lookup',
@@ -72,17 +98,29 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_3","type":"function","function":{"name":"lookup","arguments":"{\\"path\\":\\"/tmp/out.txt\\"}"},"output":{"text":"done"}}]}}}',
     textId: 'text-2b',
     writer,
+    streamState: { toolCalls: new Map() },
   });
 
   assert.equal(toolOutputOutcome.emitted, true, 'tool output frame should emit chunks');
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_3',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_3',
+    inputTextDelta: '{"path":"/tmp/out.txt"}',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_3',
     toolName: 'lookup',
     input: { path: '/tmp/out.txt' },
     dynamic: true,
   });
-  assert.deepEqual(writes[1], {
+  assert.deepEqual(writes[3], {
     type: 'tool-output-available',
     toolCallId: 'call_3',
     output: { text: 'done' },
@@ -94,17 +132,29 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_flat","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}","output":{"content":"ok"}}]}}}',
     textId: 'text-flat',
     writer,
+    streamState: { toolCalls: new Map() },
   });
 
   assert.equal(flatToolOutcome.emitted, true, 'flat agent-lite tool frame should emit chunks');
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_flat',
+    toolName: 'mcp.fs.read_file',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_flat',
+    inputTextDelta: '{"path":"README.md"}',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_flat',
     toolName: 'mcp.fs.read_file',
     input: { path: 'README.md' },
     dynamic: true,
   });
-  assert.deepEqual(writes[1], {
+  assert.deepEqual(writes[3], {
     type: 'tool-output-available',
     toolCallId: 'call_flat',
     output: { content: 'ok' },
@@ -116,20 +166,83 @@ export async function run() {
       'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_err","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}","error":{"message":"permission denied"}}]}}}',
     textId: 'text-error',
     writer,
+    streamState: { toolCalls: new Map() },
   });
 
   assert.equal(toolErrorOutcome.emitted, true, 'tool error frame should emit chunks');
   assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_err',
+    toolName: 'mcp.fs.read_file',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_err',
+    inputTextDelta: '{"path":"README.md"}',
+  });
+  assert.deepEqual(writes[2], {
     type: 'tool-input-available',
     toolCallId: 'call_err',
     toolName: 'mcp.fs.read_file',
     input: { path: 'README.md' },
     dynamic: true,
   });
-  assert.deepEqual(writes[1], {
+  assert.deepEqual(writes[3], {
     type: 'tool-output-error',
     toolCallId: 'call_err',
     errorText: 'permission denied',
+  });
+
+  writes.length = 0;
+  const partialState = { toolCalls: new Map() };
+  const partialFirstOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_partial","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"READ"}]}}}',
+    textId: 'text-partial-1',
+    writer,
+    streamState: partialState,
+  });
+
+  assert.equal(partialFirstOutcome.emitted, true, 'partial tool input should emit chunks');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-start',
+    toolCallId: 'call_partial',
+    toolName: 'mcp.fs.read_file',
+    dynamic: true,
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_partial',
+    inputTextDelta: '{"path":"READ',
+  });
+  assert.equal(
+    writes.some((chunk) => chunk.type === 'tool-input-available'),
+    false,
+    'incomplete structured input should stay in input-streaming state'
+  );
+
+  writes.length = 0;
+  const partialSecondOutcome = emitRunAgentStreamLine({
+    lineRaw:
+      'data: {"result":{"status":"working","tool":{"calls":[{"id":"call_partial","name":"mcp.fs.read_file","arguments":"{\\"path\\":\\"README.md\\"}"}]}}}',
+    textId: 'text-partial-2',
+    writer,
+    streamState: partialState,
+  });
+
+  assert.equal(partialSecondOutcome.emitted, true, 'completed partial tool input should emit chunks');
+  assert.deepEqual(writes[0], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_partial',
+    inputTextDelta: 'ME.md"}',
+  });
+  assert.deepEqual(writes[1], {
+    type: 'tool-input-available',
+    toolCallId: 'call_partial',
+    toolName: 'mcp.fs.read_file',
+    input: { path: 'README.md' },
+    dynamic: true,
   });
 
   writes.length = 0;

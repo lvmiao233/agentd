@@ -275,6 +275,8 @@ export async function run() {
       'start-step',
       'text-start',
       'text-delta',
+      'tool-input-start',
+      'tool-input-delta',
       'tool-input-available',
       'text-end',
       'finish-step',
@@ -284,13 +286,24 @@ export async function run() {
   );
   assert.equal(successPayloads[3].delta, 'Hello', 'fragmented daemon text should be reassembled');
   assert.deepEqual(successPayloads[4], {
+    type: 'tool-input-start',
+    toolCallId: 'call_1',
+    toolName: 'lookup',
+    dynamic: true,
+  });
+  assert.deepEqual(successPayloads[5], {
+    type: 'tool-input-delta',
+    toolCallId: 'call_1',
+    inputTextDelta: '{"path":"/tmp/a"}',
+  });
+  assert.deepEqual(successPayloads[6], {
     type: 'tool-input-available',
     toolCallId: 'call_1',
     toolName: 'lookup',
     input: { path: '/tmp/a' },
     dynamic: true,
   });
-  assert.equal(successPayloads[7].finishReason, 'stop', '[DONE] should yield stop finish reason');
+  assert.equal(successPayloads[9].finishReason, 'stop', '[DONE] should yield stop finish reason');
   assert.equal(successEvents.at(-1), '[DONE]', 'UI response should terminate with [DONE]');
 
   const toolFirstResponse = await handleChatPost(
@@ -336,6 +349,7 @@ export async function run() {
       'start',
       'start-step',
       'tool-input-start',
+      'tool-input-delta',
       'tool-input-available',
       'text-start',
       'text-delta',
@@ -385,6 +399,7 @@ export async function run() {
       'start',
       'start-step',
       'tool-input-start',
+      'tool-input-delta',
       'tool-input-available',
       'tool-output-available',
       'finish-step',
@@ -432,6 +447,7 @@ export async function run() {
       'start',
       'start-step',
       'tool-input-start',
+      'tool-input-delta',
       'tool-input-available',
       'tool-output-error',
       'finish-step',
