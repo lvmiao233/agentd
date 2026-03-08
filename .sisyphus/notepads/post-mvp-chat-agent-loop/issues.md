@@ -47,3 +47,4 @@
 - 2026-03-09 (Iteration 25): 这轮继续尝试浏览器级点击验证时，`next dev`/`next start` 都出现了与静态 chunk / `vendor-chunks/mermaid` / RSC 资源加载相关的环境噪声，导致“页面能否完整 hydrate”本身不稳定。因此本轮最终把真实验证重点放在结构修复 + class guard spec，而不是把浏览器点击成败当成唯一事实来源。
 - 2026-03-09 (Iteration 26): 这轮 build 首次失败只是 `.d.ts` 同步遗漏：`chat-agent-readiness.js` 新增了 `chooseInitialAgentSelection`，但声明文件没更新。对这种 JS + d.ts 混合库，新增 helper 时必须一起补类型出口。
 - 2026-03-09 (Iteration 26): 浏览器里验证 loading 文案时，后续 ready 文案没有在同一轮回放里稳定出现，主要还是受 dev/RSC 静态资源噪声影响；但另一轮独立回放已经确认 localStorage 恢复后的 ready 文案和 selector 文本都正确出现，所以这轮证据采用“两次短回放组合”而不是硬拼单次完美脚本。
+- 2026-03-09 (Iteration 27): starter actions 初版放在 `ConversationEmptyState` 里时，真实浏览器回放再次暴露 plan/prompt 子树会拦截点击；这证明“空态里的可点击东西”依然受同一类布局边界影响。把入口提升到独立 `shrink-0` strip 后，点击路径稳定了。

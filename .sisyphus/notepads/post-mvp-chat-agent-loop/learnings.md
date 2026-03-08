@@ -87,3 +87,5 @@
 - 2026-03-09 (Iteration 26): agent 启动体验里，loading 文案和 ready 文案都是必要的。前者解决“为什么现在还不能选”，后者解决“系统是不是已经准备好发消息了”；缺一都会让首屏显得迟疑。
 - 2026-03-09 (Iteration 26): 浏览器真实验证可以拆成两段：一段验证恢复逻辑（localStorage -> ready 文案），一段验证延迟返回时的 loading 文案。对首屏状态类功能，这样比分别强行覆盖所有状态的单次回放更稳定。
 - 2026-03-09 (Iteration 26): 对 JS helper + `.d.ts` 并存的前端仓库来说，新增选择策略函数后第一时间补类型声明，比等 build 报错后再修更省成本；这个仓库已经多次证明 strict build 会放大这种尾巴。
+- 2026-03-09 (Iteration 27): 空会话 starter actions 如果只存在于 command palette，discoverability 还是太弱；但如果直接塞进 `ConversationEmptyState`，又会回到之前那类边界点击问题。把它们提升成独立 quick-start strip，是目前这套布局下更稳的折中。
+- 2026-03-09 (Iteration 27): 对首条 prompt 引导来说，“能点击并真正发出 prompt”比“看起来有建议按钮”重要得多。真实浏览器回放里，`Plan and start coding` quick-start 已经把 prompt 送进 `/api/chat`，并在正文看到 `Started from starter prompt: ...`，这才算 feature 真正闭环。

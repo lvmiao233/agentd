@@ -82,3 +82,6 @@
 - 2026-03-09 (Iteration 26): agent 选择策略统一收敛为：优先当前仍可运行的选择，其次恢复 localStorage 记住的上次 agent，再回退到 preferred runnable agent；如果完全没有 runnable agent，仍保留一个明确的不可运行选择用于解释状态。
 - 2026-03-09 (Iteration 26): 启动体验不只靠默认选择，还需要可解释状态，所以这轮同时补了 selector 周围的 loading / ready / empty 文案，而不是让下拉框在首屏短暂保持“空白但不知道为什么”。
 - 2026-03-09 (Iteration 26): 为了防止后续有人把这套首屏体验又删回“空白 selector”，本轮额外加了 source-guard spec，明确锁定 localStorage 恢复键、loading 文案、ready 文案和 empty-state 文案。
+- 2026-03-09 (Iteration 27): 在 chat 已经能自动恢复 agent 之后，空会话里最缺的不是更多说明，而是“第一条可执行 prompt”。因此这轮把 starter actions 从 command palette 隐性能力，提升成首屏显式 quick-start strip。
+- 2026-03-09 (Iteration 27): starter actions 继续复用已有 `resumeActions` / `handleResumeAction` 路径，不另外发明新 prompt 源。这样 command palette、cockpit footer、quick-start strip 共享同一套 workflow prompts，不会出现三套入口各自说不同话。
+- 2026-03-09 (Iteration 27): 实践证明把 starter pills 放在 `ConversationEmptyState` 内部仍会掉进 scroll/overlay 交界区，所以本轮最终选择把它们提升为 cockpit 下方、conversation 上方的独立 `shrink-0` strip；这更稳定，也更符合“工作台入口”的语义。
