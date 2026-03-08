@@ -97,6 +97,7 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import ChatRunOverviewPanel from '@/components/chat-run-overview';
+import ChatSessionTimelinePanel from '@/components/chat-session-timeline';
 import ChatCommandMenu from '@/components/chat-command-menu';
 import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
@@ -128,6 +129,7 @@ import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
 import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
+import { buildChatSessionTimeline } from '@/lib/chat-session-timeline.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
 
 type ChatAgentOption = {
@@ -635,6 +637,12 @@ export default function ChatPage() {
     selectedAgentRunnable: commandPaletteRunnable,
   });
   const resumeActions = buildChatResumeActions(commandMenuItems);
+  const sessionTimeline = buildChatSessionTimeline({
+    checkpoints,
+    status,
+    activeMessageId: lastAssistantMessage?.id,
+  });
+  const checkpointsById = Object.fromEntries(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
 
   useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
@@ -750,6 +758,15 @@ export default function ChatPage() {
             onActionSelect={(action) => void handleResumeAction(action)}
             className="mb-3"
             onNavigateToTarget={highlightConversationTarget}
+          />
+        )}
+
+        {sessionTimeline && (
+          <ChatSessionTimelinePanel
+            timeline={sessionTimeline}
+            checkpointsById={checkpointsById}
+            onJumpToMessage={highlightConversationTarget}
+            onRestoreCheckpoint={handleRestoreCheckpoint}
           />
         )}
 
