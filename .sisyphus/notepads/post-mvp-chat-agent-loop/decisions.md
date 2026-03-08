@@ -115,4 +115,6 @@
 - 2026-03-09 (Iteration 34): 继续动作的主入口正式收敛为“两层”：顶部 cockpit footer 负责会话级继续，composer strip 负责输入区附近继续。message footer 则回到“局部 message 操作”的职责，不再承担第三套 continuation UI。
 - 2026-03-09 (Iteration 37): 在 quick-start/continue 的位置和主次都收敛之后，composer 上方剩余最显眼的重复是 active-run 与 approval 仍然各占一条状态带。为了让“当前最重要的 run 状态”始终只占一条 composer 邻近空间，本轮把审批态并入统一的 `ActiveRunControls`。
 - 2026-03-09 (Iteration 37): 统一后的 run-status strip 规则是：若存在 pending approval，优先显示审批信息与 `Review approval / Deny / Approve`；若 run 同时仍在 submitted/streaming，则在同一条 strip 内继续保留 `Stop current run`。不再单独渲染 `ComposerApprovalStrip`。
+- 2026-03-09 (Iteration 38): 当前 composer 控制层里，最明显还没被拉回输入区附近的高频恢复动作是“失败后再试一次”。本轮把错误提示条从被动文案升级为主动恢复条，直接提供 `Retry last answer`。
+- 2026-03-09 (Iteration 38): retry 不再依赖 `lastAssistantMessage` 是否仍在消息列表里，因为 regenerate 过程中那条 assistant reply 可能已被 trim。新的条件改为 `lastUserMessage + runnable selectedAgent`，确保失败后仍能继续重试当前 turn。
 - 2026-03-09 (Iteration 37b): 在真实回放里又发现 active/approval 态下 cockpit footer 仍会残留 continuation 动作，因此进一步把 `cockpitResumeActions` 的退场条件扩展到 `status === 'submitted' || status === 'streaming' || approvalQueue.length > 0`。这样 active/blocked 态真正只剩 composer 邻近这一条主控制带。

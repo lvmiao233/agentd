@@ -53,4 +53,5 @@
 - 2026-03-09 (Iteration 35): 即使 continuation 已经收敛到 composer，一旦空会话时 cockpit 的 `Next action` 仍然直接复述 quick-start 按钮，首屏又会重新出现“双主入口”的感觉。第一步的主动作也必须像后续 continuation 一样收敛。
 - 2026-03-09 (Iteration 36): 即使主入口位置已经被收敛，如果同一条 strip 内所有动作仍然长得一样，用户还是要自己判断“主动作”是什么。复杂 coding chat 的引导问题不只在于放在哪，也在于强调哪一个最该先点。
 - 2026-03-09 (Iteration 37): 即使动作入口已经逐步收敛，如果 active run 与 blocked approval 仍然各占一条相邻状态条，用户还是会多做一次“现在最重要的是哪块”的判断。状态展示本身也需要像动作入口一样被优先级化。
+- 2026-03-09 (Iteration 38): 即使启动、继续、审批、状态都已经回到 composer 附近，只要失败后的 retry 仍然要用户重新去找消息 footer 或命令面板，整个恢复链路就还是断的。错误恢复也必须像其它高频控制一样回到输入区附近。
 - 2026-03-09 (Iteration 37b): 即使 active 与 approval 已经合并成一条状态带，只要 cockpit footer 还残留 `Stop current run` 一类同类动作，用户依然会看到两个“现在处理这个”的入口。状态和动作的主入口必须一起收敛。
