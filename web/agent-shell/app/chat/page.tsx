@@ -441,6 +441,51 @@ function ComposerApprovalStrip(props: {
   );
 }
 
+function ComposerActionStrip(props: {
+  label: string;
+  actions: ChatCommandItem[];
+  helperText: string;
+  onSelect: (action: ChatCommandItem) => void;
+}) {
+  const { label, actions, helperText, onSelect } = props;
+
+  if (actions.length === 0) {
+    return null;
+  }
+
+  const [primaryAction, ...secondaryActions] = actions;
+
+  return (
+    <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
+      <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-2 flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" onClick={() => onSelect(primaryAction)} disabled={primaryAction.disabled}>
+            {primaryAction.title}
+          </Button>
+          {secondaryActions.length > 0 && (
+            <Suggestions>
+              {secondaryActions.map((action) => (
+                <Suggestion
+                  key={action.id}
+                  disabled={action.disabled}
+                  onClick={() => onSelect(action)}
+                  title={action.description}
+                >
+                  {action.title}
+                </Suggestion>
+              ))}
+            </Suggestions>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">{helperText}</p>
+      </div>
+    </div>
+  );
+}
+
 function ComposerLatestOutputStrip(props: {
   latestOutput: ReturnType<typeof buildChatLatestOutput>;
   onReview: (targetId: string) => void;
@@ -1068,26 +1113,12 @@ export default function ChatPage() {
         </div>
 
         {starterPromptActions.length > 0 && (
-          <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
-            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Start with a coding action
-            </div>
-            <Suggestions className="mt-2">
-              {starterPromptActions.map((action) => (
-                <Suggestion
-                  key={action.id}
-                  disabled={action.disabled}
-                  onClick={() => void handleResumeAction(action)}
-                  title={action.description}
-                >
-                  {action.title}
-                </Suggestion>
-              ))}
-            </Suggestions>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Or open Commands to pick another workflow prompt.
-            </p>
-          </div>
+          <ComposerActionStrip
+            label="Start with a coding action"
+            actions={starterPromptActions}
+            helperText="Or open Commands to pick another workflow prompt."
+            onSelect={(action) => void handleResumeAction(action)}
+          />
         )}
 
         <Conversation className="min-h-0">
@@ -1681,26 +1712,12 @@ export default function ChatPage() {
         )}
 
         {composerFollowUpActions.length > 0 && (
-          <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
-            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Continue this run
-            </div>
-            <Suggestions className="mt-2">
-              {composerFollowUpActions.map((action) => (
-                <Suggestion
-                  key={action.id}
-                  disabled={action.disabled}
-                  onClick={() => void handleResumeAction(action)}
-                  title={action.description}
-                >
-                  {action.title}
-                </Suggestion>
-              ))}
-            </Suggestions>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Keep moving without scrolling back to the previous reply.
-            </p>
-          </div>
+          <ComposerActionStrip
+            label="Continue this run"
+            actions={composerFollowUpActions}
+            helperText="Keep moving without scrolling back to the previous reply."
+            onSelect={(action) => void handleResumeAction(action)}
+          />
         )}
 
         <ActiveRunControls
