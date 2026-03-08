@@ -440,6 +440,36 @@ function ComposerApprovalStrip(props: {
   );
 }
 
+function ComposerLatestOutputStrip(props: {
+  latestOutput: ReturnType<typeof buildChatLatestOutput>;
+  onReview: (targetId: string) => void;
+}) {
+  const { latestOutput, onReview } = props;
+
+  if (!latestOutput) {
+    return null;
+  }
+
+  return (
+    <div className="mb-3 shrink-0 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">Latest output</Badge>
+            <span className="truncate text-sm font-medium">{latestOutput.title}</span>
+          </div>
+          <p className="truncate text-sm text-muted-foreground">{latestOutput.description}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => onReview(latestOutput.targetId)}>
+            Review output
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
@@ -1550,6 +1580,13 @@ export default function ChatPage() {
           onDeny={(approvalId) => void handleApprovalDecision(approvalId, 'deny')}
           onReview={(approvalId) => highlightConversationTarget(`chat-approval-${approvalId}`)}
         />
+
+        {(status === 'ready' || status === 'error') && (
+          <ComposerLatestOutputStrip
+            latestOutput={latestOutput}
+            onReview={highlightConversationTarget}
+          />
+        )}
 
         {composerFollowUpActions.length > 0 && (
           <div className="mb-3 shrink-0 rounded-lg border border-border/60 bg-background/70 px-4 py-3">
