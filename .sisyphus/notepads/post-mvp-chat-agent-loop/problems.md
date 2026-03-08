@@ -32,3 +32,5 @@
 - 2026-03-08 (Iteration 18): 即使结构化 summary 已经存在，如果三张卡仍然只是静态文本，用户还要再扫视下方面板去找真正可点的入口；因此 summary 需要具备最基础的导航/执行能力，才能真正承担 cockpit 的“驾驶”角色。
 - 2026-03-08 (Iteration 19): 即使 cockpit 已经能跳指令、跳阻塞、执行下一步，用户仍然缺一个面向“结果”的顶层入口；他们要看这轮到底产出了什么，还得自己滚回 artifact 或 tool output。最新输出入口正是为了解决这层断裂。
 - 2026-03-08 (Iteration 20): 即使有最新输出入口，用户在长任务进行中仍然缺少“现在到底在跑什么”的即时观察位；如果 cockpit 只能展示已完成结果，就仍然无法完全回应最初对 agent 灵活度和中间态可见性的诉求。
+- 2026-03-09 (Iteration 21): 目前 chat 虽然已经支持 html/svg artifact preview，但 agent 给出“组件化 UI 方案”时仍然只能当源码看，缺少真正的组件预览能力；这使得 ai-elements 在最有潜力的交互场景（agent 直接产出 UI）上仍未被充分利用。
+- 2026-03-09 (Iteration 21): 之前的 artifact 抽取只识别闭合的 html/svg fence，因此流式中的 JSX 产物必须等整个 fence 结束后才能被感知；这和 ai-elements `JSXPreview` 的 streaming 设计不匹配，也浪费了它的半成品渲染优势。

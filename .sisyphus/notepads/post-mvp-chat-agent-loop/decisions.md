@@ -61,3 +61,8 @@
 - 2026-03-08 (Iteration 19): 最新输出入口优先指向 artifact，只有没有 artifact 时才回退到最近的成功/失败 tool output；这更贴合 coding-agent 场景里“最终产物优先于中间工具结果”的阅读顺序。
 - 2026-03-08 (Iteration 20): latest output 之后，下一步不是继续扩展“结果卡片”，而是补一张真正面向运行中的 `Live activity` 卡；这样用户在长任务进行中不必等结果落地，先看到 agent 正在跑哪个工具。
 - 2026-03-08 (Iteration 20): `Live activity` 卡优先级采用 `approval-requested > input-streaming > input-available > output-error > output-available`，确保 cockpit 优先呈现“当前最该关注的工具状态”，而不是简单显示最后一个 tool part。
+- 2026-03-09 (Iteration 21): 在 cockpit 连续增强 20 轮之后，这一轮不再新增顶部容器，而是回到 assistant 产物本身，优先把 ai-elements 官方 `JSXPreview` 接进 chat artifact 链路；原因是用户明确点名了 JSX Preview，而且“让 agent 直接给出可渲染组件”比继续堆摘要面板更接近 coding-agent 的真实价值。
+- 2026-03-09 (Iteration 21): JSX/TSX preview 不单独发明新 artifact 系统，而是复用现有 `Artifact` 容器，在 preview/code 双视图里按语言切换 `iframe`（html/svg）或 `JSXPreview`（jsx/tsx）；这样用户仍然沿用同一套产物心智和导航锚点。
+- 2026-03-09 (Iteration 21): 对 `jsx/tsx` code fence，优先抽取“可直接渲染的 JSX expression”，允许处理纯 JSX 和常见的 `return (...)`/箭头函数返回体；如果拿不到安全的可渲染 JSX，就宁可不做 preview，也不把整段函数源码硬塞进 parser。
+- 2026-03-09 (Iteration 21): 本轮只向 JSX Preview 注入一小组安全且高频的本地 UI 组件（`Button` / `Badge` / `Card*` / `Input` / `Textarea` / `Separator`），不一次性开放整套组件树；目标是先让 agent 输出常见组件卡片可用，再逐轮扩展。
+- 2026-03-09 (Iteration 21): 既然 ai-elements 官方 `JSXPreview` 原生支持 streaming incomplete JSX，本轮同时允许 `extractPreviewArtifacts(..., { includeIncomplete: true })` 捕获最后一个未闭合的 preview fence，给流式中的最后一条 assistant 消息提前显示 preview，而不是必须等到 fence 闭合。

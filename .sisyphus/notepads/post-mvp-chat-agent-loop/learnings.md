@@ -67,3 +67,7 @@
 - 2026-03-08 (Iteration 20): `buildChatLiveActivity()` 值得独立成 helper，因为它解决的是“从当前 turn 的多个 tool parts 中挑出现在最值得关注的那个”，这本质上是优先级决策，不该散落在 JSX 层。
 - 2026-03-08 (Iteration 20): 对 live activity 来说，`getStatusBadge()` 的复用价值很高：它让 cockpit 和正文 Tool 节点使用同一套状态视觉语言，用户不需要重新学习“Running / Preparing / Awaiting Approval”在顶部和正文的含义。
 - 2026-03-08 (Iteration 20): 真实浏览器回放已验证 `LIVE ACTIVITY` 卡确实在页面中出现，并显示 `mcp.fs.read_file / Running / path: ...`；点击 `Review activity` 会高亮对应 tool 节点，说明 cockpit 已开始真正承担“运行中观测台”的角色。
+- 2026-03-09 (Iteration 21): ai-elements 官方 `JSXPreview` 不只是“把 JSX 字符串 render 一下”；它还内置了 incomplete tag completion、last-good fallback、以及 error slot，这让它非常适合接 agent 流式回复中的组件产物，而不值得自己手搓 parser 或 preview shell。
+- 2026-03-09 (Iteration 21): 对 chat artifact 来说，`html/svg` 与 `jsx/tsx` 的真正差异不在“有没有预览”，而在“预览载体”不同：前者最稳是 iframe，后者最稳是受限组件注入 + `react-jsx-parser`。统一放进同一个 `Artifact` 容器后，用户几乎不需要学习新交互。
+- 2026-03-09 (Iteration 21): 只要把 fenced `jsx/tsx` 里的 renderable expression 抽出来，现有 `buildChatLatestOutput()`、artifact anchors、message branch 预览链都能零协议改动地复用；说明之前把 artifact 抽取收敛到 helper 是正确的架构选择。
+- 2026-03-09 (Iteration 21): 浏览器真实回放证明 preview 路径已打通：在 `/chat` 提交一条 prompt 后，assistant 回复中的 `jsx` fence 会生成 `JSX preview` artifact，并在主文档中直接看到 `Demo panel / Ship it` 这些 JSX 渲染结果，而不是只看到源码。

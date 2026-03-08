@@ -39,3 +39,5 @@
 - 2026-03-08 (Iteration 19): 初版 `Latest output` 被放进 `PlanContent` 后，在 `resumable` 默认折叠场景里实际上不可见；这是信息层级错误，不是组件 bug。本轮通过把它上移到 summary row 同层修复。
 - 2026-03-08 (Iteration 19): Playwright 对 `Latest output` 的文本可见性断言不稳定，但 `Review output` 按钮本身已真实存在且能高亮 artifact 节点；后续对这类 UI，优先断言可点击行为而不是纯文本更稳。
 - 2026-03-08 (Iteration 20): `liveActivityVisible` 的第一次 Playwright 布尔断言失败并不代表卡片没渲染；抓整页 `innerText` 后可以看到 `LIVE ACTIVITY / mcp.fs.read_file / Running / path: ...` 已真实存在。对这种 mixed-case UI，同样应该优先用整页文本或交互行为校验。
+- 2026-03-09 (Iteration 21): `next build` 首次失败不是逻辑问题，而是我直接照抄 ai-elements 源码里的 `toReversed()`；当前仓库 TS/lib 目标不支持该 API，改成 `[...stack].reverse()` 后构建恢复通过。
+- 2026-03-09 (Iteration 21): Playwright 真实验证时，artifact 内部的 `Code` 切换按钮在当前 sticky cockpit + input 布局下偶发被上层容器/输入区拦截指针事件；preview 渲染本身已在浏览器中确认可见，但后续若要稳定验证 code toggle，最好补更明确的滚动/测试锚点或降低遮挡。
