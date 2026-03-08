@@ -29,3 +29,5 @@
 - 2026-03-08 (Iteration 13): resume bar 浏览器回放里仍伴随 dev 模式 RSC payload 噪音，但不影响核心交互验证；当前应将其视为环境噪声，而不是本特性的功能回归。
 - 2026-03-08 (Iteration 14): `next start` 在当前环境里仍会偶发 `vendor-chunks/mermaid` 相关 500，不能作为稳定的真实验证通道；本轮最终验证依旧依赖全新 `next dev` 实例完成。
 - 2026-03-08 (Iteration 14): 对带 sticky header / input 的复杂布局，Playwright 有时不适合坚持“纯鼠标点击”；本轮 timeline restore 采用 DOM 触发按钮 click，同样证明了真实交互链路是否连通。
+- 2026-03-08 (Iteration 15): 本轮 approval dock 的自动化验证（spec + build）是稳定的，但浏览器真实验证被当前 dev 资产加载异常阻塞：页面在 4188 上多次退化成未 hydrate 状态，导致顶部 dock 不参与交互。这更像环境噪声而不是 feature 自身回归。
+- 2026-03-08 (Iteration 15): 对依赖 hydration 的顶层 cockpit 功能，当前环境里 `next dev` 偶发静态资源 404 会直接把真实回放价值打折；后续如果要提升这类功能的 E2E 可信度，最好单独解决 dev asset 稳定性问题。

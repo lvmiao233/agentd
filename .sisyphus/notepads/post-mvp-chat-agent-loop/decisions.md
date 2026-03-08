@@ -47,3 +47,5 @@
 - 2026-03-08 (Iteration 13): resume action bar 不引入新的 action schema，只复用 `buildChatCommandItems()` 的结果再做轻量筛选；这样顶部动作与 command palette / 底部 suggestions 共享同一套语义来源，避免三套逻辑漂移。
 - 2026-03-08 (Iteration 14): 在 resume action bar 之后，最值得补的是顶部 session timeline，而不是继续堆更多 resume chips；因为现在用户已经能“继续”，但还缺一个可扫描的阶段时间线来恢复、跳转、理解长任务脉络。
 - 2026-03-08 (Iteration 14): session timeline 采用 ai-elements 官方 `Queue` 模式而不是自定义 timeline card；原因是 Queue 已经天然包含 section、status indicator、scrollable list、item actions，和 checkpoint navigator 的需求几乎完全重合。
+- 2026-03-08 (Iteration 15): session timeline 完成后，剩余最明显的顶层 cockpit 缺口是 approvals 仍然主要散落在消息区 / inbox；因此本轮优先把 pending approvals 提升为顶部 approval dock，而不是继续增强 timeline 细节。
+- 2026-03-08 (Iteration 15): 顶部 approval dock 只复用现有 `approvalQueue + handleApprovalDecision + chat-approval-* anchors`，不引入第二套审批状态机；这样它只是新的顶层入口，而不是替代底部 approval inbox。

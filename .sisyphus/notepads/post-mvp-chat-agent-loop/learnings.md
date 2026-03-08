@@ -50,3 +50,5 @@
 - 2026-03-08 (Iteration 14): 对当前 chat 架构来说，session timeline 最稳的做法不是重新解析 messages，而是直接复用 checkpoint state；这样 timeline 只是 checkpoint 的另一种顶层视图，不会引入第二套“历史真相源”。
 - 2026-03-08 (Iteration 14): 官方 Queue 模式比手写 timeline 更适合这一步，因为 `QueueItemIndicator / QueueItemActions / QueueSection` 已经把 checkpoint navigator 所需的视觉和交互骨架提供好了，接起来非常自然。
 - 2026-03-08 (Iteration 14): 真实浏览器回放已验证顶部 Session timeline 的关键闭环：两轮 assistant 回复后能在顶部看到 timeline，展开后点击 `Restore` 会裁掉后续消息并显示 restore notice。
+- 2026-03-08 (Iteration 15): 顶部 approval dock 最稳的接法不是重新包装 `Confirmation`，而是把 approvals 视作 queue items：reason 显示在 description，`Jump / Approve / Deny` 落在 item actions，这样既和 session timeline 风格统一，也能复用现有审批处理逻辑。
+- 2026-03-08 (Iteration 15): 对当前 cockpit 结构来说，approval dock 与 run overview / session timeline 的价值互补很强：overview 负责“当前 run 在做什么”，timeline 负责“之前阶段在哪”，approval dock 负责“现在卡住什么”。
