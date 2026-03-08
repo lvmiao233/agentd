@@ -97,6 +97,7 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import ChatRunOverviewPanel from '@/components/chat-run-overview';
+import ChatApprovalDockPanel from '@/components/chat-approval-dock';
 import ChatSessionTimelinePanel from '@/components/chat-session-timeline';
 import ChatCommandMenu from '@/components/chat-command-menu';
 import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon } from 'lucide-react';
@@ -749,6 +750,15 @@ export default function ChatPage() {
           <div className="mb-3 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
             Something went wrong while streaming this response. You can retry.
           </div>
+        )}
+
+        {approvalQueue.length > 0 && (
+          <ChatApprovalDockPanel
+            approvals={approvalQueue}
+            busyId={approvalBusyId}
+            onJumpToApproval={(approvalId) => highlightConversationTarget(`chat-approval-${approvalId}`)}
+            onDecision={(approvalId, decision) => void handleApprovalDecision(approvalId, decision)}
+          />
         )}
 
         {runOverview && (
