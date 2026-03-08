@@ -98,3 +98,6 @@
 - 2026-03-09 (Iteration 30): approval reachability 的关键不是“多一个地方看审批列表”，而是“在用户准备继续输入时，当前最重要的审批能不能就在手边处理掉”。把 pending approval 摘成一个 composer strip，比再复制完整 dock 更符合输入区的职责。
 - 2026-03-09 (Iteration 30): 对这种 approval 交互回放，mock approvals 接口必须是**有状态的**：GET 返回当前 queue，POST 决策后把对应项移除。否则即使点击生效，页面也会在下一次刷新里继续显示同一审批，得出错误结论。
 - 2026-03-09 (Iteration 30): 真实浏览器回放已经确认 composer approval strip 不是摆设：点击 strip 里的 `Approve` 后，`Awaiting approval` 区块消失，并出现 `Approval resolved: approve (approval-1)`，同时 approval inbox 变成 resolved 状态。
+- 2026-03-09 (Iteration 31): latest-result carry-forward 的关键不是再造一个 summary，而是把现有 `latestOutput` 复用到离 composer 更近的层。只要数据源保持单一，用户在顶部 cockpit 和输入区附近看到的“最新产物”就能保持一致。
+- 2026-03-09 (Iteration 31): 真实浏览器回放里，`Review output` 不必靠猜；因为 `highlightConversationTarget()` 会给目标节点加 ring 类名，所以验证这类“回到对应产物”动作时，检查目标节点是否出现 `ring-sky-500/70` 比单纯看滚动位置更稳。
+- 2026-03-09 (Iteration 31): 当 composer 上方已经依次有 approval / latest output / continue strip 时，用户终于能在不离开输入区的情况下同时知道：当前有无阻塞、上一轮产出了什么、下一步可以做什么。这三件事是复杂 coding 会话真正高频的上下文。

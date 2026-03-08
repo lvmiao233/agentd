@@ -51,3 +51,4 @@
 - 2026-03-09 (Iteration 28): active run 控制条的第一次浏览器回放没有真正验证 stop 行为，因为 mock `/api/chat` 只是延迟返回、却没有响应 abort signal；修正 mock fetch 支持 `AbortController` 后，才拿到 strip 点击后状态消失的真实证据。
 - 2026-03-09 (Iteration 29): 浏览器验证时，直接用 `getByText(...)` 等待 assistant 文本会撞上页面里同名的 latest-output / tooltip 文本，触发 strict mode violation；改成精确的 paragraph locator 后，证据就稳定了。对 chat 页这类会把同一段文本复用到多个位置的 UI，文本断言必须更窄。
 - 2026-03-09 (Iteration 30): approval strip 浏览器验证第一次失败，不是功能没接通，而是页面里存在多个 `Approve` 按钮（cockpit dock、正文 inbox、composer strip）。对这类多入口交互，必须明确点中 composer strip 对应的那颗按钮，才能得到可信结论。
+- 2026-03-09 (Iteration 31): `Latest output` 浏览器验证同样存在多入口同名文案（顶部 cockpit 与 composer strip 都叫 `Latest output` / `Review output`），所以回放时必须精确选中 composer 邻近的那一组按钮，并通过目标节点高亮来判定行为是否正确。

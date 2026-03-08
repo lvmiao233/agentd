@@ -94,3 +94,6 @@
 - 2026-03-09 (Iteration 30): 在 startup / quick-start / active steering / post-run continuation 都已改善之后，下一条最值摩擦点是 approval reachability。待审批动作如果仍然主要在正文 inbox 和 cockpit 里，用户准备继续输入时还是得离开当前工作区去找批准入口。
 - 2026-03-09 (Iteration 30): 本轮采用 composer-adjacent `ComposerApprovalStrip`，只拿当前最优先的 pending approval，并提供 `Review approval / Deny / Approve`。不把完整审批列表再复制一份，是为了让输入区附近承担“立即处理当前阻塞”的职责，而不是再造第二个 inbox。
 - 2026-03-09 (Iteration 30): approval strip 与 quick-start / active-run / continue strip 处于同一层，形成统一的“composer 上方控制层”：空会话时给第一步、进行中给 stop、完成后给 continue、阻塞时给 approval。这样 chat 的 steering 路径终于开始连贯起来。
+- 2026-03-09 (Iteration 31): 在 composer 上方已经有“怎么开始 / 怎么停 / 怎么继续 / 怎么审批”之后，下一条最值缺口是“刚刚产出了什么”仍然主要靠顶部 cockpit 提醒。为了让下一条 prompt 更有上下文，本轮把 `latestOutput` 也拉回 composer 邻近层。
+- 2026-03-09 (Iteration 31): 这里不新增状态源，而是复用现有 `buildChatLatestOutput(messages)` 结果渲染 `ComposerLatestOutputStrip`。这样顶部 cockpit 和输入区附近都对着同一份 latest-result 事实，不会产生两个不同版本的“最近产物”。
+- 2026-03-09 (Iteration 31): `ComposerLatestOutputStrip` 只在 `ready/error` 时出现，并提供唯一动作 `Review output`。它的职责不是替代正文产物，而是让用户在继续输入时不用先回忆或回滚：“上一轮到底输出了什么？”

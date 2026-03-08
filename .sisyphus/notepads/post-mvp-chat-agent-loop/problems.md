@@ -44,3 +44,4 @@
 - 2026-03-09 (Iteration 28): 即使用户已经发出了第一条 prompt，如果进行中的 run 仍然没有清晰的中止/定位入口，他们还是会在“想打断 agent、重新指挥它”这个关键时刻感到迟疑。这种迟疑正是 coding chat 和普通问答聊天的差距所在。
 - 2026-03-09 (Iteration 29): 即使 stop 和 live activity 都已经更易获得，只要 run 完成后的“继续下一步”仍然主要挂在最后一条 assistant 消息下面，复杂 coding 会话里用户还是会频繁在“输入区”和“历史建议”之间来回找入口。
 - 2026-03-09 (Iteration 30): 即使 continue actions 已经回到 composer 附近，只要 approval 还要求用户重新打开 cockpit 或滚去正文 inbox，真正被阻塞的 run 依然会在最关键的一步上掉出“顺手继续”的体验。
+- 2026-03-09 (Iteration 31): 即使继续动作和审批都在手边，只要“上一轮到底产出了什么”还主要留在顶部 cockpit，用户下一条 prompt 仍然容易脱离最近上下文。复杂 coding chat 里的 carry-forward，不只是动作入口，也包括结果入口。
