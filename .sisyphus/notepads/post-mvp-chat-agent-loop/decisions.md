@@ -91,3 +91,6 @@
 - 2026-03-09 (Iteration 29): 进行中的 run 已经更容易停止之后，下一步最值的是让“run 结束后的继续动作”也回到 composer 附近，而不是仍然主要挂在最后一条 assistant 消息下方。否则用户一旦视线回到输入区，还是得滚回历史里找 suggestion chips。
 - 2026-03-09 (Iteration 29): 本轮不发明新的 follow-up 源，而是直接复用 `resumeActions` 中的 prompt 型动作，生成一个独立的 composer-adjacent `Continue this run` strip；这样 message-level suggestions、cockpit footer、composer strip 三者共享同一套 prompt 语义。
 - 2026-03-09 (Iteration 29): 这条 strip 只在已有消息且状态为 `ready` / `error` 时出现，避免和 quick-start/active-run strip 混杂。这样控制层形成自然的三段式：空会话 quick-start、进行中 active controls、完成后 continue strip。
+- 2026-03-09 (Iteration 30): 在 startup / quick-start / active steering / post-run continuation 都已改善之后，下一条最值摩擦点是 approval reachability。待审批动作如果仍然主要在正文 inbox 和 cockpit 里，用户准备继续输入时还是得离开当前工作区去找批准入口。
+- 2026-03-09 (Iteration 30): 本轮采用 composer-adjacent `ComposerApprovalStrip`，只拿当前最优先的 pending approval，并提供 `Review approval / Deny / Approve`。不把完整审批列表再复制一份，是为了让输入区附近承担“立即处理当前阻塞”的职责，而不是再造第二个 inbox。
+- 2026-03-09 (Iteration 30): approval strip 与 quick-start / active-run / continue strip 处于同一层，形成统一的“composer 上方控制层”：空会话时给第一步、进行中给 stop、完成后给 continue、阻塞时给 approval。这样 chat 的 steering 路径终于开始连贯起来。

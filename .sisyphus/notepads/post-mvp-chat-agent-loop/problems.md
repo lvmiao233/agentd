@@ -43,3 +43,4 @@
 - 2026-03-09 (Iteration 27): 即使默认 agent 和 loading 状态都已经改善，空会话里如果还要求用户自己构思第一条 coding prompt，启动成本仍然偏高。真正像 coding copilot 的首屏，应该把“最值得试的第一步”直接放到手边。
 - 2026-03-09 (Iteration 28): 即使用户已经发出了第一条 prompt，如果进行中的 run 仍然没有清晰的中止/定位入口，他们还是会在“想打断 agent、重新指挥它”这个关键时刻感到迟疑。这种迟疑正是 coding chat 和普通问答聊天的差距所在。
 - 2026-03-09 (Iteration 29): 即使 stop 和 live activity 都已经更易获得，只要 run 完成后的“继续下一步”仍然主要挂在最后一条 assistant 消息下面，复杂 coding 会话里用户还是会频繁在“输入区”和“历史建议”之间来回找入口。
+- 2026-03-09 (Iteration 30): 即使 continue actions 已经回到 composer 附近，只要 approval 还要求用户重新打开 cockpit 或滚去正文 inbox，真正被阻塞的 run 依然会在最关键的一步上掉出“顺手继续”的体验。

@@ -95,3 +95,6 @@
 - 2026-03-09 (Iteration 29): post-run continuation 的关键不在“有没有 follow-up suggestions”，而在“这些 suggestions 是否还留在用户当前视线里”。把它们重新放到 composer 附近后，继续编码的动作链明显更短。
 - 2026-03-09 (Iteration 29): 继续使用 `handleResumeAction` 很重要：它让 cockpit footer、quick-start、active strip 之后的 continue strip 都走同一套执行路径，后续如果 prompt 执行方式变更，不会有某个入口偷偷落后。
 - 2026-03-09 (Iteration 29): 真实浏览器回放已经证明 composer strip 不是静态装饰：在 `Continue coding` 被点击后，页面正文出现 `Follow-up prompt executed: Continue coding until this task is fully finished.`，说明 follow-up prompt 确实从 composer 附近重新发出并进入新一轮对话。
+- 2026-03-09 (Iteration 30): approval reachability 的关键不是“多一个地方看审批列表”，而是“在用户准备继续输入时，当前最重要的审批能不能就在手边处理掉”。把 pending approval 摘成一个 composer strip，比再复制完整 dock 更符合输入区的职责。
+- 2026-03-09 (Iteration 30): 对这种 approval 交互回放，mock approvals 接口必须是**有状态的**：GET 返回当前 queue，POST 决策后把对应项移除。否则即使点击生效，页面也会在下一次刷新里继续显示同一审批，得出错误结论。
+- 2026-03-09 (Iteration 30): 真实浏览器回放已经确认 composer approval strip 不是摆设：点击 strip 里的 `Approve` 后，`Awaiting approval` 区块消失，并出现 `Approval resolved: approve (approval-1)`，同时 approval inbox 变成 resolved 状态。
