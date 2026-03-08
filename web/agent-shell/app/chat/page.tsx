@@ -653,6 +653,7 @@ export default function ChatPage() {
     lastUserText: lastUserMessage ? extractMessageText(lastUserMessage) : '',
     lastAssistantText,
     selectedAgentRunnable: commandPaletteRunnable,
+    nextActionTitle: resumeActions.find((action) => !action.disabled)?.title,
   });
   const checkpointsById = Object.fromEntries(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
 

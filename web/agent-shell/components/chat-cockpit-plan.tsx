@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+
 import {
   Plan,
   PlanAction,
@@ -48,8 +50,24 @@ export default function ChatCockpitPlanPanel({
   onApprovalDecision,
   onRestoreCheckpoint,
 }: ChatCockpitPlanPanelProps) {
+  const [open, setOpen] = useState(plan.defaultOpen);
+  const toneClasses: Record<'default' | 'warning' | 'success', string> = {
+    default: 'border-border/60 bg-background/60',
+    warning: 'border-amber-500/30 bg-amber-500/10',
+    success: 'border-emerald-500/30 bg-emerald-500/10',
+  };
+
+  useEffect(() => {
+    if (plan.mode === 'blocked' || plan.mode === 'error' || plan.mode === 'unrunnable') {
+      setOpen(true);
+      return;
+    }
+
+    setOpen(plan.defaultOpen);
+  }, [plan.defaultOpen, plan.mode]);
+
   return (
-    <Plan className="mb-3 border-border/70 bg-card/80" defaultOpen={plan.defaultOpen} isStreaming={plan.isStreaming}>
+    <Plan className="mb-3 border-border/70 bg-card/80" isStreaming={plan.isStreaming} onOpenChange={setOpen} open={open}>
       <PlanHeader className="gap-3">
         <div className="space-y-1">
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Agent cockpit</div>
@@ -60,6 +78,17 @@ export default function ChatCockpitPlanPanel({
           <PlanTrigger />
         </PlanAction>
       </PlanHeader>
+
+      <div className="grid gap-2 px-6 md:grid-cols-3">
+        {plan.highlights.map((item) => (
+          <div key={item.key} className={`rounded-lg border px-3 py-2 ${toneClasses[item.tone]}`}>
+            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              {item.label}
+            </div>
+            <div className="mt-1 text-sm text-foreground">{item.value}</div>
+          </div>
+        ))}
+      </div>
 
       <PlanContent className="space-y-3">
         {approvalQueue.length > 0 && (
