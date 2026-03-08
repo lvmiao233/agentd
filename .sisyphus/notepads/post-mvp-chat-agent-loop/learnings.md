@@ -92,3 +92,6 @@
 - 2026-03-09 (Iteration 28): streaming 时的 stop 能力如果只藏在 submit 图标状态切换里，用户需要先知道那个方块代表什么，认知负担太高。把它抬成具名按钮后，run steering 的可发现性会明显提升。
 - 2026-03-09 (Iteration 28): 对这类“中止 pending fetch”回放，mock `fetch` 必须显式支持 `AbortController.signal`，否则浏览器里看起来 stop 按钮点了也不会收掉状态。支持 abort 后，才能真实验证 UI 从 `Preparing` 回到 ready。
 - 2026-03-09 (Iteration 28): `Review live activity` 和 `Stop current run` 共享同一条控制层很有价值：前者回答“它现在在干嘛”，后者回答“我想立刻接管”，这两者正是 active steering 的最小闭环。
+- 2026-03-09 (Iteration 29): post-run continuation 的关键不在“有没有 follow-up suggestions”，而在“这些 suggestions 是否还留在用户当前视线里”。把它们重新放到 composer 附近后，继续编码的动作链明显更短。
+- 2026-03-09 (Iteration 29): 继续使用 `handleResumeAction` 很重要：它让 cockpit footer、quick-start、active strip 之后的 continue strip 都走同一套执行路径，后续如果 prompt 执行方式变更，不会有某个入口偷偷落后。
+- 2026-03-09 (Iteration 29): 真实浏览器回放已经证明 composer strip 不是静态装饰：在 `Continue coding` 被点击后，页面正文出现 `Follow-up prompt executed: Continue coding until this task is fully finished.`，说明 follow-up prompt 确实从 composer 附近重新发出并进入新一轮对话。

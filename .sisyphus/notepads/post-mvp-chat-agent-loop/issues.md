@@ -49,3 +49,4 @@
 - 2026-03-09 (Iteration 26): 浏览器里验证 loading 文案时，后续 ready 文案没有在同一轮回放里稳定出现，主要还是受 dev/RSC 静态资源噪声影响；但另一轮独立回放已经确认 localStorage 恢复后的 ready 文案和 selector 文本都正确出现，所以这轮证据采用“两次短回放组合”而不是硬拼单次完美脚本。
 - 2026-03-09 (Iteration 27): starter actions 初版放在 `ConversationEmptyState` 里时，真实浏览器回放再次暴露 plan/prompt 子树会拦截点击；这证明“空态里的可点击东西”依然受同一类布局边界影响。把入口提升到独立 `shrink-0` strip 后，点击路径稳定了。
 - 2026-03-09 (Iteration 28): active run 控制条的第一次浏览器回放没有真正验证 stop 行为，因为 mock `/api/chat` 只是延迟返回、却没有响应 abort signal；修正 mock fetch 支持 `AbortController` 后，才拿到 strip 点击后状态消失的真实证据。
+- 2026-03-09 (Iteration 29): 浏览器验证时，直接用 `getByText(...)` 等待 assistant 文本会撞上页面里同名的 latest-output / tooltip 文本，触发 strict mode violation；改成精确的 paragraph locator 后，证据就稳定了。对 chat 页这类会把同一段文本复用到多个位置的 UI，文本断言必须更窄。

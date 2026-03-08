@@ -88,3 +88,6 @@
 - 2026-03-09 (Iteration 28): 在 quick-start 之后，下一步最值的是让“进行中的 run”也有同样低摩擦的 steering 入口。虽然发送按钮在 streaming 时已可 stop，但只剩一个方块图标太隐性，不足以承担主要 steering 入口。
 - 2026-03-09 (Iteration 28): 本轮采用独立 `ActiveRunControls` strip，而不是把 stop 行为塞回消息内部 toolbar。原因是 strip 位于 prompt 上方、层级稳定，且能和 quick-start strip / cockpit 形成统一的“会话控制层”。
 - 2026-03-09 (Iteration 28): active strip 只做两件事：明确当前 run 状态（Preparing / Running / Awaiting approval）和暴露 `Stop current run` + `Review live activity`。不在这一轮继续加 redirect prompt，是为了先把“中止/定位”这个基础 steering 闭环做稳。
+- 2026-03-09 (Iteration 29): 进行中的 run 已经更容易停止之后，下一步最值的是让“run 结束后的继续动作”也回到 composer 附近，而不是仍然主要挂在最后一条 assistant 消息下方。否则用户一旦视线回到输入区，还是得滚回历史里找 suggestion chips。
+- 2026-03-09 (Iteration 29): 本轮不发明新的 follow-up 源，而是直接复用 `resumeActions` 中的 prompt 型动作，生成一个独立的 composer-adjacent `Continue this run` strip；这样 message-level suggestions、cockpit footer、composer strip 三者共享同一套 prompt 语义。
+- 2026-03-09 (Iteration 29): 这条 strip 只在已有消息且状态为 `ready` / `error` 时出现，避免和 quick-start/active-run strip 混杂。这样控制层形成自然的三段式：空会话 quick-start、进行中 active controls、完成后 continue strip。
