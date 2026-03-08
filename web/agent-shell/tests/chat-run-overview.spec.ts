@@ -82,6 +82,38 @@ export async function run() {
   assert.match(completedOverview.statusSummary, /1 completed/);
   assert.equal(completedOverview.sections.length, 2, 'no approvals section should be shown when queue is empty');
 
+  const toolOnlyOverview = buildChatRunOverview({
+    messages: [
+      {
+        id: 'user-4',
+        role: 'user',
+        parts: [{ type: 'text', text: 'Check the logs.' }],
+      },
+      {
+        id: 'assistant-4',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'mcp.logs.read',
+            toolCallId: 'call-4',
+            state: 'input-available',
+            input: { path: 'logs/app.log' },
+          },
+        ],
+      },
+    ],
+    status: 'streaming',
+    approvals: [],
+  });
+
+  assert.ok(toolOnlyOverview, 'tool-only assistant turns should still produce an overview');
+  assert.equal(
+    toolOnlyOverview.sections[0].items[1].targetId,
+    'chat-tool-assistant-4-0',
+    'assistant state should fall back to the first tool anchor when there is no rendered message bubble',
+  );
+
   const linkedApprovalOverview = buildChatRunOverview({
     messages: [
       {

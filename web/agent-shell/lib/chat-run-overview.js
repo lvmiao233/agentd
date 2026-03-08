@@ -167,6 +167,32 @@ function buildApprovalItems(approvals) {
   }));
 }
 
+function firstToolTargetId(message) {
+  if (!message || !Array.isArray(message.parts)) {
+    return undefined;
+  }
+
+  for (const [partIndex, part] of message.parts.entries()) {
+    if (isToolPart(part)) {
+      return `chat-tool-${message.id}-${partIndex}`;
+    }
+  }
+
+  return undefined;
+}
+
+function messageTargetId(message) {
+  if (!message?.id) {
+    return undefined;
+  }
+
+  if (extractMessageText(message)) {
+    return `chat-message-${message.id}`;
+  }
+
+  return firstToolTargetId(message);
+}
+
 function buildStatusLabel({ status, approvalCount, toolSummary }) {
   if (approvalCount > 0) {
     return 'Waiting for approval';
@@ -265,7 +291,7 @@ export function buildChatRunOverview({
           title: normalizeSnippet(extractMessageText(lastUserMessage) || 'Continue the current task.', 110),
           description: 'Latest user instruction',
           completed: false,
-          targetId: lastUserMessage?.id ? `chat-message-${lastUserMessage.id}` : undefined,
+          targetId: messageTargetId(lastUserMessage),
           tone: 'default',
         },
         {
@@ -277,7 +303,7 @@ export function buildChatRunOverview({
             140,
           ),
           completed: status === 'ready' && effectiveApprovalCount === 0 && toolSummary.active === 0,
-          targetId: latestAssistantMessage?.id ? `chat-message-${latestAssistantMessage.id}` : undefined,
+          targetId: messageTargetId(latestAssistantMessage),
           tone: status === 'error' ? 'error' : effectiveApprovalCount > 0 || status === 'streaming' ? 'warning' : 'default',
         },
       ],

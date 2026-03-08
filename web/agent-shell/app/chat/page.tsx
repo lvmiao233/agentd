@@ -783,11 +783,11 @@ export default function ChatPage() {
                       flushVariantContentParts();
                       const toolKey = `${variantKey}-tool-${partIndex}`;
                       const linkedApproval = allowLinkedApprovals
-                        ? toolApprovalAssignments.get(`${message.id}-tool-${partIndex}`)
+                        ? toolApprovalAssignments.get(`${targetMessage.id}-tool-${partIndex}`)
                         : undefined;
                       variantSegments.push(
                         <Tool
-                          id={`chat-tool-${message.id}-${partIndex}`}
+                          id={`chat-tool-${targetMessage.id}-${partIndex}`}
                           className="scroll-mt-24"
                           key={toolKey}
                           defaultOpen={
