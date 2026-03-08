@@ -128,6 +128,19 @@ type ChatAgentOption = {
 
 const CHAT_PROMPT_FORM_ID = 'chat-prompt-form';
 
+function highlightConversationTarget(targetId: string) {
+  const target = document.getElementById(targetId);
+  if (!target) {
+    return;
+  }
+
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  target.classList.add('ring-2', 'ring-sky-500/70', 'ring-offset-2', 'ring-offset-background');
+  window.setTimeout(() => {
+    target.classList.remove('ring-2', 'ring-sky-500/70', 'ring-offset-2', 'ring-offset-background');
+  }, 1800);
+}
+
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
 }
@@ -666,7 +679,13 @@ export default function ChatPage() {
           </div>
         )}
 
-        {runOverview && <ChatRunOverviewPanel overview={runOverview} className="mb-3" />}
+        {runOverview && (
+          <ChatRunOverviewPanel
+            overview={runOverview}
+            className="mb-3"
+            onNavigateToTarget={highlightConversationTarget}
+          />
+        )}
 
         <Conversation>
           <ConversationContent>
@@ -716,7 +735,7 @@ export default function ChatPage() {
 
                   const contentKey = `${variantKey}-content-${variantContentParts[0]?.partIndex ?? 0}`;
                   variantSegments.push(
-                      <Message key={contentKey} from={targetMessage.role}>
+                      <Message key={contentKey} from={targetMessage.role} id={`chat-message-${targetMessage.id}`} className="scroll-mt-24">
                         <MessageContent>
                           {collectMessageAttachments(variantContentParts.map(({ part }) => part)).length > 0 && (
                             <MessageAttachmentsDisplay parts={variantContentParts.map(({ part }) => part)} />
@@ -768,6 +787,8 @@ export default function ChatPage() {
                         : undefined;
                       variantSegments.push(
                         <Tool
+                          id={`chat-tool-${message.id}-${partIndex}`}
+                          className="scroll-mt-24"
                           key={toolKey}
                           defaultOpen={
                             part.state === 'output-available' ||
@@ -782,7 +803,7 @@ export default function ChatPage() {
                           )}
                           <ToolContent>
                             {linkedApproval && (
-                              <Confirmation state="approval-requested">
+                              <Confirmation id={`chat-approval-${linkedApproval.id}`} state="approval-requested" className="scroll-mt-24">
                                 <ConfirmationRequest>
                                   <div className="font-medium">Approval required for {linkedApproval.tool}</div>
                                   <div className="text-muted-foreground text-sm">
@@ -881,7 +902,7 @@ export default function ChatPage() {
 
                   const contentKey = `${message.id}-content-${contentParts[0]?.partIndex ?? 0}`;
                   renderedSegments.push(
-                    <Message key={contentKey} from={message.role}>
+                    <Message key={contentKey} from={message.role} id={`chat-message-${message.id}`} className="scroll-mt-24">
                       <MessageContent>
                         {collectMessageAttachments(contentParts.map(({ part }) => part)).length > 0 && (
                           <MessageAttachmentsDisplay parts={contentParts.map(({ part }) => part)} />
@@ -931,6 +952,8 @@ export default function ChatPage() {
                     const linkedApproval = toolApprovalAssignments.get(toolKey);
                     renderedSegments.push(
                       <Tool
+                        id={`chat-tool-${message.id}-${partIndex}`}
+                        className="scroll-mt-24"
                         key={toolKey}
                         defaultOpen={
                           part.state === 'output-available' ||
@@ -949,7 +972,7 @@ export default function ChatPage() {
                         )}
                         <ToolContent>
                           {linkedApproval && (
-                            <Confirmation state="approval-requested">
+                            <Confirmation id={`chat-approval-${linkedApproval.id}`} state="approval-requested" className="scroll-mt-24">
                               <ConfirmationRequest>
                                 <div className="font-medium">Approval required for {linkedApproval.tool}</div>
                                 <div className="text-muted-foreground text-sm">
@@ -1066,7 +1089,7 @@ export default function ChatPage() {
                       lastAssistantText && (
                         <>
                           {followUpSuggestions.length > 0 && (
-                            <Suggestions>
+                          <Suggestions id={`chat-message-actions-${message.id}`}>
                               {followUpSuggestions.map((suggestion) => (
                                 <Suggestion
                                   key={suggestion}
@@ -1108,7 +1131,7 @@ export default function ChatPage() {
                       if (item.kind === 'pending') {
                         const approval = item.approval;
                         return (
-                          <Confirmation key={approval.id} state="approval-requested">
+                          <Confirmation id={`chat-approval-${approval.id}`} key={approval.id} state="approval-requested" className="scroll-mt-24">
                             <ConfirmationRequest>
                               <div className="font-medium">{approval.tool}</div>
                               <div className="text-muted-foreground text-sm">{approval.reason}</div>
@@ -1139,7 +1162,7 @@ export default function ChatPage() {
                       const resolvedState = approval.decision === 'approve' ? 'approved' : 'rejected';
 
                       return (
-                        <Confirmation key={approval.id} state={resolvedState}>
+                         <Confirmation id={`chat-approval-${approval.id}`} key={approval.id} state={resolvedState} className="scroll-mt-24">
                           {approval.decision === 'approve' ? (
                             <ConfirmationAccepted>
                               <CheckIcon className="mt-0.5 size-4" />

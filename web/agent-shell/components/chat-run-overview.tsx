@@ -1,6 +1,6 @@
 'use client';
 
-import type { ComponentProps } from 'react';
+import { type ComponentProps, useCallback } from 'react';
 import { Activity, ChevronDownIcon, ListChecks, ShieldAlert } from 'lucide-react';
 
 import {
@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 
 type ChatRunOverviewProps = ComponentProps<'section'> & {
   overview: ChatRunOverview;
+  onNavigateToTarget?: (targetId: string) => void;
 };
 
 function sectionIcon(sectionKey: string) {
@@ -48,8 +49,21 @@ function itemDotClass(item: ChatRunOverview['sections'][number]['items'][number]
 export default function ChatRunOverviewPanel({
   overview,
   className,
+  onNavigateToTarget,
   ...props
 }: ChatRunOverviewProps) {
+  const handleNavigate = useCallback(
+    (targetId: string) => {
+      if (onNavigateToTarget) {
+        onNavigateToTarget(targetId);
+        return;
+      }
+
+      document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    },
+    [onNavigateToTarget],
+  );
+
   return (
     <section
       className={cn('rounded-xl border border-border bg-card/70 p-4 shadow-sm', className)}
@@ -86,15 +100,24 @@ export default function ChatRunOverviewPanel({
               <TaskContent>
                 {section.items.map((item) => (
                   <TaskItem key={item.key} className="rounded-md border border-transparent px-1 py-0.5">
-                    <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      disabled={!item.targetId}
+                      onClick={() => item.targetId && handleNavigate(item.targetId)}
+                      className={cn(
+                        'flex w-full items-start gap-3 rounded-md text-left transition-colors',
+                        item.targetId ? 'cursor-pointer hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50' : 'cursor-default',
+                      )}
+                    >
                       <span className={cn('mt-1.5 inline-flex size-2.5 shrink-0 rounded-full', itemDotClass(item))} />
-                      <div className="min-w-0 space-y-1">
+                      <div className="min-w-0 flex-1 space-y-1">
                         <div className={cn('text-sm', item.completed ? 'text-foreground/80' : 'text-foreground')}>
                           {item.title}
                         </div>
                         <div className="text-xs leading-5 text-muted-foreground">{item.description}</div>
+                        {item.targetId && <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground/80">Jump to context</div>}
                       </div>
-                    </div>
+                    </button>
                   </TaskItem>
                 ))}
               </TaskContent>
