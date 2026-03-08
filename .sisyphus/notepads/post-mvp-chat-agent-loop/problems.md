@@ -25,3 +25,4 @@
 - 2026-03-08 (Iteration 11): run overview 虽然已经能汇总当前 turn / tool / approval 状态，但如果用户看完还得自己在长会话里滚动定位对应节点，它就仍然只解决了一半问题；缺失的正是“从摘要回到现场”的导航能力。
 - 2026-03-08 (Iteration 12): 现在用户虽然能继续提问、能 regenerate、能做分支、也能通过 run overview 找到上下文，但仍然缺少一个明确的“把整个会话恢复到之前某一步”的机制；这会让长任务探索在走偏后恢复成本偏高。
 - 2026-03-08 (Iteration 13): 即使有 command palette 和 checkpoints，如果用户每次继续任务都还得滚到最新 assistant 消息附近才能点 suggestion，长会话的推进仍然不够顺滑；因此需要一个始终贴近 run overview 的顶部 continuation 入口。
+- 2026-03-08 (Iteration 14): 有了 checkpoint 和 resume bar 之后，剩余摩擦变成“checkpoint 藏在消息中间，不够像会话级地图”；用户仍然缺一个顶部可扫描、可跳转、可恢复的阶段时间线。

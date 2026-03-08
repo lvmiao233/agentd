@@ -47,3 +47,6 @@
 - 2026-03-08 (Iteration 12): 真实浏览器回放已验证 checkpoint 核心闭环：两轮 assistant 回复后生成 checkpoint，点击第一轮 checkpoint 会移除第二轮消息并显示 restore notice，说明恢复链路真实可用。
 - 2026-03-08 (Iteration 13): 将顶部 resume bar 建立在 `commandMenuItems` 之上，而不是直接重复调用 `buildFollowUpSuggestions()`，可以天然复用已存在的 prompt title / disabled / action 语义；这比手动再拼一组 chips 更稳。
 - 2026-03-08 (Iteration 13): 真实浏览器回放已验证顶层 resume action 的价值：在 run overview 中点击 `Continue coding` 会直接触发第二轮 `/api/chat` 请求并渲染后续响应，真正消除了“必须滚到底部再继续”的摩擦。
+- 2026-03-08 (Iteration 14): 对当前 chat 架构来说，session timeline 最稳的做法不是重新解析 messages，而是直接复用 checkpoint state；这样 timeline 只是 checkpoint 的另一种顶层视图，不会引入第二套“历史真相源”。
+- 2026-03-08 (Iteration 14): 官方 Queue 模式比手写 timeline 更适合这一步，因为 `QueueItemIndicator / QueueItemActions / QueueSection` 已经把 checkpoint navigator 所需的视觉和交互骨架提供好了，接起来非常自然。
+- 2026-03-08 (Iteration 14): 真实浏览器回放已验证顶部 Session timeline 的关键闭环：两轮 assistant 回复后能在顶部看到 timeline，展开后点击 `Restore` 会裁掉后续消息并显示 restore notice。

@@ -27,3 +27,5 @@
 - 2026-03-08 (Iteration 12): `next start` 在当前环境里仍偶发 chunk/runtime 异常，不适合作为这一轮主要浏览器验证通道；本轮真实回放最终采用全新 `next dev :4186` 实例完成。
 - 2026-03-08 (Iteration 13): Momus 这次没有真正审到计划本体，因为它要求一个单独的 `.sisyphus/plans/*.md` 路径；对于这种小型 frontend iteration，直接以内联计划推进并不影响落地，但若后续继续频繁使用 Momus，最好给它一个临时 plan 文件。
 - 2026-03-08 (Iteration 13): resume bar 浏览器回放里仍伴随 dev 模式 RSC payload 噪音，但不影响核心交互验证；当前应将其视为环境噪声，而不是本特性的功能回归。
+- 2026-03-08 (Iteration 14): `next start` 在当前环境里仍会偶发 `vendor-chunks/mermaid` 相关 500，不能作为稳定的真实验证通道；本轮最终验证依旧依赖全新 `next dev` 实例完成。
+- 2026-03-08 (Iteration 14): 对带 sticky header / input 的复杂布局，Playwright 有时不适合坚持“纯鼠标点击”；本轮 timeline restore 采用 DOM 触发按钮 click，同样证明了真实交互链路是否连通。
