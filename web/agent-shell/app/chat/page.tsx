@@ -128,6 +128,7 @@ import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
 import { buildChatCockpitPlan } from '@/lib/chat-cockpit-plan.js';
+import { buildChatLiveActivity } from '@/lib/chat-live-activity.js';
 import { buildChatLatestOutput } from '@/lib/chat-latest-output.js';
 import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
 import { buildChatSessionTimeline } from '@/lib/chat-session-timeline.js';
@@ -643,6 +644,7 @@ export default function ChatPage() {
     status,
     activeMessageId: lastAssistantMessage?.id,
   });
+  const liveActivity = buildChatLiveActivity(messages);
   const latestOutput = buildChatLatestOutput(messages);
   const lastUserMessage = [...messages]
     .reverse()
@@ -773,6 +775,7 @@ export default function ChatPage() {
           approvalQueue={approvalQueue}
           approvalBusyId={approvalBusyId}
           sessionTimeline={sessionTimeline}
+          liveActivity={liveActivity}
           latestOutput={latestOutput}
           checkpointsById={checkpointsById}
           onActionSelect={(action) => void handleResumeAction(action)}
