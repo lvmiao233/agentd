@@ -903,7 +903,10 @@ export default function ChatPage() {
     messages.length > 0 && (status === 'ready' || status === 'error')
       ? resumeActions.filter((action) => action.kind === 'prompt' && action.prompt).slice(0, 3)
       : [];
-  const cockpitResumeActions = composerFollowUpActions.length > 0 ? [] : resumeActions;
+  const cockpitResumeActions =
+    composerFollowUpActions.length > 0 || starterPromptActions.length > 0
+      ? []
+      : resumeActions;
   const sessionTimeline = buildChatSessionTimeline({
     checkpoints,
     status,
@@ -1095,9 +1098,6 @@ export default function ChatPage() {
             {messages.length === 0 && approvalFeed.length === 0 ? (
               <ConversationEmptyState
                 className="min-h-[24rem] justify-start pt-10"
-                icon={<MessageSquare className="size-12" />}
-                title="Agent Chat"
-                description="与 agentd 管理的 AI agent 对话，所有工具调用经 daemon 策略管控"
               >
                 <div className="flex flex-col items-center gap-4 text-center">
                   <MessageSquare className="size-12 text-muted-foreground" />
