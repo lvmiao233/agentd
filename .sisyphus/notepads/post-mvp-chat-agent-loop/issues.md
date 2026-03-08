@@ -13,3 +13,6 @@
 - 2026-03-08 (Iteration 7): 新增 `chat-artifacts.spec.ts` 初版因原始模板字符串里混入 fenced code / 逃逸字符而在自定义 spec runner 下触发 `SyntaxError`; 已改为数组拼接 `join('\n')`，规避 runner 直接复制 `.ts -> .mjs` 的语法脆弱点。
 - 2026-03-08 (Iteration 7): 首次真实浏览器回放卡在 streaming 态，不是业务代码错误，而是本地 mock daemon 提前在 request close 时清掉了 stream timer；改成监听 `response.close` 后恢复正常。
 - 2026-03-08 (Iteration 7): 第二次回放里 assistant 文本缺失 fenced artifact 内容，根因是 shell 启动 mock 时未转义三反引号，Bash command substitution 把 code fence 吃掉了；改用 `String.fromCharCode(96).repeat(3)` 生成 fence 后恢复真实 payload。
+- 2026-03-08 (Iteration 8): `next start` / `next dev` 在当前环境里对 `/api/*` curl 验证持续返回 bare 502，导致本轮不能依赖“浏览器直连 daemon mock”做端到端重放；因此改为“真实页面 + Playwright 路由拦截”验证前端交互，再用 `handleChatPost` 函数级 replay 覆盖 route 序列化。
+- 2026-03-08 (Iteration 8): 浏览器上传 `.tsx` 文件时得到的 `mediaType` 是 `application/x-tiled-tsx`，不是常见的 `text/plain`/`text/tsx`；如果只看 media type 会误判为二进制，本轮通过 filename extension fallback 规避。
+- 2026-03-08 (Iteration 8): attachment 内容如果直接包进固定的三反引号 fence，遇到本身含有 ``` 的源码/markdown 会破坏 prompt 结构；本轮改为根据正文中的最长 backtick run 动态扩展 fence 长度。

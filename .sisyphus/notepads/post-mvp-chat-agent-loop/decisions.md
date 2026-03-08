@@ -24,3 +24,6 @@
 - 2026-03-08 (Iteration 7): artifact preview 先基于 assistant markdown 中的 fenced code block 做启发式抽取，只支持 `html` / `svg` 两类高价值可视产物；原因是后端尚无标准 artifact chunk，但用户已经能立即从 preview 中获益。
 - 2026-03-08 (Iteration 7): Artifact 卡片放在 assistant prose 之前渲染，并跟随 regenerate branch 版本号补 title 后缀；这样用户会先看到“可操作/可预览产物”，再看解释文字，更贴近 coding-agent 的工作流。
 - 2026-03-08 (Iteration 7): 对 markdown code renderer 不额外 fork streamdown，而是在本地包一层 `svg -> xml` alias；这样既消除了浏览器 console 噪音，也避免为了一个语言兼容问题重写整套消息渲染链路。
+- 2026-03-08 (Iteration 8): 下一轮优先把 PromptInput 现有 attachments 能力接到真实 chat 回路，而不是先做更多纯命令型输入 UI；因为对 coding-agent 来说，“把文件上下文带进 prompt”比新增一个快捷按钮更直接影响任务完成率。
+- 2026-03-08 (Iteration 8): attachment 展示优先沿用 ai-elements 官方 `Attachments/Attachment/AttachmentPreview/AttachmentInfo/AttachmentRemove` 组合模式，在仓库内补本地组件副本；避免继续在 `page.tsx` 里散落手写 chip/card 样式。
+- 2026-03-08 (Iteration 8): 由于当前 daemon RunAgent 输入仍是单一字符串，本轮采用“文本/代码附件序列化进 prompt，二进制附件只保留元信息”的兼容策略；这样可以先获得真实可用性，同时不阻塞后端未来升级到结构化 file part。

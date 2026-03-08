@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1772931026909,
+  "method": "RunAgent",
+  "params": {
+    "input": "[user]\nPlease review the attached sample.\n[attachment]\nfilename: chat-attachment-preview-iteration8-sample.tsx\nmedia_type: text/plain\ncontent:\n```tsx\nexport default function AttachmentSample() {\n  return <section className=\"rounded-lg border p-4\">Attachment sample context</section>;\n}\n\n```",
+    "model": "gpt-5.3-codex",
+    "agent_id": "attachment-agent",
+    "session_id": "attachment-session",
+    "runtime": "agent-lite",
+    "stream": true
+  }
+}

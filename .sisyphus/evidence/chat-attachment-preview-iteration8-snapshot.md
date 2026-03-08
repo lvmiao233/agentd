@@ -1,0 +1,75 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "Agent shell navigation" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "Chat" [ref=e6] [cursor=pointer]:
+            - /url: /chat
+            - img [ref=e7]
+            - text: Chat
+        - listitem [ref=e9]:
+          - link "Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e11]
+            - text: Dashboard
+        - listitem [ref=e16]:
+          - link "Tools" [ref=e17] [cursor=pointer]:
+            - /url: /tools
+            - img [ref=e18]
+            - text: Tools
+        - listitem [ref=e20]:
+          - link "Events" [ref=e21] [cursor=pointer]:
+            - /url: /events
+            - img [ref=e22]
+            - text: Events
+        - listitem [ref=e24]:
+          - link "Usage" [ref=e25] [cursor=pointer]:
+            - /url: /usage
+            - img [ref=e26]
+            - text: Usage
+        - listitem [ref=e28]:
+          - link "Settings" [ref=e29] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e30]
+            - text: Settings
+    - main [ref=e33]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - heading "Agent Chat" [level=1] [ref=e38]
+            - paragraph [ref=e39]: 选择一个 agent 后发起实时对话，回复会逐步流式显示
+          - combobox "Active agent selector" [ref=e41]:
+            - generic: Attachment Agent · gpt-5.3-codex · idle
+            - img
+        - log [ref=e42]:
+          - generic [ref=e44]:
+            - generic [ref=e46]:
+              - generic [ref=e49]:
+                - img [ref=e51]
+                - generic [ref=e54]:
+                  - generic [ref=e55]: chat-attachment-preview-iteration8-sample.tsx
+                  - generic [ref=e56]: application/x-tiled-tsx
+              - paragraph [ref=e58]: Please review the attached sample.
+            - generic [ref=e61]:
+              - paragraph [ref=e62]: Attachment context received.
+              - paragraph [ref=e63]: "filename: chat-attachment-preview-iteration8-sample.tsx Attachment sample context"
+            - generic [ref=e64]:
+              - button "Summarize what changed and what still remains." [ref=e65]
+              - button "Show the next highest-impact step and execute it." [ref=e66]
+            - generic [ref=e67]:
+              - button "重新生成" [ref=e68]:
+                - img
+                - generic [ref=e69]: 重新生成
+              - button "复制" [ref=e70]:
+                - img
+                - generic [ref=e71]: 复制
+        - group [ref=e73]:
+          - textbox "Ask the agent…" [ref=e75]
+          - group [ref=e76]:
+            - button [ref=e78]:
+              - img
+            - button "Submit" [active] [ref=e79]:
+              - img
+  - button "Open Next.js Dev Tools" [ref=e85] [cursor=pointer]:
+    - img [ref=e86]
+  - alert [ref=e89]

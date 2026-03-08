@@ -24,3 +24,7 @@
 - 2026-03-08 (Iteration 7): `useChat` / `createUIMessageStream` 只要收到原样 `text-delta`，前端就能保留 fenced markdown；因此在后端还没产出结构化 artifact part 之前，可以先做 message-text 级 preview 提取闭环。
 - 2026-03-08 (Iteration 7): 对 chat UI 做 deterministic 浏览器回放时，用“真实 `next start` + mock daemon `/rpc`”比直接在浏览器里拦截 `/api/chat` 更稳，因为可以同时覆盖 `/api/agents`、`/api/approvals` 与 route 层的 streaming 适配。
 - 2026-03-08 (Iteration 7): `@streamdown/code` 的 Shiki 插件虽然暴露了标准 highlighter 接口，但不认识 `svg` fence；在消息层包一层 alias plugin 是低成本兼容现有生态的好办法。
+- 2026-03-08 (Iteration 8): ai-elements `PromptInput` 的 attachments 流并不是只负责文件选择；它会在 submit 前把 blob URL 自动转换成 data URL，因此前端只要别再忽略 `message.files`，就已经具备把文件带进请求体的完整能力。
+- 2026-03-08 (Iteration 8): 对 coding 场景最有价值的 attachment 并不是图片预览，而是把小型 text/code 文件直接序列化成 prompt context；这能在不改 agent-lite 协议的前提下显著提升“带上下文提问”的实用性。
+- 2026-03-08 (Iteration 8): 浏览器真实上传时 `mediaType` 不可靠，extension fallback 是必须的；否则 `.tsx/.md/.yaml` 这类本该可读的文件很容易被错误地降级为 binary attachment。
+- 2026-03-08 (Iteration 8): 将附件内容包进 markdown fence 时，必须动态选择比正文里任意 backtick run 更长的 fence；否则 agent 看到的 prompt 可能被源码自身的 ``` 片段截断。

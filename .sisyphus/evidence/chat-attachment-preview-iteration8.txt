@@ -1,0 +1,39 @@
+iteration=8
+feature=chat_attachment_prompt_context
+status=passed
+date=2026-03-08
+
+[verification]
+1. node web/agent-shell/tests/run-tests.mjs
+   result=PASS
+
+2. corepack pnpm --filter agent-shell build
+   result=PASS
+
+3. node --input-type=module handleChatPost replay
+   result=PASS
+   evidence=chat-attachment-preview-iteration8-route-replay.json
+   contains=filename: chat-attachment-preview-iteration8-sample.tsx, Attachment sample context
+
+4. playwright_mcp chat attachment replay against http://127.0.0.1:4183/chat
+   result=PASS
+   mode=real page + intercepted /api/agents,/api/approvals,/api/chat
+   uploadedFile=chat-attachment-preview-iteration8-sample.tsx
+   attachmentChip=PASS
+   userMessageAttachment=PASS
+   assistantEcho=PASS
+   console=chat-attachment-preview-iteration8-console.txt
+   snapshot=chat-attachment-preview-iteration8-snapshot.md
+   screenshot=chat-attachment-preview-iteration8.png
+
+[scope]
+- web/agent-shell/components/ai-elements/attachments.tsx
+- web/agent-shell/lib/chat-attachments.js
+- web/agent-shell/lib/chat-attachments.d.ts
+- web/agent-shell/lib/chat-route-handler.mjs
+- web/agent-shell/app/chat/page.tsx
+- web/agent-shell/tests/chat-attachments.spec.ts
+- web/agent-shell/tests/chat-route-streaming.spec.ts
+
+[summary]
+The chat composer now exposes ai-elements-style file attachments with inline chips and message rendering, and submitted text/code files are serialized into the RunAgent prompt as readable attachment context. This turns PromptInput attachments from dormant UI capability into real coding context the agent can use.

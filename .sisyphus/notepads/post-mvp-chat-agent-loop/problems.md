@@ -16,3 +16,5 @@
 - 2026-03-08 (Iteration 6): 当前 branch history 只在前端内存里保留；刷新页面或切 agent 后会丢失。若后续要做真正的会话级 branch 持久化，需要在 daemon/session 层增加相应存储或 metadata 通道。
 - 2026-03-08 (Iteration 7): 当前 artifact preview 仍然是从 assistant markdown 正文里做 regex 抽取，而不是第一类 stream part；这意味着 tool output、结构化文件产物、以及非 text assistant part 还无法被统一纳入 preview 管道。
 - 2026-03-08 (Iteration 7): 由于 artifact 目前只是“从正文中提取再额外渲染”，原始 markdown code block 仍会继续出现在消息正文里，形成“preview card + code block”双份信息；后续若后端提供 artifact part，应考虑 suppress duplicate fence render。
+- 2026-03-08 (Iteration 8): 之前 chat 页面对 PromptInput 的 attachments 能力几乎是“半接入”状态：输入组件支持文件，但页面 submit 逻辑直接丢弃 `message.files`，route 也完全忽略 file part，导致上传只能当装饰，不能成为 agent 上下文。
+- 2026-03-08 (Iteration 8): 当前 attachment prompt serialization 仍然是字符串内联方案，虽然能立即服务 coding 场景，但对大文件、二进制、以及真正多模态模型输入都不够理想；后续如果 daemon 支持 structured file/message part，需要把这一层升级为第一类协议字段。
