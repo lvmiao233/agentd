@@ -87,6 +87,7 @@ import {
   ToolInput,
   ToolOutput,
 } from '@/components/ai-elements/tool';
+import ChatRunOverviewPanel from '@/components/chat-run-overview';
 import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
@@ -109,6 +110,7 @@ import {
 } from '@/lib/chat-message-branches.js';
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
+import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
 
 type ChatAgentOption = {
   agent_id: string;
@@ -464,6 +466,12 @@ export default function ChatPage() {
     approvals: approvalQueue,
   });
   const approvalFeed = buildApprovalFeed({ pending: unmatchedApprovals, resolved: resolvedApprovals });
+  const runOverview = buildChatRunOverview({
+    messages,
+    status,
+    approvals: unmatchedApprovals,
+    approvalCount: approvalQueue.length,
+  });
 
   const lastAssistantMessage = [...messages]
     .reverse()
@@ -553,6 +561,8 @@ export default function ChatPage() {
             Something went wrong while streaming this response. You can retry.
           </div>
         )}
+
+        {runOverview && <ChatRunOverviewPanel overview={runOverview} className="mb-3" />}
 
         <Conversation>
           <ConversationContent>
