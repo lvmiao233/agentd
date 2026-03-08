@@ -34,3 +34,4 @@
 - 2026-03-08 (Iteration 20): 即使有最新输出入口，用户在长任务进行中仍然缺少“现在到底在跑什么”的即时观察位；如果 cockpit 只能展示已完成结果，就仍然无法完全回应最初对 agent 灵活度和中间态可见性的诉求。
 - 2026-03-09 (Iteration 21): 目前 chat 虽然已经支持 html/svg artifact preview，但 agent 给出“组件化 UI 方案”时仍然只能当源码看，缺少真正的组件预览能力；这使得 ai-elements 在最有潜力的交互场景（agent 直接产出 UI）上仍未被充分利用。
 - 2026-03-09 (Iteration 21): 之前的 artifact 抽取只识别闭合的 html/svg fence，因此流式中的 JSX 产物必须等整个 fence 结束后才能被感知；这和 ai-elements `JSXPreview` 的 streaming 设计不匹配，也浪费了它的半成品渲染优势。
+- 2026-03-09 (Iteration 22): 即使 daemon 已经在输出工具相关 frame，只要前端桥接没有进入 `dynamic-tool` 状态机，chat 仍然会表现得像“工具先闷头跑，结束后再统一露出结果”；用户感知上依旧会觉得 agent 很僵硬。

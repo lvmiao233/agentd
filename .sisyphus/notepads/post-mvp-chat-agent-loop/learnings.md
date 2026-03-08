@@ -71,3 +71,6 @@
 - 2026-03-09 (Iteration 21): 对 chat artifact 来说，`html/svg` 与 `jsx/tsx` 的真正差异不在“有没有预览”，而在“预览载体”不同：前者最稳是 iframe，后者最稳是受限组件注入 + `react-jsx-parser`。统一放进同一个 `Artifact` 容器后，用户几乎不需要学习新交互。
 - 2026-03-09 (Iteration 21): 只要把 fenced `jsx/tsx` 里的 renderable expression 抽出来，现有 `buildChatLatestOutput()`、artifact anchors、message branch 预览链都能零协议改动地复用；说明之前把 artifact 抽取收敛到 helper 是正确的架构选择。
 - 2026-03-09 (Iteration 21): 浏览器真实回放证明 preview 路径已打通：在 `/chat` 提交一条 prompt 后，assistant 回复中的 `jsx` fence 会生成 `JSX preview` artifact，并在主文档中直接看到 `Demo panel / Ship it` 这些 JSX 渲染结果，而不是只看到源码。
+- 2026-03-09 (Iteration 22): 仅仅发出 `tool-input-start` / `tool-input-available` 还不够；AI SDK 官方只有在这些 chunk 带 `dynamic: true` 时，才会把它们转成 `dynamic-tool` 并推进 `input-streaming -> input-available -> output-*` 状态机。缺少这个标记时，前端虽然“有 tool 事件”，但很难做出真正活的工具体验。
+- 2026-03-09 (Iteration 22): `dynamic-tool` 的价值不只是 approvals。哪怕没有 approval，`input-streaming` 和 `input-available` 也足够让 UI 提前渲染出运行中的工具卡，让 assistant 文本与工具进度并存，而不是等结果出来才出现一张完成卡片。
+- 2026-03-09 (Iteration 22): 浏览器真实回放已证明这条链路有效：mock `/api/chat` 返回 `dynamic: true` 的 tool chunks 后，`/chat` 页面会出现默认展开的 `mcp.fs.read_file` 工具卡，能看到 `Running` badge、`mcp.fs.read_file is running…` 正文和 `README.md` 参数，同时 cockpit 顶部也同步显示 `LIVE ACTIVITY`。

@@ -66,3 +66,6 @@
 - 2026-03-09 (Iteration 21): 对 `jsx/tsx` code fence，优先抽取“可直接渲染的 JSX expression”，允许处理纯 JSX 和常见的 `return (...)`/箭头函数返回体；如果拿不到安全的可渲染 JSX，就宁可不做 preview，也不把整段函数源码硬塞进 parser。
 - 2026-03-09 (Iteration 21): 本轮只向 JSX Preview 注入一小组安全且高频的本地 UI 组件（`Button` / `Badge` / `Card*` / `Input` / `Textarea` / `Separator`），不一次性开放整套组件树；目标是先让 agent 输出常见组件卡片可用，再逐轮扩展。
 - 2026-03-09 (Iteration 21): 既然 ai-elements 官方 `JSXPreview` 原生支持 streaming incomplete JSX，本轮同时允许 `extractPreviewArtifacts(..., { includeIncomplete: true })` 捕获最后一个未闭合的 preview fence，给流式中的最后一条 assistant 消息提前显示 preview，而不是必须等到 fence 闭合。
+- 2026-03-09 (Iteration 22): 下一步不直接重写 daemon 协议，而是先让现有 tool 事件真正走上 AI SDK 的 `dynamic-tool` 状态机：为 `tool-input-start` / `tool-input-available` 补上 `dynamic: true`，让前端拿到 `input-streaming` / `input-available` 等状态，而不是把这些调用当成普通静态 tool part。
+- 2026-03-09 (Iteration 22): 在 chat 正文里，运行中的工具卡应该默认展开；如果 `input-streaming` / `input-available` 仍然折叠，用户实际上仍然看不到“正在做什么”。因此本轮把 in-flight tool 状态加入 `defaultOpen` 条件，而不是只在 output/error 时展开。
+- 2026-03-09 (Iteration 22): 运行中工具不应只有 badge，没有正文。为此新增 `ToolProgress`，在 `input-streaming` / `input-available` / approval 状态下显示短句说明（例如 `Collecting ... parameters…`、`... is running…`），把中间态从“有状态但无内容”提升为“有状态且可读”。

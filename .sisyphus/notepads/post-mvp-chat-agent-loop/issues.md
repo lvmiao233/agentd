@@ -41,3 +41,4 @@
 - 2026-03-08 (Iteration 20): `liveActivityVisible` 的第一次 Playwright 布尔断言失败并不代表卡片没渲染；抓整页 `innerText` 后可以看到 `LIVE ACTIVITY / mcp.fs.read_file / Running / path: ...` 已真实存在。对这种 mixed-case UI，同样应该优先用整页文本或交互行为校验。
 - 2026-03-09 (Iteration 21): `next build` 首次失败不是逻辑问题，而是我直接照抄 ai-elements 源码里的 `toReversed()`；当前仓库 TS/lib 目标不支持该 API，改成 `[...stack].reverse()` 后构建恢复通过。
 - 2026-03-09 (Iteration 21): Playwright 真实验证时，artifact 内部的 `Code` 切换按钮在当前 sticky cockpit + input 布局下偶发被上层容器/输入区拦截指针事件；preview 渲染本身已在浏览器中确认可见，但后续若要稳定验证 code toggle，最好补更明确的滚动/测试锚点或降低遮挡。
+- 2026-03-09 (Iteration 22): 这轮一开始最容易误判的点是“tool 事件已经有了，所以问题一定在 React 渲染层”；实际根因更早，在 stream bridge 没有带 `dynamic: true`，导致 AI SDK 不会进入真正的 `dynamic-tool` 流程。先修事件语义，比先堆更多 UI 组件更关键。
