@@ -33,3 +33,8 @@
 - 2026-03-08 (Iteration 9): 真实浏览器回放证明 run overview 不只是静态摘要：当 `/api/chat` SSE 和 `/api/approvals` 同时变化时，面板会正确显示 `Run overview / Current turn / Tool activity / Pending approvals`，说明当前前端派生模型已经具备真实可用性。
 - 2026-03-08 (Iteration 9): AI SDK 官方 `streaming-data` 文档说明后续若想进一步逼近 OpenCode/OpenClaw，可以把 run overview 从“前端派生”升级到“后端主动流式 data part”；这一轮先不跨越到协议层，是合理的分步策略。
 - 2026-03-08 (Iteration 9): `Radix Trigger asChild + div` 虽然表面上能点，但不等于拥有正确的 button 语义；对 ai-elements 风格组件做定制时，trigger 子节点最好继续保持真实 button。
+- 2026-03-08 (Iteration 10): `PromptInputCommand*` primitives 虽然已经在仓库里存在，但只有真正把它们挂到 `Dialog + PromptInputButton + keyboard shortcut` 链路上，才会从“组件库存”变成 agent console；这类未接线 primitives 的价值经常被低估。
+- 2026-03-08 (Iteration 10): 通过复用 `buildFollowUpSuggestions` 生成 command prompts，可以让 suggestion chips 与 command palette 自动保持语义一致；用户既能在消息下方点击，也能在任何时刻用 `Ctrl/⌘+K` 调出同一组高价值动作。
+- 2026-03-08 (Iteration 10): 真实浏览器回放显示 command palette 的最佳体验是两阶段：第一次打开时给 starter commands，agent 完成一轮后再切换到 contextual continuation commands；这比一开始就塞一堆 continue/verify 命令更自然。
+- 2026-03-08 (Iteration 10): `PromptInputProvider + usePromptInputController + form.requestSubmit()` 是把命令面板接回 PromptInput 正常生命周期的最稳路径；这样 prompt commands 能复用同一套 text/attachments clear 语义，而不是发明第二条提交通道。
+- 2026-03-08 (Iteration 10): 真实浏览器回放已验证两种关键语义：无草稿时 starter command 会直接发送；有草稿时 contextual command 会把 prompt 插入草稿而不覆盖原文，随后由用户显式提交。

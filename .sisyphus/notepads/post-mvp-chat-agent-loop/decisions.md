@@ -32,3 +32,8 @@
 - 2026-03-08 (Iteration 9): run overview 先完全基于现有 `messages + tool parts + approval queue` 派生，不新增后端协议字段；这样能立即改善 chat 体验，同时把未来升级到 AI SDK `data-*` stream parts 的空间保留下来。
 - 2026-03-08 (Iteration 9): run overview 顶部状态允许感知全量 pending approval 数，但详情 section 只展示未被工具节点吸收的 approval；这样比直接吃整条 agent-level queue 更不容易把历史审批误报成“当前 turn 细节”。
 - 2026-03-08 (Iteration 9): 自定义 `TaskTrigger` 子节点必须保留真实 button 语义，而不是用 `div` 充当可点击外壳；否则 collapsible 在键盘与可访问性层面会退化。
+- 2026-03-08 (Iteration 10): 本轮优先做 PromptInput command palette，而不是继续做 run overview deep-link / JSX Preview / Checkpoint；原因是持续 coding 目前最缺的是“如何低摩擦地发起下一步 agent 指令”，这比再加一个展示层组件更直接影响执行流畅度。
+- 2026-03-08 (Iteration 10): command palette 直接复用 ai-elements 已存在但未接线的 `PromptInputCommand*` primitives，并复用 `buildFollowUpSuggestions` 作为上下文 prompt 源；这样避免再造一套独立命令系统，也避免 prompt 建议逻辑分叉。
+- 2026-03-08 (Iteration 10): 空会话与有上下文的 command palette 不应显示同一批命令：空会话优先展示 starter commands（plan / inspect），已有 assistant 上下文后切换到 continue / verify / summarize / next step / regenerate 这类 continuation commands。
+- 2026-03-08 (Iteration 10): prompt command 执行必须接回 `PromptInput` 的正常表单生命周期，而不是旁路直接调用 `submitPrompt`；否则草稿文本和附件状态会和用户心智脱节。
+- 2026-03-08 (Iteration 10): 当命令面板在“已有草稿或附件”时被触发，优先把命令插入到现有草稿中而不是立即发送；只有在输入为空时才走一键直发，这样能兼顾低摩擦与草稿安全。

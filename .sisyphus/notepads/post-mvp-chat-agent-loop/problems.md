@@ -20,3 +20,5 @@
 - 2026-03-08 (Iteration 8): 当前 attachment prompt serialization 仍然是字符串内联方案，虽然能立即服务 coding 场景，但对大文件、二进制、以及真正多模态模型输入都不够理想；后续如果 daemon 支持 structured file/message part，需要把这一层升级为第一类协议字段。
 - 2026-03-08 (Iteration 9): 当前 chat 已经有不少局部增强（approval、reasoning、sources、artifact、attachments），但仍然缺少一个把这些信号汇总起来的“run-level”视图；用户必须自己从多处 UI 片段脑补 agent 当前状态，这是持续 coding 体验的主要认知负担。
 - 2026-03-08 (Iteration 9): 仅靠最后一条 assistant 文本和 tool 卡片，用户很难快速回答“现在卡在哪、在做什么、下一步会继续什么”；因此需要一个比普通 message 更高层的 progress summary，而不是继续增加零散 chips 或提示文案。
+- 2026-03-08 (Iteration 10): 即使已经有 follow-up suggestions，当前 chat 仍然缺一个“随时可调出”的命令入口；用户必须先滚到最后一条 assistant 消息附近，才能点击继续/验证类 prompt，这对长会话尤其别扭。
+- 2026-03-08 (Iteration 10): 当前 PromptInput 工具区仍然偏“附件输入框”而不是“agent 控制台”；如果不把命令能力塞进输入侧，持续 coding 仍会被多处散落的 action 按钮打断。
