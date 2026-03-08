@@ -127,6 +127,7 @@ import {
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
+import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
 
 type ChatAgentOption = {
@@ -633,6 +634,7 @@ export default function ChatPage() {
     canRegenerate: Boolean(lastAssistantMessage),
     selectedAgentRunnable: commandPaletteRunnable,
   });
+  const resumeActions = buildChatResumeActions(commandMenuItems);
 
   useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
@@ -670,6 +672,26 @@ export default function ChatPage() {
 
     await regenerate({ body: buildChatRequestBody(selectedAgent) });
     await refreshApprovalQueue(selectedAgent.agent_id);
+  };
+
+  const handleResumeAction = async (action: ChatCommandItem) => {
+    if (action.disabled) {
+      return;
+    }
+
+    if (action.kind === 'prompt' && action.prompt) {
+      await submitPrompt({ text: action.prompt, files: [] });
+      return;
+    }
+
+    if (action.action === 'regenerate') {
+      await handleRegenerate();
+      return;
+    }
+
+    if (action.action === 'stop') {
+      stop();
+    }
   };
 
   return (
@@ -724,6 +746,8 @@ export default function ChatPage() {
         {runOverview && (
           <ChatRunOverviewPanel
             overview={runOverview}
+            actions={resumeActions}
+            onActionSelect={(action) => void handleResumeAction(action)}
             className="mb-3"
             onNavigateToTarget={highlightConversationTarget}
           />

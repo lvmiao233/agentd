@@ -10,11 +10,15 @@ import {
   TaskItemFile,
   TaskTrigger,
 } from '@/components/ai-elements/task';
+import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
+import type { ChatCommandItem } from '@/lib/chat-command-menu.js';
 import type { ChatRunOverview } from '@/lib/chat-run-overview.js';
 import { cn } from '@/lib/utils';
 
 type ChatRunOverviewProps = ComponentProps<'section'> & {
   overview: ChatRunOverview;
+  actions?: ChatCommandItem[];
+  onActionSelect?: (action: ChatCommandItem) => void;
   onNavigateToTarget?: (targetId: string) => void;
 };
 
@@ -49,6 +53,8 @@ function itemDotClass(item: ChatRunOverview['sections'][number]['items'][number]
 export default function ChatRunOverviewPanel({
   overview,
   className,
+  actions = [],
+  onActionSelect,
   onNavigateToTarget,
   ...props
 }: ChatRunOverviewProps) {
@@ -79,6 +85,26 @@ export default function ChatRunOverviewPanel({
           <p className="text-sm text-muted-foreground">{overview.statusSummary}</p>
         </div>
       </div>
+
+      {actions.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Continue this run
+          </div>
+          <Suggestions>
+            {actions.map((action) => (
+              <Suggestion
+                key={action.id}
+                disabled={action.disabled}
+                onClick={() => onActionSelect?.(action)}
+                title={action.description}
+              >
+                {action.title}
+              </Suggestion>
+            ))}
+          </Suggestions>
+        </div>
+      )}
 
       <div className="mt-4 space-y-3">
         {overview.sections.map((section) => {
