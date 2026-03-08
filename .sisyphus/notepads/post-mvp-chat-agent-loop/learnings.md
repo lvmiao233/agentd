@@ -118,3 +118,5 @@
 - 2026-03-09 (Iteration 36): 真实浏览器回放已经证明主次分层在 UI 上是清晰可见的：空会话时 `Plan and start coding` 是 `variant=default` 的 primary button，而 `Inspect context first` 降为 outline suggestion；完成一轮后 `Summarize progress` 也成为 continue strip 的 primary action。
 - 2026-03-09 (Iteration 34): transcript footer 里最适合留下的是“只影响这条消息本身”的操作（如 regenerate/copy）；一旦 continue prompts 同时出现在 cockpit、composer、message footer 三处，用户会感觉系统在重复喊同一句话。
 - 2026-03-09 (Iteration 34): 对 continuation 去重来说，删掉 message-level chips 比删掉 composer strip 更合理。因为前几轮已经明确把输入区附近定义为主要 steering 层，继续把下一步动作留在那儿，信息架构才一致。
+- 2026-03-09 (Iteration 37): composer 上方的状态条并不需要分别把 active 与 approval 都摊开；用户真正需要的是“此刻最重要的状态”。把 approval 提升为统一 run-status strip 的高优先级分支后，输入区附近的状态语义更直接了。
+- 2026-03-09 (Iteration 37): 统一 run-status strip 时，审批态与 active 态共享同一套按钮区很值：审批态优先暴露 `Review/Approve/Deny`，若 run 仍在进行则追加 `Stop current run`，这样用户能在一条带里完成“看清阻塞 + 决策 + 中止”的闭环。

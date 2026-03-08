@@ -60,3 +60,4 @@
 - 2026-03-09 (Iteration 35): 这轮针对空会话启动面的浏览器验证再次被 fresh production 实例上的环境级 `Internal Server Error` 噪声打断，因此最终证据以 source-guard + 全量 test/build 为主；逻辑改动本身只改变 cockpit `nextActionTitle` 的来源，没有引入新的运行态分支。
 - 2026-03-09 (Iteration 35): 本轮针对空会话主启动面做的浏览器验证再次碰到 fresh production 实例的环境级 500 噪声，因此最终以 source-guard + 全量 test/build 为主证据；逻辑改动本身只影响 `nextActionTitle` 的来源，没有引入新的运行态分支。
 - 2026-03-09 (Iteration 36): 这轮浏览器验证如果只看按钮文本，很容易被页内多颗 ghost/icon button 干扰；直接读取 button 的 `data-variant` 更稳，能明确证明 primary action 与 secondary suggestion 的层级真的发生了变化。
+- 2026-03-09 (Iteration 37): 这轮尝试在 fresh production 实例上验证统一 run-status strip 时，页面 again 落回环境级 500 噪声，因此最终仍以 source-guard + 全量 test/build 为主。这里的行为变化主要体现在组件收束与 props 路由，而不是协议层逻辑。
