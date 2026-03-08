@@ -69,3 +69,6 @@
 - 2026-03-09 (Iteration 22): 下一步不直接重写 daemon 协议，而是先让现有 tool 事件真正走上 AI SDK 的 `dynamic-tool` 状态机：为 `tool-input-start` / `tool-input-available` 补上 `dynamic: true`，让前端拿到 `input-streaming` / `input-available` 等状态，而不是把这些调用当成普通静态 tool part。
 - 2026-03-09 (Iteration 22): 在 chat 正文里，运行中的工具卡应该默认展开；如果 `input-streaming` / `input-available` 仍然折叠，用户实际上仍然看不到“正在做什么”。因此本轮把 in-flight tool 状态加入 `defaultOpen` 条件，而不是只在 output/error 时展开。
 - 2026-03-09 (Iteration 22): 运行中工具不应只有 badge，没有正文。为此新增 `ToolProgress`，在 `input-streaming` / `input-available` / approval 状态下显示短句说明（例如 `Collecting ... parameters…`、`... is running…`），把中间态从“有状态但无内容”提升为“有状态且可读”。
+- 2026-03-09 (Iteration 23): 在 `dynamic-tool` 真正打通之后，下一步优先补 `tool-input-delta`，而不是急着引入更多 tool 卡组件。原因很直接：如果工具参数只能从“没有”瞬间跳到“完整”，用户仍然感知不到 agent 在逐步思考/构造调用，和 OpenCode 类体验还有明显差距。
+- 2026-03-09 (Iteration 23): `tool-input-delta` 的桥接策略采用“按 toolCallId 维护最近一次 `argumentsText`，仅发新增尾部 `inputTextDelta`”而不是重复发送完整参数。这样既贴合 AI SDK 官方 chunk 语义，也让前端的 `parsePartialJson` 能自然接管中间态解析。
+- 2026-03-09 (Iteration 23): 是否发出最终 `tool-input-available` 取决于参数是否已形成完整 JSON，或工具是否已经返回 output/error。对明显未闭合的结构化参数，只发送 `tool-input-delta`，继续保持 `input-streaming`；不要为了“看起来完整”而过早切到 `input-available`。

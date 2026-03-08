@@ -42,3 +42,4 @@
 - 2026-03-09 (Iteration 21): `next build` 首次失败不是逻辑问题，而是我直接照抄 ai-elements 源码里的 `toReversed()`；当前仓库 TS/lib 目标不支持该 API，改成 `[...stack].reverse()` 后构建恢复通过。
 - 2026-03-09 (Iteration 21): Playwright 真实验证时，artifact 内部的 `Code` 切换按钮在当前 sticky cockpit + input 布局下偶发被上层容器/输入区拦截指针事件；preview 渲染本身已在浏览器中确认可见，但后续若要稳定验证 code toggle，最好补更明确的滚动/测试锚点或降低遮挡。
 - 2026-03-09 (Iteration 22): 这轮一开始最容易误判的点是“tool 事件已经有了，所以问题一定在 React 渲染层”；实际根因更早，在 stream bridge 没有带 `dynamic: true`，导致 AI SDK 不会进入真正的 `dynamic-tool` 流程。先修事件语义，比先堆更多 UI 组件更关键。
+- 2026-03-09 (Iteration 23): 浏览器验证时，`next dev` 一度被 Next.js 自己的 devtools / RSC manifest 问题干扰（`segment-explorer-node` / `vendor-chunks/mermaid` 相关 500），不能把这类运行时噪声误判成聊天功能退化。最后通过单独启动禁用 devtools 的 dev server 才拿到可靠页面证据。

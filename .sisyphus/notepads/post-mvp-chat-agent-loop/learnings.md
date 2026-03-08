@@ -74,3 +74,6 @@
 - 2026-03-09 (Iteration 22): 仅仅发出 `tool-input-start` / `tool-input-available` 还不够；AI SDK 官方只有在这些 chunk 带 `dynamic: true` 时，才会把它们转成 `dynamic-tool` 并推进 `input-streaming -> input-available -> output-*` 状态机。缺少这个标记时，前端虽然“有 tool 事件”，但很难做出真正活的工具体验。
 - 2026-03-09 (Iteration 22): `dynamic-tool` 的价值不只是 approvals。哪怕没有 approval，`input-streaming` 和 `input-available` 也足够让 UI 提前渲染出运行中的工具卡，让 assistant 文本与工具进度并存，而不是等结果出来才出现一张完成卡片。
 - 2026-03-09 (Iteration 22): 浏览器真实回放已证明这条链路有效：mock `/api/chat` 返回 `dynamic: true` 的 tool chunks 后，`/chat` 页面会出现默认展开的 `mcp.fs.read_file` 工具卡，能看到 `Running` badge、`mcp.fs.read_file is running…` 正文和 `README.md` 参数，同时 cockpit 顶部也同步显示 `LIVE ACTIVITY`。
+- 2026-03-09 (Iteration 23): AI SDK 的 `tool-input-delta` chunk 非常轻量，真正关键的是它和 `input-streaming` 之间的组合：前端会把累计的 `inputTextDelta` 喂给 `parsePartialJson`，再把结果实时回写到 `dynamic-tool.input`。因此这轮几乎不需要改 UI 数据模型，只要桥接层把 delta 语义发对。
+- 2026-03-09 (Iteration 23): `ToolInput` 组件本身已经足够吃下 partial input —— 不必额外造“partial params preview”组件。因为一旦 `dynamic-tool.input` 被 AI SDK 用 partial JSON 更新，现有 `CodeBlock(JSON.stringify(input))` 就会自然把半成品参数展示出来。
+- 2026-03-09 (Iteration 23): 真实浏览器回放已经看到 partial tool args 进入界面：`/chat` 页面中的 `mcp.fs.read_file` 工具卡停在 `Preparing`，正文显示 `Collecting mcp.fs.read_file parameters…`，而 cockpit `LIVE ACTIVITY` 与正文参数区都出现了 `path: READ`。这说明 partial tool input 已经真正穿透到用户可见层。
