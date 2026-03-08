@@ -17,6 +17,13 @@ import {
   Artifact,
 } from '@/components/ai-elements/artifact';
 import {
+  Attachment,
+  AttachmentInfo,
+  AttachmentPreview,
+  AttachmentRemove,
+  Attachments,
+} from '@/components/ai-elements/attachments';
+import {
   Message,
   MessageBranch,
   MessageBranchContent,
@@ -52,12 +59,18 @@ import {
 } from '@/components/ai-elements/confirmation';
 import {
   PromptInput,
+  PromptInputActionAddAttachments,
+  PromptInputActionMenu,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuTrigger,
   PromptInputBody,
+  PromptInputHeader,
   PromptInputTextarea,
   PromptInputFooter,
   PromptInputTools,
   PromptInputSubmit,
   type PromptInputMessage,
+  usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import {
   Select,
@@ -87,6 +100,7 @@ import {
   type ResolvedApprovalItem,
 } from '@/lib/chat-approval-feed.js';
 import { buildFollowUpSuggestions } from '@/lib/chat-follow-up-suggestions.js';
+import { collectMessageAttachments, getAttachmentLabel } from '@/lib/chat-attachments.js';
 import { extractPreviewArtifacts } from '@/lib/chat-artifacts.js';
 import {
   appendMessageBranch,
@@ -142,6 +156,70 @@ function artifactTitleForMessage(params: {
   }
 
   return baseTitle;
+}
+
+function PromptInputAttachmentsDisplay() {
+  const attachments = usePromptInputAttachments();
+
+  if (attachments.files.length === 0) {
+    return null;
+  }
+
+  return (
+    <Attachments variant="inline">
+      {attachments.files.map((attachment) => (
+        <Attachment
+          key={attachment.id}
+          data={attachment}
+          onRemove={() => attachments.remove(attachment.id)}
+          variant="inline"
+        >
+          <AttachmentPreview />
+          <AttachmentInfo />
+          <AttachmentRemove />
+        </Attachment>
+      ))}
+    </Attachments>
+  );
+}
+
+function PromptInputAttachmentsHeader() {
+  const attachments = usePromptInputAttachments();
+
+  if (attachments.files.length === 0) {
+    return null;
+  }
+
+  return (
+    <PromptInputHeader>
+      <PromptInputAttachmentsDisplay />
+    </PromptInputHeader>
+  );
+}
+
+function MessageAttachmentsDisplay({ parts }: { parts: UIMessage['parts'] }) {
+  const attachments = collectMessageAttachments(parts);
+
+  if (attachments.length === 0) {
+    return null;
+  }
+
+  return (
+    <Attachments className="mb-3" variant="grid">
+      {attachments.map((attachment, index) => (
+        <Attachment
+          key={`${attachment.type}-${getAttachmentLabel(attachment)}-${index}`}
+          data={attachment}
+          variant="grid"
+        >
+          <div className="flex items-start gap-3">
+            <AttachmentPreview />
+            <AttachmentInfo showMediaType />
+          </div>
+        </Attachment>
+      ))}
+    </Attachments>
+  );
 }
 
 export default function ChatPage() {
@@ -326,9 +404,9 @@ export default function ChatPage() {
     }
   };
 
-  const submitPrompt = async ({ text }: PromptInputMessage): Promise<void> => {
+  const submitPrompt = async ({ text, files }: PromptInputMessage): Promise<void> => {
     const trimmed = text.trim();
-    if (!trimmed) {
+    if (!trimmed && files.length === 0) {
       return;
     }
 
@@ -352,7 +430,7 @@ export default function ChatPage() {
 
     setInput('');
     await sendMessage(
-      { text: trimmed },
+      { text: trimmed, files },
       {
         body: buildChatRequestBody(selectedAgent),
       },
@@ -522,10 +600,13 @@ export default function ChatPage() {
                       return;
                     }
 
-                    const contentKey = `${variantKey}-content-${variantContentParts[0]?.partIndex ?? 0}`;
-                    variantSegments.push(
+                  const contentKey = `${variantKey}-content-${variantContentParts[0]?.partIndex ?? 0}`;
+                  variantSegments.push(
                       <Message key={contentKey} from={targetMessage.role}>
                         <MessageContent>
+                          {collectMessageAttachments(variantContentParts.map(({ part }) => part)).length > 0 && (
+                            <MessageAttachmentsDisplay parts={variantContentParts.map(({ part }) => part)} />
+                          )}
                           {variantContentParts.map(({ part, partIndex }) => {
                             if (part.type === 'text') {
                               return (
@@ -688,6 +769,9 @@ export default function ChatPage() {
                   renderedSegments.push(
                     <Message key={contentKey} from={message.role}>
                       <MessageContent>
+                        {collectMessageAttachments(contentParts.map(({ part }) => part)).length > 0 && (
+                          <MessageAttachmentsDisplay parts={contentParts.map(({ part }) => part)} />
+                        )}
                         {contentParts.map(({ part, partIndex }) => {
                           if (part.type === 'text') {
                             return (
@@ -978,7 +1062,8 @@ export default function ChatPage() {
           <ConversationScrollButton />
         </Conversation>
 
-        <PromptInput onSubmit={(message) => void submitPrompt(message)} className="mt-3">
+        <PromptInput onSubmit={(message) => void submitPrompt(message)} className="mt-3" globalDrop multiple>
+          <PromptInputAttachmentsHeader />
           <PromptInputBody>
             <PromptInputTextarea
               value={input}
@@ -988,15 +1073,19 @@ export default function ChatPage() {
             />
           </PromptInputBody>
           <PromptInputFooter>
-            <PromptInputTools />
+            <PromptInputTools>
+              <PromptInputActionMenu>
+                <PromptInputActionMenuTrigger />
+                <PromptInputActionMenuContent>
+                  <PromptInputActionAddAttachments />
+                </PromptInputActionMenuContent>
+              </PromptInputActionMenu>
+            </PromptInputTools>
             <PromptInputSubmit
               className="send-button"
               status={status}
               onStop={status === 'submitted' || status === 'streaming' ? () => void stop() : undefined}
-              disabled={
-                (!input.trim() && status !== 'submitted' && status !== 'streaming') ||
-                (availableAgents.length > 0 && !selectedAgentRunnable)
-              }
+              disabled={availableAgents.length > 0 && !selectedAgentRunnable}
             />
           </PromptInputFooter>
         </PromptInput>

@@ -2,6 +2,7 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
 } from 'ai';
+import { buildAttachmentPromptSection } from './chat-attachments.js';
 import { consumeRunAgentStream } from './run-agent-stream-reader.mjs';
 
 const LOCAL_DAEMON_URL = 'http://127.0.0.1:7000';
@@ -35,8 +36,19 @@ export function buildConversationInput(messages) {
         .map((part) => part.text)
         .join('')
         .trim();
-      if (!content) return '';
-      return `[${message.role}]\n${content}`;
+      const attachmentSection = buildAttachmentPromptSection(message.parts);
+
+      if (!content && !attachmentSection) {
+        return '';
+      }
+
+      return [
+        `[${message.role}]`,
+        content || null,
+        attachmentSection || null,
+      ]
+        .filter(Boolean)
+        .join('\n');
     })
     .filter(Boolean);
 

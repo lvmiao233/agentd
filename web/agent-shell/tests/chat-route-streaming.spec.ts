@@ -55,6 +55,36 @@ export async function run() {
     'conversation input should match route formatting'
   );
 
+  assert.equal(
+    buildConversationInput([
+      {
+        id: 'msg-attach-1',
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'Please review the attached file.' },
+          {
+            type: 'file',
+            filename: 'demo.tsx',
+            mediaType: 'text/plain',
+            url: 'data:text/plain;base64,ZXhwb3J0IGRlZmF1bHQgZnVuY3Rpb24gRGVtbygpIHsgcmV0dXJuIDxkaXY+SGk8L2Rpdj47IH0=',
+          },
+        ],
+      },
+    ]),
+    [
+      '[user]',
+      'Please review the attached file.',
+      '[attachment]',
+      'filename: demo.tsx',
+      'media_type: text/plain',
+      'content:',
+      '```tsx',
+      'export default function Demo() { return <div>Hi</div>; }',
+      '```',
+    ].join('\n'),
+    'conversation input should inline text attachments as prompt context'
+  );
+
   const regenerateMessages = [
     {
       id: 'msg-a',
@@ -104,7 +134,16 @@ export async function run() {
             {
             id: 'msg-1',
             role: 'user',
-            parts: [{ type: 'text', text: '分析' }, { type: 'text', text: ' main.rs' }],
+            parts: [
+              { type: 'text', text: '分析' },
+              { type: 'text', text: ' main.rs' },
+              {
+                type: 'file',
+                filename: 'notes.md',
+                mediaType: 'text/markdown',
+                url: 'data:text/markdown;base64,IyBOb3RlcwpDb25zaWRlciB0aGUgUlBDIGhhbmRsZXIu',
+              },
+            ],
           },
           ],
           model: 'gpt-test-model',
@@ -144,7 +183,18 @@ export async function run() {
   const requestPayload = JSON.parse(fetchCalls[0].init.body);
   assert.equal(requestPayload.method, 'RunAgent');
   assert.deepEqual(requestPayload.params, {
-    input: '[user]\n分析 main.rs',
+    input: [
+      '[user]',
+      '分析 main.rs',
+      '[attachment]',
+      'filename: notes.md',
+      'media_type: text/markdown',
+      'content:',
+      '```md',
+      '# Notes',
+      'Consider the RPC handler.',
+      '```',
+    ].join('\n'),
     model: 'gpt-test-model',
     agent_id: 'agent-42',
     session_id: 'web-agent-42',
