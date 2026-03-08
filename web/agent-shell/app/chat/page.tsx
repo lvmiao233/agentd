@@ -978,6 +978,7 @@ export default function ChatPage() {
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
+  const canRetryErroredTurn = Boolean(lastUserMessage && selectedAgent && isAgentRunnable(selectedAgent));
   const cockpitPlan = buildChatCockpitPlan({
     status,
     runOverview,
@@ -1105,8 +1106,15 @@ export default function ChatPage() {
         )}
 
         {error && (
-          <div className="mb-3 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            Something went wrong while streaming this response. You can retry.
+          <div className="mb-3 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-destructive">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm">Something went wrong while streaming this response. You can retry.</p>
+              {canRetryErroredTurn && (
+                <Button type="button" size="sm" variant="destructive" onClick={() => void handleRegenerate()}>
+                  Retry last answer
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
