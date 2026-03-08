@@ -73,12 +73,15 @@ export default function ChatRunOverviewPanel({
           return (
             <Task key={section.key} defaultOpen={section.defaultOpen}>
               <TaskTrigger title={section.title}>
-                <div className="flex w-full cursor-pointer items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground">
+                <button
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+                >
                   <Icon className="size-4" />
                   <span className="flex-1">{section.title}</span>
                   <TaskItemFile>{section.count}</TaskItemFile>
                   <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />
-                </div>
+                </button>
               </TaskTrigger>
               <TaskContent>
                 {section.items.map((item) => (

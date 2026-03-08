@@ -262,7 +262,7 @@ export function buildChatRunOverview({
           key: 'goal',
           title: normalizeSnippet(extractMessageText(lastUserMessage) || 'Continue the current task.', 110),
           description: 'Latest user instruction',
-          completed: status !== 'submitted',
+          completed: false,
           tone: 'default',
         },
         {
