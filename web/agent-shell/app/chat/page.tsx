@@ -103,6 +103,7 @@ import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, Command
 import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
   buildChatAgentUnavailableMessage,
+  chooseInitialAgentSelection,
   choosePreferredAgent,
   isAgentRunnable,
 } from '@/lib/chat-agent-readiness.js';
@@ -146,6 +147,7 @@ type ChatAgentOption = {
 };
 
 const CHAT_PROMPT_FORM_ID = 'chat-prompt-form';
+const CHAT_AGENT_STORAGE_KEY = 'agent-shell:chat:selected-agent';
 
 function highlightConversationTarget(targetId: string) {
   const target = document.getElementById(targetId);
@@ -341,6 +343,7 @@ function ChatPromptTools(props: {
 export default function ChatPage() {
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
+  const [agentsLoading, setAgentsLoading] = useState(true);
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalItem[]>([]);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
@@ -375,37 +378,45 @@ export default function ChatPage() {
     : false;
 
   const loadAgents = async (): Promise<ChatAgentOption | null> => {
-    const response = await fetch('/api/agents');
-    if (!response.ok) {
-      throw new Error('load agents failed');
+    setAgentsLoading(true);
+
+    try {
+      const response = await fetch('/api/agents');
+      if (!response.ok) {
+        throw new Error('load agents failed');
+      }
+
+      const payload = (await response.json()) as {
+        agents?: ChatAgentOption[];
+      };
+      const agents = payload.agents ?? [];
+      setAvailableAgents(agents);
+
+      if (agents.length === 0) {
+        setAgentId('');
+        return null;
+      }
+
+      const rememberedAgentId =
+        typeof window === 'undefined'
+          ? ''
+          : window.localStorage.getItem(CHAT_AGENT_STORAGE_KEY) ?? '';
+      const resolved = chooseInitialAgentSelection({
+        agents,
+        currentAgentId: agentId,
+        rememberedAgentId,
+      });
+
+      if (!resolved) {
+        setAgentId('');
+        return null;
+      }
+
+      setAgentId(resolved.agent_id);
+      return resolved;
+    } finally {
+      setAgentsLoading(false);
     }
-
-    const payload = (await response.json()) as {
-      agents?: ChatAgentOption[];
-    };
-    const agents = payload.agents ?? [];
-    setAvailableAgents(agents);
-
-    if (agents.length === 0) {
-      setAgentId('');
-      return null;
-    }
-
-    const preferred = choosePreferredAgent(agents);
-    if (!preferred) {
-      setAgentId('');
-      return null;
-    }
-
-    const currentAgent = agentId
-      ? agents.find((candidate) => candidate.agent_id === agentId)
-      : undefined;
-
-    const resolved =
-      currentAgent && isAgentRunnable(currentAgent) ? currentAgent : preferred;
-
-    setAgentId(resolved.agent_id);
-    return resolved;
   };
 
   const refreshApprovalQueue = async (targetAgentId: string) => {
@@ -480,6 +491,19 @@ export default function ChatPage() {
     setCheckpoints([]);
     setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
   }, [agentId, clearError, messages.length, setMessages]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (agentId) {
+      window.localStorage.setItem(CHAT_AGENT_STORAGE_KEY, agentId);
+      return;
+    }
+
+    window.localStorage.removeItem(CHAT_AGENT_STORAGE_KEY);
+  }, [agentId]);
 
   useEffect(() => {
     if (!(status === 'ready' || status === 'error') || !lastAssistantMessage) {
@@ -732,9 +756,9 @@ export default function ChatPage() {
             </p>
           </div>
           <div className="min-w-72">
-            <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger aria-label="Active agent selector">
-                <SelectValue placeholder="Select an agent" />
+              <Select value={agentId} onValueChange={setAgentId}>
+              <SelectTrigger aria-label="Active agent selector" disabled={agentsLoading || availableAgents.length === 0}>
+                <SelectValue placeholder={agentsLoading ? 'Detecting agents…' : 'Select an agent'} />
               </SelectTrigger>
               <SelectContent>
                 {availableAgents.map((agent) => (
@@ -749,6 +773,19 @@ export default function ChatPage() {
                 ))}
               </SelectContent>
             </Select>
+            {agentsLoading ? (
+              <p className="mt-2 text-xs text-muted-foreground">Detecting runnable agents…</p>
+            ) : selectedAgent ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {selectedAgentRunnable
+                  ? `Ready with ${selectedAgent.name} · ${selectedAgent.model}`
+                  : buildChatAgentUnavailableMessage(selectedAgent)}
+              </p>
+            ) : availableAgents.length === 0 ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                No agents found yet. Create or start a ready agent to begin chatting.
+              </p>
+            ) : null}
           </div>
         </div>
 

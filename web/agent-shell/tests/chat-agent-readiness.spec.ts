@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildChatAgentUnavailableMessage,
+  chooseInitialAgentSelection,
   choosePreferredAgent,
   isAgentRunnable,
 } from '../lib/chat-agent-readiness.js';
@@ -51,6 +52,35 @@ export async function run() {
     choosePreferredAgent([agents[0]])?.agent_id,
     'agent-failed',
     'the only agent is still returned so the UI can explain why it is unavailable'
+  );
+
+  assert.equal(
+    chooseInitialAgentSelection({
+      agents,
+      currentAgentId: 'agent-ready-mini',
+      rememberedAgentId: 'agent-ready-codex',
+    })?.agent_id,
+    'agent-ready-mini',
+    'current runnable selection should win over remembered selection'
+  );
+
+  assert.equal(
+    chooseInitialAgentSelection({
+      agents,
+      currentAgentId: 'agent-failed',
+      rememberedAgentId: 'agent-ready-mini',
+    })?.agent_id,
+    'agent-ready-mini',
+    'remembered runnable selection should win when current selection is no longer runnable'
+  );
+
+  assert.equal(
+    chooseInitialAgentSelection({
+      agents: [agents[0]],
+      rememberedAgentId: 'agent-failed',
+    })?.agent_id,
+    'agent-failed',
+    'remembered non-runnable selection should still be preserved when nothing runnable exists'
   );
 
   assert.equal(

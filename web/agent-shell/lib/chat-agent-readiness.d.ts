@@ -5,6 +5,14 @@ export function choosePreferredAgent<
   agents: T[],
   preferredModel?: string,
 ): T | null;
+export function chooseInitialAgentSelection<
+  T extends { agent_id: string; status: string; model: string; runnable?: boolean }
+>(params: {
+  agents: T[];
+  currentAgentId?: string;
+  rememberedAgentId?: string;
+  preferredModel?: string;
+}): T | null;
 export function buildChatAgentUnavailableMessage(
   agent:
     | {

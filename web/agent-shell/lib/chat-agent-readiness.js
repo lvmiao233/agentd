@@ -14,6 +14,36 @@ export function choosePreferredAgent(agents, preferredModel = 'gpt-5.3-codex') {
   );
 }
 
+export function chooseInitialAgentSelection(params) {
+  const {
+    agents,
+    currentAgentId = '',
+    rememberedAgentId = '',
+    preferredModel = 'gpt-5.3-codex',
+  } = params;
+
+  if (!Array.isArray(agents) || agents.length === 0) {
+    return null;
+  }
+
+  const byId = (agentId) =>
+    typeof agentId === 'string' && agentId.trim()
+      ? agents.find((candidate) => candidate.agent_id === agentId)
+      : undefined;
+
+  const currentAgent = byId(currentAgentId);
+  if (currentAgent && isAgentRunnable(currentAgent)) {
+    return currentAgent;
+  }
+
+  const rememberedAgent = byId(rememberedAgentId);
+  if (rememberedAgent && isAgentRunnable(rememberedAgent)) {
+    return rememberedAgent;
+  }
+
+  return choosePreferredAgent(agents, preferredModel) ?? rememberedAgent ?? currentAgent ?? null;
+}
+
 export function buildChatAgentUnavailableMessage(agent) {
   if (!agent) {
     return 'No runnable agent is available. Create or start a ready agent first.';
