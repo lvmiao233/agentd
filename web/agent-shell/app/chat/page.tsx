@@ -770,27 +770,29 @@ export default function ChatPage() {
           </div>
         )}
 
-        <ChatCockpitPlanPanel
-          plan={cockpitPlan}
-          runOverview={runOverview}
-          resumeActions={resumeActions}
-          approvalQueue={approvalQueue}
-          approvalBusyId={approvalBusyId}
-          sessionTimeline={sessionTimeline}
-          liveActivity={liveActivity}
-          latestOutput={latestOutput}
-          checkpointsById={checkpointsById}
-          onActionSelect={(action) => void handleResumeAction(action)}
-          onNavigateToTarget={highlightConversationTarget}
-          onApprovalDecision={(approvalId, decision) => void handleApprovalDecision(approvalId, decision)}
-          onRestoreCheckpoint={handleRestoreCheckpoint}
-        />
+        <div className="shrink-0">
+          <ChatCockpitPlanPanel
+            plan={cockpitPlan}
+            runOverview={runOverview}
+            resumeActions={resumeActions}
+            approvalQueue={approvalQueue}
+            approvalBusyId={approvalBusyId}
+            sessionTimeline={sessionTimeline}
+            liveActivity={liveActivity}
+            latestOutput={latestOutput}
+            checkpointsById={checkpointsById}
+            onActionSelect={(action) => void handleResumeAction(action)}
+            onNavigateToTarget={highlightConversationTarget}
+            onApprovalDecision={(approvalId, decision) => void handleApprovalDecision(approvalId, decision)}
+            onRestoreCheckpoint={handleRestoreCheckpoint}
+          />
+        </div>
 
-        <Conversation>
+        <Conversation className="min-h-0">
           <ConversationDownload
             messages={messages.map((message) => ({ role: message.role, content: extractMessageText(message) || '[non-text message]' }))}
           />
-          <ConversationContent>
+          <ConversationContent className="pt-2 pb-24">
             {messages.length === 0 && approvalFeed.length === 0 ? (
               <ConversationEmptyState
                 icon={<MessageSquare className="size-12" />}
@@ -1361,7 +1363,7 @@ export default function ChatPage() {
           <PromptInput
             id={CHAT_PROMPT_FORM_ID}
             onSubmit={(message) => void submitPrompt(message)}
-            className="mt-3"
+            className="mt-3 shrink-0"
             globalDrop
             multiple
           >
