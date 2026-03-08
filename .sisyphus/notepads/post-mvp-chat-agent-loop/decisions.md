@@ -27,3 +27,6 @@
 - 2026-03-08 (Iteration 8): 下一轮优先把 PromptInput 现有 attachments 能力接到真实 chat 回路，而不是先做更多纯命令型输入 UI；因为对 coding-agent 来说，“把文件上下文带进 prompt”比新增一个快捷按钮更直接影响任务完成率。
 - 2026-03-08 (Iteration 8): attachment 展示优先沿用 ai-elements 官方 `Attachments/Attachment/AttachmentPreview/AttachmentInfo/AttachmentRemove` 组合模式，在仓库内补本地组件副本；避免继续在 `page.tsx` 里散落手写 chip/card 样式。
 - 2026-03-08 (Iteration 8): 由于当前 daemon RunAgent 输入仍是单一字符串，本轮采用“文本/代码附件序列化进 prompt，二进制附件只保留元信息”的兼容策略；这样可以先获得真实可用性，同时不阻塞后端未来升级到结构化 file part。
+- 2026-03-08 (Iteration 9): 本轮优先补“run overview / progress panel”，而不是继续加更多 message-level 小组件；原因是长任务对话当前最缺的是会话编排层，用户需要一眼看懂当前 turn、工具进度、审批阻塞点。
+- 2026-03-08 (Iteration 9): 在 ai-elements 官方候选里，本轮只引入 `Task`，暂不同时接入 `Plan`/`Queue`；原因是用户要求一次尽量只完成一个特性，`Task` 已足够表达折叠式进度结构，性价比最高。
+- 2026-03-08 (Iteration 9): run overview 先完全基于现有 `messages + tool parts + approval queue` 派生，不新增后端协议字段；这样能立即改善 chat 体验，同时把未来升级到 AI SDK `data-*` stream parts 的空间保留下来。

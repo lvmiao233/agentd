@@ -28,3 +28,7 @@
 - 2026-03-08 (Iteration 8): 对 coding 场景最有价值的 attachment 并不是图片预览，而是把小型 text/code 文件直接序列化成 prompt context；这能在不改 agent-lite 协议的前提下显著提升“带上下文提问”的实用性。
 - 2026-03-08 (Iteration 8): 浏览器真实上传时 `mediaType` 不可靠，extension fallback 是必须的；否则 `.tsx/.md/.yaml` 这类本该可读的文件很容易被错误地降级为 binary attachment。
 - 2026-03-08 (Iteration 8): 将附件内容包进 markdown fence 时，必须动态选择比正文里任意 backtick run 更长的 fence；否则 agent 看到的 prompt 可能被源码自身的 ``` 片段截断。
+- 2026-03-08 (Iteration 9): ai-elements 官方 `Task` 组件本质上是一个极轻量的 collapsible shell，不依赖复杂上下文或后端 schema；这让它非常适合拿来承载“对当前 run 的解释层”，而不必等完整任务流协议。
+- 2026-03-08 (Iteration 9): 对 coding-agent 聊天来说，`messages` 本身已经携带了足够多的进度信号：最近 user turn、tool state、approval queue、assistant text 片段。把这些信息二次组织成 overview，比继续往正文里塞提示更有效。
+- 2026-03-08 (Iteration 9): 真实浏览器回放证明 run overview 不只是静态摘要：当 `/api/chat` SSE 和 `/api/approvals` 同时变化时，面板会正确显示 `Run overview / Current turn / Tool activity / Pending approvals`，说明当前前端派生模型已经具备真实可用性。
+- 2026-03-08 (Iteration 9): AI SDK 官方 `streaming-data` 文档说明后续若想进一步逼近 OpenCode/OpenClaw，可以把 run overview 从“前端派生”升级到“后端主动流式 data part”；这一轮先不跨越到协议层，是合理的分步策略。

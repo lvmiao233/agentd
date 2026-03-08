@@ -16,3 +16,5 @@
 - 2026-03-08 (Iteration 8): `next start` / `next dev` 在当前环境里对 `/api/*` curl 验证持续返回 bare 502，导致本轮不能依赖“浏览器直连 daemon mock”做端到端重放；因此改为“真实页面 + Playwright 路由拦截”验证前端交互，再用 `handleChatPost` 函数级 replay 覆盖 route 序列化。
 - 2026-03-08 (Iteration 8): 浏览器上传 `.tsx` 文件时得到的 `mediaType` 是 `application/x-tiled-tsx`，不是常见的 `text/plain`/`text/tsx`；如果只看 media type 会误判为二进制，本轮通过 filename extension fallback 规避。
 - 2026-03-08 (Iteration 8): attachment 内容如果直接包进固定的三反引号 fence，遇到本身含有 ``` 的源码/markdown 会破坏 prompt 结构；本轮改为根据正文中的最长 backtick run 动态扩展 fence 长度。
+- 2026-03-08 (Iteration 9): 浏览器验证时 `next start` 在当前环境下仍提示缺失 `.next/BUILD_ID`，即使 `pnpm --filter agent-shell build` 已成功；为避免把时间耗在本地 Next 产物异常上，本轮改用 `next dev --port 4184` 完成真实页面回放。
+- 2026-03-08 (Iteration 9): 通过 task 子代理做浏览器验证时出现 poll timeout，不适合作为高确定性 QA 路径；本轮改为直接使用 Playwright MCP，自己控制路由拦截与断言，验证更稳定。

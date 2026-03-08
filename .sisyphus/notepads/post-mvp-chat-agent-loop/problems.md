@@ -18,3 +18,5 @@
 - 2026-03-08 (Iteration 7): 由于 artifact 目前只是“从正文中提取再额外渲染”，原始 markdown code block 仍会继续出现在消息正文里，形成“preview card + code block”双份信息；后续若后端提供 artifact part，应考虑 suppress duplicate fence render。
 - 2026-03-08 (Iteration 8): 之前 chat 页面对 PromptInput 的 attachments 能力几乎是“半接入”状态：输入组件支持文件，但页面 submit 逻辑直接丢弃 `message.files`，route 也完全忽略 file part，导致上传只能当装饰，不能成为 agent 上下文。
 - 2026-03-08 (Iteration 8): 当前 attachment prompt serialization 仍然是字符串内联方案，虽然能立即服务 coding 场景，但对大文件、二进制、以及真正多模态模型输入都不够理想；后续如果 daemon 支持 structured file/message part，需要把这一层升级为第一类协议字段。
+- 2026-03-08 (Iteration 9): 当前 chat 已经有不少局部增强（approval、reasoning、sources、artifact、attachments），但仍然缺少一个把这些信号汇总起来的“run-level”视图；用户必须自己从多处 UI 片段脑补 agent 当前状态，这是持续 coding 体验的主要认知负担。
+- 2026-03-08 (Iteration 9): 仅靠最后一条 assistant 文本和 tool 卡片，用户很难快速回答“现在卡在哪、在做什么、下一步会继续什么”；因此需要一个比普通 message 更高层的 progress summary，而不是继续增加零散 chips 或提示文案。
