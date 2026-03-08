@@ -63,13 +63,16 @@ import {
   PromptInputActionMenu,
   PromptInputActionMenuContent,
   PromptInputActionMenuTrigger,
+  PromptInputButton,
   PromptInputBody,
   PromptInputHeader,
+  PromptInputProvider,
   PromptInputTextarea,
   PromptInputFooter,
   PromptInputTools,
   PromptInputSubmit,
   type PromptInputMessage,
+  usePromptInputController,
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import {
@@ -88,7 +91,8 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import ChatRunOverviewPanel from '@/components/chat-run-overview';
-import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon } from 'lucide-react';
+import ChatCommandMenu from '@/components/chat-command-menu';
+import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
 import {
   buildChatAgentUnavailableMessage,
@@ -110,6 +114,7 @@ import {
 } from '@/lib/chat-message-branches.js';
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
+import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
 
 type ChatAgentOption = {
@@ -120,6 +125,8 @@ type ChatAgentOption = {
   runnable?: boolean;
   runnable_reason?: string;
 };
+
+const CHAT_PROMPT_FORM_ID = 'chat-prompt-form';
 
 function nextMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random()}`;
@@ -224,8 +231,82 @@ function MessageAttachmentsDisplay({ parts }: { parts: UIMessage['parts'] }) {
   );
 }
 
+function ChatPromptTools(props: {
+  commandMenuOpen: boolean;
+  commandMenuItems: ChatCommandItem[];
+  onCommandMenuOpenChange: (open: boolean) => void;
+  onRegenerate: () => Promise<void>;
+  onStop: () => void;
+}) {
+  const { commandMenuOpen, commandMenuItems, onCommandMenuOpenChange, onRegenerate, onStop } = props;
+  const controller = usePromptInputController();
+
+  const handleCommandSelect = async (item: ChatCommandItem) => {
+    if (item.disabled) {
+      return;
+    }
+
+    onCommandMenuOpenChange(false);
+
+    if (item.kind === 'prompt' && item.prompt) {
+      const hasDraft =
+        controller.textInput.value.trim().length > 0 || controller.attachments.files.length > 0;
+
+      if (hasDraft) {
+        const nextInput = controller.textInput.value.trim()
+          ? `${controller.textInput.value.trim()}\n\n${item.prompt}`
+          : item.prompt;
+        controller.textInput.setInput(nextInput);
+        return;
+      }
+
+      controller.textInput.setInput(item.prompt);
+      requestAnimationFrame(() => {
+        const form = document.getElementById(CHAT_PROMPT_FORM_ID);
+        if (form instanceof HTMLFormElement) {
+          form.requestSubmit();
+        }
+      });
+      return;
+    }
+
+    if (item.action === 'regenerate') {
+      await onRegenerate();
+      return;
+    }
+
+    if (item.action === 'stop') {
+      onStop();
+    }
+  };
+
+  return (
+    <PromptInputTools>
+      <ChatCommandMenu
+        open={commandMenuOpen}
+        onOpenChange={onCommandMenuOpenChange}
+        items={commandMenuItems}
+        onSelect={(item) => void handleCommandSelect(item)}
+      />
+      <PromptInputButton
+        onClick={() => onCommandMenuOpenChange(true)}
+        tooltip={{ content: 'Open command palette', shortcut: '⌘K / Ctrl+K' }}
+        variant="ghost"
+      >
+        <CommandIcon className="size-4" />
+        <span className="hidden sm:inline">Commands</span>
+      </PromptInputButton>
+      <PromptInputActionMenu>
+        <PromptInputActionMenuTrigger />
+        <PromptInputActionMenuContent>
+          <PromptInputActionAddAttachments />
+        </PromptInputActionMenuContent>
+      </PromptInputActionMenu>
+    </PromptInputTools>
+  );
+}
+
 export default function ChatPage() {
-  const [input, setInput] = useState('');
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
@@ -233,6 +314,7 @@ export default function ChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [resolvedApprovals, setResolvedApprovals] = useState<ResolvedApprovalItem[]>([]);
   const [messageBranchHistory, setMessageBranchHistory] = useState<Record<string, UIMessage[]>>({});
+  const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const previousAgentIdRef = useRef<string | null>(null);
 
   const {
@@ -350,7 +432,6 @@ export default function ChatPage() {
 
     clearError();
     setMessages([]);
-    setInput('');
     setResolvedApprovals([]);
     setMessageBranchHistory({});
     setChatNotice('Agent changed. Started a fresh chat session for the new agent.');
@@ -430,7 +511,6 @@ export default function ChatPage() {
       clearError();
     }
 
-    setInput('');
     await sendMessage(
       { text: trimmed, files },
       {
@@ -443,6 +523,7 @@ export default function ChatPage() {
 
   const selectedAgent = availableAgents.find((candidate) => candidate.agent_id === agentId);
   const selectedAgentRunnable = selectedAgent ? isAgentRunnable(selectedAgent) : false;
+  const commandPaletteRunnable = selectedAgent ? selectedAgentRunnable : undefined;
   const toolApprovalNodes = messages.flatMap((message) =>
     message.parts.flatMap((part, partIndex) => {
       if (!isToolUIPart(part)) {
@@ -488,6 +569,29 @@ export default function ChatPage() {
     hasToolParts: lastAssistantHasToolParts,
     hasPendingApprovals: approvalQueue.length > 0,
   });
+  const commandMenuItems = buildChatCommandItems({
+    status,
+    lastAssistantText,
+    hasToolParts: lastAssistantHasToolParts,
+    hasPendingApprovals: approvalQueue.length > 0,
+    hasConversation: messages.length > 0,
+    canRegenerate: Boolean(lastAssistantMessage),
+    selectedAgentRunnable: commandPaletteRunnable,
+  });
+
+  useEffect(() => {
+    const handleCommandShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') {
+        return;
+      }
+
+      event.preventDefault();
+      setCommandMenuOpen((current) => !current);
+    };
+
+    window.addEventListener('keydown', handleCommandShortcut);
+    return () => window.removeEventListener('keydown', handleCommandShortcut);
+  }, []);
 
   const handleRegenerate = async () => {
     if (!selectedAgent || !isAgentRunnable(selectedAgent)) {
@@ -1072,33 +1176,35 @@ export default function ChatPage() {
           <ConversationScrollButton />
         </Conversation>
 
-        <PromptInput onSubmit={(message) => void submitPrompt(message)} className="mt-3" globalDrop multiple>
-          <PromptInputAttachmentsHeader />
-          <PromptInputBody>
-            <PromptInputTextarea
-              value={input}
-              onChange={(event) => setInput(event.currentTarget.value)}
-              placeholder="Ask the agent…"
-              disabled={availableAgents.length > 0 && !selectedAgentRunnable}
-            />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
-              <PromptInputActionMenu>
-                <PromptInputActionMenuTrigger />
-                <PromptInputActionMenuContent>
-                  <PromptInputActionAddAttachments />
-                </PromptInputActionMenuContent>
-              </PromptInputActionMenu>
-            </PromptInputTools>
-            <PromptInputSubmit
-              className="send-button"
-              status={status}
-              onStop={status === 'submitted' || status === 'streaming' ? () => void stop() : undefined}
-              disabled={availableAgents.length > 0 && !selectedAgentRunnable}
-            />
-          </PromptInputFooter>
-        </PromptInput>
+        <PromptInputProvider>
+          <PromptInput
+            id={CHAT_PROMPT_FORM_ID}
+            onSubmit={(message) => void submitPrompt(message)}
+            className="mt-3"
+            globalDrop
+            multiple
+          >
+            <PromptInputAttachmentsHeader />
+            <PromptInputBody>
+              <PromptInputTextarea placeholder="Ask the agent…" disabled={availableAgents.length > 0 && !selectedAgentRunnable} />
+            </PromptInputBody>
+            <PromptInputFooter>
+              <ChatPromptTools
+                commandMenuOpen={commandMenuOpen}
+                commandMenuItems={commandMenuItems}
+                onCommandMenuOpenChange={setCommandMenuOpen}
+                onRegenerate={handleRegenerate}
+                onStop={stop}
+              />
+              <PromptInputSubmit
+                className="send-button"
+                status={status}
+                onStop={status === 'submitted' || status === 'streaming' ? () => void stop() : undefined}
+                disabled={availableAgents.length > 0 && !selectedAgentRunnable}
+              />
+            </PromptInputFooter>
+          </PromptInput>
+        </PromptInputProvider>
       </div>
     </div>
   );
