@@ -103,3 +103,5 @@
 - 2026-03-09 (Iteration 33): 在 composer 上方连续补齐 latest output 与 last reply 后，新的最高摩擦点变成“控制条开始堆叠”。因此这轮优先做收束：把两者折叠进一个统一的 `ComposerRecentContextStrip`，保留动作但降低垂直噪音。
 - 2026-03-09 (Iteration 33): recent-context 不是新的数据源，只是新的容器：继续复用 `ComposerLatestOutputStrip` 与 `ComposerLastReplyStrip` 作为内部内容。这样之前已经验证过的 `Review output / Jump to reply / Copy reply` 行为可以原样继承，而不是被重写。
 - 2026-03-09 (Iteration 33): `ComposerRecentContextStrip` 默认折叠，只在用户需要时展开。这让 composer 控制层开始形成更清晰的优先级：阻塞和 steering（approval / active run / continue）优先常驻，而“回顾上下文”收束到一个统一入口。
+- 2026-03-09 (Iteration 34): 在 recent-context 收束后，最明显的剩余重复是 transcript 底部还保留着一整组 follow-up suggestion chips，而同一批 continue actions 已经存在于 cockpit footer 与 composer strip。为了降低重复，本轮决定收掉消息底部 chips，只保留 regenerate/copy。
+- 2026-03-09 (Iteration 34): 继续动作的主入口正式收敛为“两层”：顶部 cockpit footer 负责会话级继续，composer strip 负责输入区附近继续。message footer 则回到“局部 message 操作”的职责，不再承担第三套 continuation UI。
