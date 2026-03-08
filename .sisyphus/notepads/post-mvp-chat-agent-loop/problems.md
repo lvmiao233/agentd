@@ -51,3 +51,4 @@
 - 2026-03-09 (Iteration 34): 即使上下文已经收束，如果“继续下一步”的动作仍在 transcript/footer/composer/cockpit 多处重复，用户会再次回到“到处都能点，但不知道该以哪一层为主”的混乱状态。去重本身就是信息架构的一部分。
 - 2026-03-09 (Iteration 35): 即使 continuation 已经收敛到 composer，一旦空会话时 cockpit 的 `Next action` 仍然直接复述 quick-start 按钮，首屏又会重新出现“双主入口”的感觉。第一步的主动作也必须像后续 continuation 一样收敛。
 - 2026-03-09 (Iteration 35): 即使 continuation 已经收敛到 composer，一旦空会话时 cockpit 的 `Next action` 仍然直接复述 quick-start 按钮，首屏又会重新出现“双主入口”的感觉。第一步的主动作也必须像后续 continuation 一样收敛。
+- 2026-03-09 (Iteration 36): 即使主入口位置已经被收敛，如果同一条 strip 内所有动作仍然长得一样，用户还是要自己判断“主动作”是什么。复杂 coding chat 的引导问题不只在于放在哪，也在于强调哪一个最该先点。

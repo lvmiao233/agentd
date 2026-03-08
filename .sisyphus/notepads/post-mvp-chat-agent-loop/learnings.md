@@ -114,5 +114,7 @@
 - 2026-03-09 (Iteration 35): 让 `nextActionTitle` 依赖已经 dedup 过的 `cockpitResumeActions`，是一种很低风险但高杠杆的修正：不用改 cockpit 组件结构，就能让首屏信息架构和后续 continuation 的收敛方式保持一致。
 - 2026-03-09 (Iteration 35): 首屏启动面和 continuation 面本质上遵循同一个原则：cockpit 负责总览，输入区附近负责主动作。一旦 cockpit `Next action` 也开始逐字复述 quick-start 按钮，用户又会重新感到“双主入口”。
 - 2026-03-09 (Iteration 35): 用已经 dedup 过的 `cockpitResumeActions` 去驱动 `nextActionTitle`，是一个很小但高杠杆的修正：既不用改 cockpit 组件结构，也能让首屏信息架构和后续 continuation 的收敛方式保持一致。
+- 2026-03-09 (Iteration 36): 入口位置收敛之后，下一条高价值优化就是入口内部的视觉层级。主按钮和建议 chip 的语义本来就不同，如果继续等权呈现，用户依然得自己做优先级判断。
+- 2026-03-09 (Iteration 36): 真实浏览器回放已经证明主次分层在 UI 上是清晰可见的：空会话时 `Plan and start coding` 是 `variant=default` 的 primary button，而 `Inspect context first` 降为 outline suggestion；完成一轮后 `Summarize progress` 也成为 continue strip 的 primary action。
 - 2026-03-09 (Iteration 34): transcript footer 里最适合留下的是“只影响这条消息本身”的操作（如 regenerate/copy）；一旦 continue prompts 同时出现在 cockpit、composer、message footer 三处，用户会感觉系统在重复喊同一句话。
 - 2026-03-09 (Iteration 34): 对 continuation 去重来说，删掉 message-level chips 比删掉 composer strip 更合理。因为前几轮已经明确把输入区附近定义为主要 steering 层，继续把下一步动作留在那儿，信息架构才一致。
