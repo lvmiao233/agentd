@@ -18,6 +18,21 @@ export async function run() {
     targetId: 'chat-artifact-assistant-1-0',
   });
 
+  const jsxArtifactOutput = buildChatLatestOutput([
+    {
+      id: 'assistant-jsx',
+      role: 'assistant',
+      parts: [{ type: 'text', text: '```jsx\n<Button>Ship it</Button>\n```' }],
+    },
+  ]);
+
+  assert.deepEqual(jsxArtifactOutput, {
+    kind: 'artifact',
+    title: 'JSX preview',
+    description: '<Button>Ship it</Button>',
+    targetId: 'chat-artifact-assistant-jsx-0',
+  });
+
   const toolOutput = buildChatLatestOutput([
     {
       id: 'assistant-2',

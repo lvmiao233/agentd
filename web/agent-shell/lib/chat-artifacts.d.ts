@@ -1,7 +1,11 @@
 export type PreviewArtifact = {
   code: string;
-  language: 'html' | 'svg';
+  previewCode: string;
+  language: 'html' | 'svg' | 'jsx' | 'tsx';
   title: string;
 };
 
-export function extractPreviewArtifacts(markdown: string): PreviewArtifact[];
+export function extractPreviewArtifacts(
+  markdown: string,
+  options?: { includeIncomplete?: boolean },
+): PreviewArtifact[];

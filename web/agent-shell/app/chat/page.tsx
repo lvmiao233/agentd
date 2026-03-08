@@ -799,7 +799,9 @@ export default function ChatPage() {
               messages.map((message, messageIndex) => {
                 const renderedSegments: ReactNode[] = [];
                 const sourceParts = collectSourceParts(message.parts);
-                const previewArtifacts = extractPreviewArtifacts(extractMessageText(message));
+                const previewArtifacts = extractPreviewArtifacts(extractMessageText(message), {
+                  includeIncomplete: status === 'streaming' && messageIndex === messages.length - 1,
+                });
                 const assistantBranchKey =
                   message.role === 'assistant'
                     ? getAssistantBranchKey(messages, message.id)
@@ -826,7 +828,9 @@ export default function ChatPage() {
                 ) => {
                   const variantSegments: ReactNode[] = [];
                   const variantSourceParts = collectSourceParts(targetMessage.parts);
-                  const previewArtifacts = extractPreviewArtifacts(extractMessageText(targetMessage));
+                    const previewArtifacts = extractPreviewArtifacts(extractMessageText(targetMessage), {
+                      includeIncomplete: status === 'streaming' && messageIndex === messages.length - 1,
+                    });
                   const variantContentParts: Array<{
                     part: UIMessage['parts'][number];
                     partIndex: number;
@@ -956,6 +960,8 @@ export default function ChatPage() {
                           key={`${variantKey}-artifact-${artifactIndex}`}
                           code={artifact.code}
                           language={artifact.language}
+                          previewCode={artifact.previewCode}
+                          isStreaming={status === 'streaming' && messageIndex === messages.length - 1}
                           title={artifactTitleForMessage({
                             baseTitle: artifact.title,
                             branchIndex,
@@ -1151,6 +1157,8 @@ export default function ChatPage() {
                               key={`${message.id}-artifact-${artifactIndex}`}
                               code={artifact.code}
                               language={artifact.language}
+                              previewCode={artifact.previewCode}
+                              isStreaming={status === 'streaming' && messageIndex === messages.length - 1}
                               title={artifact.title}
                             />
                           ))}
