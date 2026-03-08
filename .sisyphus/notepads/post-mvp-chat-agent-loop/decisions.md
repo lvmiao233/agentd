@@ -30,3 +30,5 @@
 - 2026-03-08 (Iteration 9): 本轮优先补“run overview / progress panel”，而不是继续加更多 message-level 小组件；原因是长任务对话当前最缺的是会话编排层，用户需要一眼看懂当前 turn、工具进度、审批阻塞点。
 - 2026-03-08 (Iteration 9): 在 ai-elements 官方候选里，本轮只引入 `Task`，暂不同时接入 `Plan`/`Queue`；原因是用户要求一次尽量只完成一个特性，`Task` 已足够表达折叠式进度结构，性价比最高。
 - 2026-03-08 (Iteration 9): run overview 先完全基于现有 `messages + tool parts + approval queue` 派生，不新增后端协议字段；这样能立即改善 chat 体验，同时把未来升级到 AI SDK `data-*` stream parts 的空间保留下来。
+- 2026-03-08 (Iteration 9): run overview 顶部状态允许感知全量 pending approval 数，但详情 section 只展示未被工具节点吸收的 approval；这样比直接吃整条 agent-level queue 更不容易把历史审批误报成“当前 turn 细节”。
+- 2026-03-08 (Iteration 9): 自定义 `TaskTrigger` 子节点必须保留真实 button 语义，而不是用 `div` 充当可点击外壳；否则 collapsible 在键盘与可访问性层面会退化。

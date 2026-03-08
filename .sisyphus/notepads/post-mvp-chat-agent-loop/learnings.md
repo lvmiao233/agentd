@@ -32,3 +32,4 @@
 - 2026-03-08 (Iteration 9): 对 coding-agent 聊天来说，`messages` 本身已经携带了足够多的进度信号：最近 user turn、tool state、approval queue、assistant text 片段。把这些信息二次组织成 overview，比继续往正文里塞提示更有效。
 - 2026-03-08 (Iteration 9): 真实浏览器回放证明 run overview 不只是静态摘要：当 `/api/chat` SSE 和 `/api/approvals` 同时变化时，面板会正确显示 `Run overview / Current turn / Tool activity / Pending approvals`，说明当前前端派生模型已经具备真实可用性。
 - 2026-03-08 (Iteration 9): AI SDK 官方 `streaming-data` 文档说明后续若想进一步逼近 OpenCode/OpenClaw，可以把 run overview 从“前端派生”升级到“后端主动流式 data part”；这一轮先不跨越到协议层，是合理的分步策略。
+- 2026-03-08 (Iteration 9): `Radix Trigger asChild + div` 虽然表面上能点，但不等于拥有正确的 button 语义；对 ai-elements 风格组件做定制时，trigger 子节点最好继续保持真实 button。
