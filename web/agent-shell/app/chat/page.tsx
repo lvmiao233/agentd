@@ -358,13 +358,64 @@ function activeRunStateLabel(status: string, liveActivity: ReturnType<typeof bui
 function ActiveRunControls(props: {
   status: string;
   liveActivity: ReturnType<typeof buildChatLiveActivity>;
+  approval: ApprovalItem | null;
+  busyId: string | null;
   onStop: () => void;
   onReviewActivity: (targetId: string) => void;
+  onApprove: (approvalId: string) => void;
+  onDeny: (approvalId: string) => void;
+  onReviewApproval: (approvalId: string) => void;
 }) {
-  const { status, liveActivity, onStop, onReviewActivity } = props;
+  const {
+    status,
+    liveActivity,
+    approval,
+    busyId,
+    onStop,
+    onReviewActivity,
+    onApprove,
+    onDeny,
+    onReviewApproval,
+  } = props;
 
-  if (!(status === 'submitted' || status === 'streaming')) {
+  const isActiveRun = status === 'submitted' || status === 'streaming';
+
+  if (!approval && !isActiveRun) {
     return null;
+  }
+
+  if (approval) {
+    const isBusy = busyId === approval.id;
+
+    return (
+      <div className="mb-3 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">Awaiting approval</Badge>
+              <span className="truncate text-sm font-medium">{approval.tool}</span>
+            </div>
+            <p className="truncate text-sm text-muted-foreground">{approval.reason}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => onReviewApproval(approval.id)}>
+              Review approval
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => onDeny(approval.id)} disabled={isBusy}>
+              Deny
+            </Button>
+            <Button type="button" size="sm" onClick={() => onApprove(approval.id)} disabled={isBusy}>
+              Approve
+            </Button>
+            {isActiveRun && (
+              <Button type="button" variant="secondary" size="sm" onClick={onStop}>
+                Stop current run
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const stateLabel = activeRunStateLabel(status, liveActivity);
@@ -393,47 +444,6 @@ function ActiveRunControls(props: {
           )}
           <Button type="button" variant="secondary" size="sm" onClick={onStop}>
             Stop current run
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ComposerApprovalStrip(props: {
-  approval: ApprovalItem | null;
-  busyId: string | null;
-  onApprove: (approvalId: string) => void;
-  onDeny: (approvalId: string) => void;
-  onReview: (approvalId: string) => void;
-}) {
-  const { approval, busyId, onApprove, onDeny, onReview } = props;
-
-  if (!approval) {
-    return null;
-  }
-
-  const isBusy = busyId === approval.id;
-
-  return (
-    <div className="mb-3 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 space-y-1">
-          <div className="flex items-center gap-2">
-            <Badge variant="outline">Awaiting approval</Badge>
-            <span className="truncate text-sm font-medium">{approval.tool}</span>
-          </div>
-          <p className="truncate text-sm text-muted-foreground">{approval.reason}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => onReview(approval.id)}>
-            Review approval
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onDeny(approval.id)} disabled={isBusy}>
-            Deny
-          </Button>
-          <Button type="button" size="sm" onClick={() => onApprove(approval.id)} disabled={isBusy}>
-            Approve
           </Button>
         </div>
       </div>
@@ -949,7 +959,11 @@ export default function ChatPage() {
       ? resumeActions.filter((action) => action.kind === 'prompt' && action.prompt).slice(0, 3)
       : [];
   const cockpitResumeActions =
-    composerFollowUpActions.length > 0 || starterPromptActions.length > 0
+    composerFollowUpActions.length > 0 ||
+    starterPromptActions.length > 0 ||
+    status === 'submitted' ||
+    status === 'streaming' ||
+    approvalQueue.length > 0
       ? []
       : resumeActions;
   const sessionTimeline = buildChatSessionTimeline({
@@ -1693,14 +1707,6 @@ export default function ChatPage() {
           <ConversationScrollButton />
         </Conversation>
 
-        <ComposerApprovalStrip
-          approval={composerPendingApproval}
-          busyId={approvalBusyId}
-          onApprove={(approvalId) => void handleApprovalDecision(approvalId, 'approve')}
-          onDeny={(approvalId) => void handleApprovalDecision(approvalId, 'deny')}
-          onReview={(approvalId) => highlightConversationTarget(`chat-approval-${approvalId}`)}
-        />
-
         {(status === 'ready' || status === 'error') && (
           <ComposerRecentContextStrip
             latestOutput={latestOutput}
@@ -1723,8 +1729,13 @@ export default function ChatPage() {
         <ActiveRunControls
           status={status}
           liveActivity={liveActivity}
+          approval={composerPendingApproval}
+          busyId={approvalBusyId}
           onStop={() => void stop()}
           onReviewActivity={highlightConversationTarget}
+          onApprove={(approvalId) => void handleApprovalDecision(approvalId, 'approve')}
+          onDeny={(approvalId) => void handleApprovalDecision(approvalId, 'deny')}
+          onReviewApproval={(approvalId) => highlightConversationTarget(`chat-approval-${approvalId}`)}
         />
 
         <PromptInputProvider>
