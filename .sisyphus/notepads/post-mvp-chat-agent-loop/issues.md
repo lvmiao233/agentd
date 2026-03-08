@@ -57,3 +57,4 @@
 - 2026-03-09 (Iteration 33): 浏览器验证 `Recent context` 时，`Review output` 仍然会与顶部 cockpit 同名按钮冲突，因此这轮改成验证“展开后主文本里同时存在两块上下文与动作标签”；对收束型 UI，这种 presence 断言有时比逐个按钮 click 更稳。
 - 2026-03-09 (Iteration 34): 这轮浏览器验证必须用“统计主文本里 `CONTINUE THIS RUN` 出现次数”的方法，而不是只看 DOM 是否还存在 cockpit footer 节点；因为 cockpit 容器本身仍在，真正重要的是用户视角下 continuation 主入口是否只剩一处。
 - 2026-03-09 (Iteration 34): 本轮真实浏览器去重验证再次被环境级 `vendor-chunks/mermaid` / 500 噪声阻断，因此最终证据以 source-guard + 全量 test/build 为主；它们已经足以证明 message footer 的 follow-up chips 被移除且 composer/cockpit continuation 仍保留。
+- 2026-03-09 (Iteration 35): 本轮针对空会话主启动面做的浏览器验证再次碰到 fresh production 实例的环境级 500 噪声，因此最终以 source-guard + 全量 test/build 为主证据；逻辑改动本身只影响 `nextActionTitle` 的来源，没有引入新的运行态分支。
