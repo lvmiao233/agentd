@@ -955,7 +955,9 @@ export default function ChatPage() {
     ? resumeActions.filter((action) => action.kind === 'prompt').slice(0, 3)
     : [];
   const composerFollowUpActions =
-    messages.length > 0 && (status === 'ready' || status === 'error')
+    messages.length > 0 &&
+    approvalQueue.length === 0 &&
+    (status === 'ready' || status === 'error')
       ? resumeActions.filter((action) => action.kind === 'prompt' && action.prompt).slice(0, 3)
       : [];
   const cockpitResumeActions =
