@@ -25,6 +25,7 @@ type ChatSessionTimelineProps = {
   onJumpToMessage: (targetId: string) => void;
   onRestoreCheckpoint: (checkpoint: ChatCheckpoint) => void;
   checkpointsById: Record<string, ChatCheckpoint>;
+  className?: string;
 };
 
 export default function ChatSessionTimelinePanel({
@@ -32,9 +33,10 @@ export default function ChatSessionTimelinePanel({
   onJumpToMessage,
   onRestoreCheckpoint,
   checkpointsById,
+  className,
 }: ChatSessionTimelineProps) {
   return (
-    <Queue className="mb-3">
+    <Queue className={cn('mb-3', className)}>
       <QueueSection defaultOpen={false}>
         <QueueSectionTrigger>
           <QueueSectionLabel

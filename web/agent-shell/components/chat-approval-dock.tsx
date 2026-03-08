@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 type ChatApprovalDockProps = {
   approvals: ApprovalItem[];
   busyId: string | null;
+  className?: string;
   onJumpToApproval: (approvalId: string) => void;
   onDecision: (approvalId: string, decision: 'approve' | 'deny') => void;
 };
@@ -29,6 +30,7 @@ type ChatApprovalDockProps = {
 export default function ChatApprovalDockPanel({
   approvals,
   busyId,
+  className,
   onJumpToApproval,
   onDecision,
 }: ChatApprovalDockProps) {
@@ -37,7 +39,7 @@ export default function ChatApprovalDockPanel({
   }
 
   return (
-    <Queue className="mb-3 border-amber-500/30 bg-amber-500/5">
+    <Queue className={cn('mb-3 border-amber-500/30 bg-amber-500/5', className)}>
       <QueueSection>
         <QueueSectionTrigger className="bg-amber-500/10 hover:bg-amber-500/15">
           <QueueSectionLabel

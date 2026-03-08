@@ -96,9 +96,7 @@ import {
   ToolInput,
   ToolOutput,
 } from '@/components/ai-elements/tool';
-import ChatRunOverviewPanel from '@/components/chat-run-overview';
-import ChatApprovalDockPanel from '@/components/chat-approval-dock';
-import ChatSessionTimelinePanel from '@/components/chat-session-timeline';
+import ChatCockpitPlanPanel from '@/components/chat-cockpit-plan';
 import ChatCommandMenu from '@/components/chat-command-menu';
 import { MessageSquare, RefreshCcw, Copy, CheckIcon, ShieldAlert, XIcon, CommandIcon } from 'lucide-react';
 import { type ApprovalItem } from '@/lib/daemon-rpc';
@@ -129,6 +127,7 @@ import {
 import { collectSourceParts } from '@/lib/chat-message-parts.js';
 import { assignApprovalsToTools } from '@/lib/chat-tool-approvals.js';
 import { buildChatCommandItems, type ChatCommandItem } from '@/lib/chat-command-menu.js';
+import { buildChatCockpitPlan } from '@/lib/chat-cockpit-plan.js';
 import { buildChatResumeActions } from '@/lib/chat-resume-actions.js';
 import { buildChatSessionTimeline } from '@/lib/chat-session-timeline.js';
 import { buildChatRunOverview } from '@/lib/chat-run-overview.js';
@@ -643,6 +642,18 @@ export default function ChatPage() {
     status,
     activeMessageId: lastAssistantMessage?.id,
   });
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'user');
+  const cockpitPlan = buildChatCockpitPlan({
+    status,
+    runOverview,
+    approvalCount: approvalQueue.length,
+    checkpointCount: checkpoints.length,
+    lastUserText: lastUserMessage ? extractMessageText(lastUserMessage) : '',
+    lastAssistantText,
+    selectedAgentRunnable: commandPaletteRunnable,
+  });
   const checkpointsById = Object.fromEntries(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
 
   useEffect(() => {
@@ -752,33 +763,19 @@ export default function ChatPage() {
           </div>
         )}
 
-        {approvalQueue.length > 0 && (
-          <ChatApprovalDockPanel
-            approvals={approvalQueue}
-            busyId={approvalBusyId}
-            onJumpToApproval={(approvalId) => highlightConversationTarget(`chat-approval-${approvalId}`)}
-            onDecision={(approvalId, decision) => void handleApprovalDecision(approvalId, decision)}
-          />
-        )}
-
-        {runOverview && (
-          <ChatRunOverviewPanel
-            overview={runOverview}
-            actions={resumeActions}
-            onActionSelect={(action) => void handleResumeAction(action)}
-            className="mb-3"
-            onNavigateToTarget={highlightConversationTarget}
-          />
-        )}
-
-        {sessionTimeline && (
-          <ChatSessionTimelinePanel
-            timeline={sessionTimeline}
-            checkpointsById={checkpointsById}
-            onJumpToMessage={highlightConversationTarget}
-            onRestoreCheckpoint={handleRestoreCheckpoint}
-          />
-        )}
+        <ChatCockpitPlanPanel
+          plan={cockpitPlan}
+          runOverview={runOverview}
+          resumeActions={resumeActions}
+          approvalQueue={approvalQueue}
+          approvalBusyId={approvalBusyId}
+          sessionTimeline={sessionTimeline}
+          checkpointsById={checkpointsById}
+          onActionSelect={(action) => void handleResumeAction(action)}
+          onNavigateToTarget={highlightConversationTarget}
+          onApprovalDecision={(approvalId, decision) => void handleApprovalDecision(approvalId, decision)}
+          onRestoreCheckpoint={handleRestoreCheckpoint}
+        />
 
         <Conversation>
           <ConversationDownload
