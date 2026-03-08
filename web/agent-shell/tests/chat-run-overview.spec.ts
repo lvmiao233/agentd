@@ -46,6 +46,10 @@ export async function run() {
   );
   assert.equal(overview.sections[1].items[0].title, 'mcp.fs.read_file');
   assert.match(overview.sections[1].items[0].description, /Running · path:/);
+  assert.equal(overview.sections[0].items[0].targetId, 'chat-message-user-1');
+  assert.equal(overview.sections[0].items[1].targetId, 'chat-message-assistant-1');
+  assert.equal(overview.sections[1].items[0].targetId, 'chat-tool-assistant-1-1');
+  assert.equal(overview.sections[2].items[0].targetId, 'chat-approval-approval-1');
 
   const completedOverview = buildChatRunOverview({
     messages: [

@@ -6,6 +6,7 @@ export type ChatRunOverviewItem = {
   description: string;
   completed: boolean;
   tone: 'default' | 'warning' | 'error';
+  targetId?: string;
 };
 
 export type ChatRunOverviewSection = {
