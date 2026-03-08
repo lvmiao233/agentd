@@ -38,3 +38,5 @@
 - 2026-03-08 (Iteration 10): 真实浏览器回放显示 command palette 的最佳体验是两阶段：第一次打开时给 starter commands，agent 完成一轮后再切换到 contextual continuation commands；这比一开始就塞一堆 continue/verify 命令更自然。
 - 2026-03-08 (Iteration 10): `PromptInputProvider + usePromptInputController + form.requestSubmit()` 是把命令面板接回 PromptInput 正常生命周期的最稳路径；这样 prompt commands 能复用同一套 text/attachments clear 语义，而不是发明第二条提交通道。
 - 2026-03-08 (Iteration 10): 真实浏览器回放已验证两种关键语义：无草稿时 starter command 会直接发送；有草稿时 contextual command 会把 prompt 插入草稿而不覆盖原文，随后由用户显式提交。
+- 2026-03-08 (Iteration 11): 对 run overview 这类“摘要层”最稳的可交互增强不是上复杂状态管理，而是给现有 conversation 节点补稳定 `id`，再让 overview item 持有 `targetId`；这样能在不改协议的前提下获得高价值深链能力。
+- 2026-03-08 (Iteration 11): 真实浏览器回放已验证 overview deep-link 的关键闭环：点击 `Tool activity` 或 `Pending approvals` 中的条目后，对应目标节点会被滚动到视口中心并打上临时 highlight ring，足够支撑长会话导航。

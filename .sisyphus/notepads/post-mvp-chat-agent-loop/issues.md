@@ -20,3 +20,5 @@
 - 2026-03-08 (Iteration 9): 通过 task 子代理做浏览器验证时出现 poll timeout，不适合作为高确定性 QA 路径；本轮改为直接使用 Playwright MCP，自己控制路由拦截与断言，验证更稳定。
 - 2026-03-08 (Iteration 10): `web/agent-shell/tests/run-tests.mjs` 是直接跑 Node ESM，不认识 Next 的 `@/` alias；因此任何供 spec 直接 import 的 `lib/*.js` 都必须优先用相对路径，否则会出现“build 通过、spec 崩掉”的分叉。
 - 2026-03-08 (Iteration 10): 浏览器里验证 command palette 的 streaming stop 分支时，若 mock SSE 过早结束，`useChat` 会很快回到 `ready`，导致 `Stop current run` 不出现；因此本轮把真实验证重点放在 starter command 与 contextual commands 这两条确定性路径上。
+- 2026-03-08 (Iteration 11): `build` 可以通过而 spec 在运行时崩掉：本轮 `chat-run-overview.js` 初版遗漏了 `partIndex`，只有在 `chat-run-overview.spec.ts` 真正执行时才暴露 `ReferenceError`；说明 overview 这类纯 JS helper 不能只依赖 TS/LSP 和 Next build。
+- 2026-03-08 (Iteration 11): Playwright 验证 overview deep-link 时不能假设 assistant message id 的具体格式，`useChat` 会生成自己的 message id；更稳的做法是先从 DOM 读取真实 `chat-tool-*` id，再验证点击后的高亮与定位效果。

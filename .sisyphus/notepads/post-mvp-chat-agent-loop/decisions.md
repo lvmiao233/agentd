@@ -37,3 +37,5 @@
 - 2026-03-08 (Iteration 10): 空会话与有上下文的 command palette 不应显示同一批命令：空会话优先展示 starter commands（plan / inspect），已有 assistant 上下文后切换到 continue / verify / summarize / next step / regenerate 这类 continuation commands。
 - 2026-03-08 (Iteration 10): prompt command 执行必须接回 `PromptInput` 的正常表单生命周期，而不是旁路直接调用 `submitPrompt`；否则草稿文本和附件状态会和用户心智脱节。
 - 2026-03-08 (Iteration 10): 当命令面板在“已有草稿或附件”时被触发，优先把命令插入到现有草稿中而不是立即发送；只有在输入为空时才走一键直发，这样能兼顾低摩擦与草稿安全。
+- 2026-03-08 (Iteration 11): 本轮优先把 run overview 做成可导航控制面板，而不是继续扩展新的输入命令或展示组件；原因是 overview 已经有足够多的状态信息，下一步最高性价比是把“看见状态”升级成“直接跳到上下文”。
+- 2026-03-08 (Iteration 11): run overview 导航先采用最小风险方案：前端派生 `targetId`，现有消息/工具/approval 节点补稳定 DOM `id`，点击 overview item 后 `scrollIntoView + transient highlight`；不引入额外 ref map，也不侵入 AI SDK message schema。
